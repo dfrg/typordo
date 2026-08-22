@@ -133,11 +133,75 @@ fn nonblank(s: &str) -> impl Iterator<Item = char> + '_ {
 const BLANK: char = ' ';
 '''
 
+TESTS = r'''#[cfg(test)]
+mod tests {
+    use super::{eq, eq_ignoring_blanks, fold_str};
+
+    fn folded(s: &str) -> String {
+        fold_str(s).collect()
+    }
+
+    #[test]
+    fn ascii_folds_to_lowercase() {
+        assert_eq!(folded("DejaVu Sans"), "dejavu sans");
+        assert!(eq("DEJAVU SANS", "dejavu sans"));
+        assert!(!eq("DejaVu", "DejaVv"));
+    }
+
+    /// The three cases that separate folding from lowercasing. Rust's
+    /// `to_lowercase` leaves every one of them unchanged.
+    #[test]
+    fn folding_is_not_lowercasing() {
+        for (input, folds_to) in [
+            ("stra\u{00df}e", "strasse"),   // U+00DF LATIN SMALL LETTER SHARP S
+            ("STRA\u{1e9e}E", "strasse"),   // U+1E9E LATIN CAPITAL LETTER SHARP S
+            ("\u{fb01}n", "fin"),           // U+FB01 LATIN SMALL LIGATURE FI
+            ("\u{03c2}", "\u{03c3}"),       // final sigma folds with medial sigma
+        ] {
+            assert_eq!(folded(input), folds_to, "folding {input:?}");
+            assert_ne!(
+                input.to_lowercase(),
+                folds_to,
+                "if to_lowercase handled {input:?}, this table would be unnecessary"
+            );
+        }
+        assert!(eq("Stra\u{00df}e", "STRASSE"));
+        assert!(eq("\u{fb01}", "fi"));
+    }
+
+    #[test]
+    fn non_ascii_single_folds() {
+        assert!(eq("\u{0410}\u{0411}", "\u{0430}\u{0431}")); // Cyrillic А Б / а б
+        assert!(eq("\u{0391}\u{0392}", "\u{03b1}\u{03b2}")); // Greek Α Β / α β
+        assert!(eq("\u{00c9}", "\u{00e9}")); // É / é
+    }
+
+    /// Only the space character is a blank, and it is skipped before folding.
+    #[test]
+    fn blanks_are_only_spaces() {
+        assert!(eq_ignoring_blanks("  dejavu sans  ", "DejaVuSans"));
+        assert!(eq_ignoring_blanks("DejaVu Sans", "dejavusans"));
+        // A tab is not a blank, so these differ.
+        assert!(!eq_ignoring_blanks("DejaVu\tSans", "DejaVuSans"));
+        // Ignoring blanks still folds.
+        assert!(eq_ignoring_blanks("STRA \u{00df} E", "strasse"));
+    }
+
+    #[test]
+    fn characters_that_fold_to_themselves_pass_through() {
+        assert_eq!(folded("abc123-_"), "abc123-_");
+        assert_eq!(folded("\u{4e00}\u{4e8c}"), "\u{4e00}\u{4e8c}");
+        assert_eq!(folded(""), "");
+    }
+}
+'''
+
 with io.open(OUT, 'w', encoding='utf-8', newline='\n') as out:
     out.write(header)
     out.writelines(body)
     out.write(mid)
     out.writelines(mbody)
     out.write(tail)
+    out.write(TESTS)
 
 print('generated %d single + %d multi folds from %s' % (len(single), len(multi), version))
