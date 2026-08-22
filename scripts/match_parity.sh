@@ -12,8 +12,13 @@ export PATH="$HOME/.cargo/bin:$PATH"
 export CARGO_TARGET_DIR="$HOME/fct"
 cargo build -q --example fc_match || exit 1
 
-CONF=/tmp/fontconf-match.conf
-cat > $CONF <<'EOF'
+# REAL=1 runs against the system's own /etc/fonts, rules and all. Without it
+# the config is rule-free, which isolates scoring from substitution.
+if [ "${REAL:-0}" = "1" ]; then
+  CONF=/etc/fonts/fonts.conf
+else
+  CONF=/tmp/fontconf-match.conf
+  cat > $CONF <<'EOF'
 <?xml version="1.0"?>
 <!DOCTYPE fontconfig SYSTEM "urn:fontconfig:fonts.dtd">
 <fontconfig>
@@ -22,6 +27,8 @@ cat > $CONF <<'EOF'
   <cachedir>/usr/lib/fontconfig/cache</cachedir>
 </fontconfig>
 EOF
+fi
+echo "config: $CONF"
 
 QUERIES=/tmp/fc-queries.txt
 : > $QUERIES

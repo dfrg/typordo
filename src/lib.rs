@@ -67,6 +67,7 @@ mod md5;
 mod object;
 mod pattern;
 mod query;
+mod rules;
 mod value;
 mod xml;
 
@@ -77,6 +78,9 @@ pub use matching::{best, score, sorted, Priority, Score, PRIORITIES};
 pub use object::Object;
 pub use pattern::{Bindings, Element, Elements, Pattern, Values};
 pub use query::{OwnedValue, Query};
+pub use rules::{
+    BinaryOp, Compare, Edit, EditMode, Expr, MatchKind, Qual, Rule, Step, Test, UnaryOp,
+};
 pub use charset::CharSet;
 pub use langset::{LangResult, LangSet};
 pub use value::{Binding, Matrix, Range, Value};

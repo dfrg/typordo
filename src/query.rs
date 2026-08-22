@@ -211,6 +211,95 @@ impl Query {
         self.add(object, value);
     }
 
+    // --- the operations configuration edits need --------------------------
+
+    /// Replace every value of `object` with `values`.
+    pub(crate) fn set_all(
+        &mut self,
+        object: Object,
+        values: Vec<OwnedValue>,
+        binding: Binding,
+    ) {
+        self.remove(object);
+        self.insert_at(object, 0, values, binding);
+    }
+
+    /// Insert `values` at `index`, keeping everything already there.
+    pub(crate) fn insert_at(
+        &mut self,
+        object: Object,
+        index: usize,
+        values: Vec<OwnedValue>,
+        binding: Binding,
+    ) {
+        if values.is_empty() {
+            return;
+        }
+        let at = match self.position(object) {
+            Ok(at) => at,
+            Err(at) => {
+                self.elements.insert(at, Element { object, values: Vec::new() });
+                at
+            }
+        };
+        let slot = &mut self.elements[at];
+        let index = index.min(slot.values.len());
+        let tail = slot.values.split_off(index);
+        slot.values.extend(values.into_iter().map(|v| (v, binding)));
+        slot.values.extend(tail);
+    }
+
+    /// Insert `values` before everything already held against `object`.
+    pub(crate) fn prepend(
+        &mut self,
+        object: Object,
+        values: Vec<OwnedValue>,
+        binding: Binding,
+    ) {
+        self.insert_at(object, 0, values, binding);
+    }
+
+    /// Add `values` after everything already held against `object`.
+    pub(crate) fn append(
+        &mut self,
+        object: Object,
+        values: Vec<OwnedValue>,
+        binding: Binding,
+    ) {
+        let end = self.get(object).map_or(0, |e| e.values.len());
+        self.insert_at(object, end, values, binding);
+    }
+
+    /// Replace the value at `index` with `values`.
+    pub(crate) fn replace_at(
+        &mut self,
+        object: Object,
+        index: usize,
+        values: Vec<OwnedValue>,
+        binding: Binding,
+    ) {
+        // Insert after the marked value, then drop the marked value, so the
+        // replacement lands exactly where the old one was.
+        self.insert_at(object, index + 1, values, binding);
+        self.remove_at(object, index);
+    }
+
+    /// The binding of the value at `index`.
+    pub(crate) fn binding_at(&self, object: Object, index: usize) -> Option<Binding> {
+        self.get(object)?.values.get(index).map(|(_, b)| *b)
+    }
+
+    /// Remove the value at `index`, and the property if it becomes empty.
+    pub(crate) fn remove_at(&mut self, object: Object, index: usize) {
+        let Ok(at) = self.position(object) else { return };
+        if index < self.elements[at].values.len() {
+            self.elements[at].values.remove(index);
+        }
+        if self.elements[at].values.is_empty() {
+            self.elements.remove(at);
+        }
+    }
+
     /// Fill in the values fontconfig assumes when a query does not say.
     ///
     /// This is `FcDefaultSubstitute`. It has to run before matching: a query

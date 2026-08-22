@@ -5,11 +5,11 @@
 //! that decide which fonts are listed at all. That is enough to answer "what
 //! fonts does this system have", which is what `fc-list` reports.
 //!
-//! # What is not read yet
+//! `<match>`, `<test>`, `<edit>` and `<alias>` are read too, and
+//! [`Config::substitute`] applies them: that is how a query for `sans-serif`
+//! becomes a list of real families before anything is scored.
 //!
-//! Configuration is also how fontconfig rewrites a query before matching, and
-//! none of that happens here: `<match>`, `<test>`, `<edit>` and `<alias>` are
-//! skipped, so this crate cannot yet answer a query the way `fc-match` does.
+//! # What is not read yet
 //!
 //! Within `<selectfont>`, every value kind the DTD allows is handled except
 //! `<langset>`, which needs fontconfig's own language table. A selector this
@@ -20,7 +20,7 @@
 //! `<remap-dir>` and its `salt` attribute are unhandled, so a sandboxed
 //! configuration that remaps font paths will not find its caches.
 
-use std::collections::{HashSet, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 
 use crate::cache::Cache;
@@ -29,7 +29,11 @@ use crate::glob;
 use crate::md5;
 use crate::object::Object;
 use crate::pattern::Pattern;
-use crate::value::{Matrix, Value};
+use crate::query::{OwnedValue, Query};
+use crate::rules::{
+    BinaryOp, Compare, Edit, EditMode, Expr, MatchKind, Qual, Rule, Step, Test, UnaryOp,
+};
+use crate::value::{Binding, Matrix, Value};
 use crate::xml::{Event, Reader, XmlError};
 
 /// The architecture tag fontconfig builds into a cache file name.
@@ -74,6 +78,7 @@ pub struct Config {
     cache_dirs: Vec<PathBuf>,
     files: Vec<PathBuf>,
     selectors: Selectors,
+    rules: Vec<Rule>,
 }
 
 /// One open XML element while a config file is being read.
@@ -92,6 +97,32 @@ struct Frame {
     /// Set when a child could not be understood, so the whole element must
     /// not be applied in its weakened form.
     poisoned: bool,
+    /// Every attribute, for the rule elements that use several.
+    attrs: Vec<(String, String)>,
+    /// Expressions collected from child elements.
+    exprs: Vec<Expr>,
+    /// Tests and edits collected by a `<match>`, in source order.
+    steps: Vec<Step>,
+    /// An `<alias>`'s `<prefer>`, `<accept>` and `<default>` sections.
+    sections: HashMap<String, Expr>,
+}
+
+impl Frame {
+    fn attr(&self, name: &str) -> Option<&str> {
+        self.attrs.iter().find(|(k, _)| k == name).map(|(_, v)| v.as_str())
+    }
+
+    /// The collected child expressions as one expression.
+    ///
+    /// Several children behave as a comma list, which is how `<test>` accepts
+    /// alternatives and `<edit>` produces more than one value.
+    fn expr(&self) -> Expr {
+        match self.exprs.len() {
+            0 => Expr::Unknown,
+            1 => self.exprs[0].clone(),
+            _ => Expr::List(self.exprs.clone()),
+        }
+    }
 }
 
 /// A `<pattern>` inside an `<acceptfont>` or `<rejectfont>`.
@@ -204,6 +235,71 @@ fn charset_from(values: &[SelectorValue]) -> SelectorValue {
         return SelectorValue::Unsupported;
     }
     SelectorValue::CharSet(chars)
+}
+
+/// Build a matrix literal from four evaluated number expressions.
+fn literal_matrix(xx: &Expr, xy: &Expr, yx: &Expr, yy: &Expr) -> Expr {
+    let number = |e: &Expr| match e {
+        Expr::Value(OwnedValue::Double(d)) => Some(*d),
+        Expr::Value(OwnedValue::Int(i)) => Some(f64::from(*i)),
+        _ => None,
+    };
+    match (number(xx), number(xy), number(yx), number(yy)) {
+        (Some(xx), Some(xy), Some(yx), Some(yy)) => {
+            Expr::Value(OwnedValue::Matrix(Matrix { xx, xy, yx, yy }))
+        }
+        _ => Expr::Unknown,
+    }
+}
+
+/// The target of the nearest enclosing `<match>`.
+///
+/// A `<test>` without its own `target` reads the pattern its match is aimed
+/// at, so this has to walk out to find it.
+fn enclosing_match_kind(stack: &[Frame]) -> MatchKind {
+    stack
+        .iter()
+        .rev()
+        .find(|f| f.name == "match")
+        .map_or(MatchKind::Pattern, |f| MatchKind::parse(f.attr("target")))
+}
+
+/// `binding` on an `<edit>` or `<alias>`, which defaults to weak.
+fn parse_binding(name: Option<&str>) -> Binding {
+    match name {
+        Some("strong") => Binding::Strong,
+        Some("same") => Binding::Same,
+        _ => Binding::Weak,
+    }
+}
+
+fn binary_op(name: &str) -> BinaryOp {
+    match name {
+        "or" => BinaryOp::Or,
+        "and" => BinaryOp::And,
+        "eq" => BinaryOp::Eq,
+        "not_eq" => BinaryOp::NotEq,
+        "less" => BinaryOp::Less,
+        "less_eq" => BinaryOp::LessEq,
+        "more" => BinaryOp::More,
+        "more_eq" => BinaryOp::MoreEq,
+        "contains" => BinaryOp::Contains,
+        "not_contains" => BinaryOp::NotContains,
+        "plus" => BinaryOp::Plus,
+        "minus" => BinaryOp::Minus,
+        "times" => BinaryOp::Times,
+        _ => BinaryOp::Divide,
+    }
+}
+
+fn unary_op(name: &str) -> UnaryOp {
+    match name {
+        "not" => UnaryOp::Not,
+        "floor" => UnaryOp::Floor,
+        "ceil" => UnaryOp::Ceil,
+        "round" => UnaryOp::Round,
+        _ => UnaryOp::Trunc,
+    }
 }
 
 /// The named constants, in `_FcBaseConstants` declaration order.
@@ -449,6 +545,33 @@ impl Config {
         }
     }
 
+    /// The `<match>` rules this configuration defines, in order.
+    pub fn rules(&self) -> &[Rule] {
+        &self.rules
+    }
+
+    /// Rewrite `query` the way fontconfig would before matching.
+    ///
+    /// This is `FcConfigSubstitute` for [`MatchKind::Pattern`]: every rule is
+    /// tried in configuration order, and one whose tests all pass applies its
+    /// edits. Rules see each other's work, so ordering is the whole design --
+    /// which is why `conf.d` files carry numeric prefixes.
+    ///
+    /// Call [`Query::default_substitute`] *after* this, as fontconfig does:
+    /// the rules run first and the defaults only fill what is still missing.
+    pub fn substitute(&self, query: &mut Query) {
+        self.substitute_kind(query, MatchKind::Pattern);
+    }
+
+    /// Rewrite `query` with the rules for one target.
+    pub fn substitute_kind(&self, query: &mut Query, kind: MatchKind) {
+        for rule in &self.rules {
+            if rule.kind == kind {
+                rule.apply(query);
+            }
+        }
+    }
+
     /// Whether any `<selectfont>` rule was configured.
     ///
     /// Most systems have none, in which case [`Config::accepts`] is always
@@ -531,6 +654,13 @@ impl Config {
                         values: Vec::new(),
                         elements: Vec::new(),
                         poisoned: false,
+                        attrs: attrs
+                            .iter()
+                            .map(|(k, v)| (k.to_string(), v.into_owned()))
+                            .collect(),
+                        exprs: Vec::new(),
+                        steps: Vec::new(),
+                        sections: HashMap::new(),
                     });
                 }
                 Event::Text(text) => {
@@ -594,7 +724,31 @@ impl Config {
                         };
                         parent.values.push(value);
                     }
-                    _ => {}
+                    // Anywhere else, the same element names are literals in
+                    // a rule expression rather than parts of a selector.
+                    _ => {
+                        let expr = match frame.name.as_str() {
+                            "matrix" => match frame.exprs.as_slice() {
+                                [xx, xy, yx, yy] => literal_matrix(xx, xy, yx, yy),
+                                _ => Expr::Unknown,
+                            },
+                            // A charset or langset literal in a rule needs a
+                            // representation a query cannot hold yet.
+                            "charset" | "langset" => Expr::Unknown,
+                            kind => match SelectorValue::parse(kind, body) {
+                                SelectorValue::String(v) => {
+                                    Expr::Value(OwnedValue::String(v))
+                                }
+                                SelectorValue::Int(v) => Expr::Value(OwnedValue::Int(v)),
+                                SelectorValue::Double(v) => {
+                                    Expr::Value(OwnedValue::Double(v))
+                                }
+                                SelectorValue::Bool(v) => Expr::Value(OwnedValue::Bool(v)),
+                                _ => Expr::Unknown,
+                            },
+                        };
+                        parent.exprs.push(expr);
+                    }
                 }
             }
             "patelt" => {
@@ -606,6 +760,140 @@ impl Config {
                         // its remaining elements.
                         None => parent.poisoned = true,
                     }
+                }
+            }
+            // --- expressions, tests, edits, matches --------------------
+            //
+            // The literal element names overlap with <patelt>'s, so the arm
+            // above claims them when the parent is a selector; anything else
+            // reaching here is part of a rule.
+            "match" => {
+                if !frame.steps.is_empty() {
+                    let kind = MatchKind::parse(frame.attr("target"));
+                    self.rules.push(Rule { kind, steps: frame.steps });
+                }
+            }
+            "test" => {
+                let Some(object) = frame.object.as_deref().and_then(Object::from_name) else {
+                    return Ok(());
+                };
+                let Some(compare) = Compare::parse(frame.attr("compare")) else {
+                    return Ok(());
+                };
+                // A test reads whichever pattern `target` names, defaulting
+                // to the enclosing match's own target.
+                let kind = match frame.attr("target") {
+                    Some(target) => MatchKind::parse(Some(target)),
+                    None => enclosing_match_kind(stack),
+                };
+                let test = Test {
+                    kind,
+                    qual: Qual::parse(frame.attr("qual")),
+                    object,
+                    compare,
+                    expr: frame.expr(),
+                };
+                if let Some(parent) = stack.last_mut() {
+                    parent.steps.push(Step::Test(test));
+                }
+            }
+            "edit" => {
+                let Some(object) = frame.object.as_deref().and_then(Object::from_name) else {
+                    return Ok(());
+                };
+                let Some(mode) = EditMode::parse(frame.attr("mode")) else {
+                    return Ok(());
+                };
+                let edit = Edit {
+                    object,
+                    mode,
+                    binding: parse_binding(frame.attr("binding")),
+                    expr: frame.expr(),
+                };
+                if let Some(parent) = stack.last_mut() {
+                    parent.steps.push(Step::Edit(edit));
+                }
+            }
+            "alias" => {
+                // <family> children land in `exprs`; the three sections each
+                // collect their own into one expression.
+                let family = match frame.exprs.len() {
+                    0 => return Ok(()),
+                    1 => frame.exprs[0].clone(),
+                    _ => Expr::List(frame.exprs.clone()),
+                };
+                let rule = Rule::from_alias(
+                    family,
+                    frame.sections.get("prefer").cloned(),
+                    frame.sections.get("accept").cloned(),
+                    frame.sections.get("default").cloned(),
+                    parse_binding(frame.attr("binding")),
+                );
+                if let Some(rule) = rule {
+                    self.rules.push(rule);
+                }
+            }
+            "prefer" | "accept" | "default" => {
+                if let Some(parent) = stack.last_mut() {
+                    let expr = match frame.exprs.len() {
+                        0 => return Ok(()),
+                        1 => frame.exprs[0].clone(),
+                        _ => Expr::List(frame.exprs.clone()),
+                    };
+                    parent.sections.insert(frame.name.clone(), expr);
+                }
+            }
+            "family" => {
+                if let Some(parent) = stack.last_mut() {
+                    parent.exprs.push(Expr::Value(OwnedValue::String(body.to_string())));
+                }
+            }
+            "name" => {
+                if let Some(parent) = stack.last_mut() {
+                    let kind = MatchKind::parse(frame.attr("target"));
+                    let expr = match Object::from_name(body) {
+                        Some(object) => Expr::Field(kind, object),
+                        None => Expr::Unknown,
+                    };
+                    parent.exprs.push(expr);
+                }
+            }
+            "or" | "and" | "eq" | "not_eq" | "less" | "less_eq" | "more" | "more_eq"
+            | "contains" | "not_contains" | "plus" | "minus" | "times" | "divide" => {
+                let op = binary_op(&frame.name);
+                // Fontconfig folds a run of operands left to right, so
+                // <plus> with three children adds all three.
+                let expr = frame
+                    .exprs
+                    .iter()
+                    .cloned()
+                    .reduce(|a, b| Expr::Binary(op, Box::new(a), Box::new(b)))
+                    .unwrap_or(Expr::Unknown);
+                if let Some(parent) = stack.last_mut() {
+                    parent.exprs.push(expr);
+                }
+            }
+            "not" | "floor" | "ceil" | "round" | "trunc" => {
+                let op = unary_op(&frame.name);
+                let expr = match frame.exprs.first() {
+                    Some(inner) => Expr::Unary(op, Box::new(inner.clone())),
+                    None => Expr::Unknown,
+                };
+                if let Some(parent) = stack.last_mut() {
+                    parent.exprs.push(expr);
+                }
+            }
+            "if" => {
+                let expr = match frame.exprs.as_slice() {
+                    [c, t, e] => Expr::If(
+                        Box::new(c.clone()),
+                        Box::new(t.clone()),
+                        Box::new(e.clone()),
+                    ),
+                    _ => Expr::Unknown,
+                };
+                if let Some(parent) = stack.last_mut() {
+                    parent.exprs.push(expr);
                 }
             }
             "pattern" if !frame.elements.is_empty() => {

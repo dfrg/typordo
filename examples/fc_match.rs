@@ -6,9 +6,8 @@
 //! cargo run --example fc_match -- --config /tmp/plain.conf --score-of FILE "query"
 //! ```
 //!
-//! Only `<dir>`, `<cachedir>` and `<selectfont>` are read, so pointing this at
-//! a real `/etc/fonts/fonts.conf` will disagree with `fc-match`: the config's
-//! `<match>` rules rewrite the query first, and none of that happens yet.
+//! The query is rewritten by the config's `<match>` rules before scoring,
+//! the same order fontconfig uses: substitution first, then the defaults.
 
 use std::path::PathBuf;
 
@@ -19,6 +18,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut format = "file".to_string();
     let mut score_of: Option<String> = None;
     let mut debug = false;
+    let mut dump = false;
     let mut batch = false;
     let mut terms: Vec<String> = Vec::new();
 
@@ -30,6 +30,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             "--score-of" => score_of = args.next(),
             "--batch" => batch = true,
             "--debug" => debug = true,
+            "--dump-query" => dump = true,
             other => terms.push(other.to_string()),
         }
     }
@@ -63,6 +64,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let line = line?;
             let mut query = Query::new();
             parse_name(&mut query, line.trim_end())?;
+            config.substitute(&mut query);
             query.default_substitute();
             match fontconf::best(&query, fonts.clone()) {
                 Some((best, _)) => println!("{}", best.string(field).unwrap_or("")),
@@ -76,7 +78,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     for term in &terms {
         parse_name(&mut query, term)?;
     }
+    config.substitute(&mut query);
     query.default_substitute();
+
+    if dump {
+        for element in query.elements() {
+            for (value, binding) in element.values() {
+                let mark = match binding {
+                    fontconf::Binding::Strong => "s",
+                    fontconf::Binding::Weak => "w",
+                    fontconf::Binding::Same => "?",
+                };
+                println!("{}	{value:?}	{mark}", element.object());
+            }
+        }
+        return Ok(());
+    }
 
     // Report our own score for one specific file, so a harness can tell
     // "we picked a worse font" apart from "the two fonts scored identically

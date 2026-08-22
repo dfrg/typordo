@@ -1,0 +1,595 @@
+//! The `<match>` rules that rewrite a query before it is scored.
+//!
+//! A `<match>` is a flat sequence of `<test>` and `<edit>` elements evaluated
+//! in source order. Every test must pass; the first that fails abandons the
+//! whole rule, including any edits already applied by it. An `<alias>` is
+//! sugar for the same thing -- see [`Rule::from_alias`].
+
+use crate::casefold;
+use crate::object::Object;
+use crate::query::{OwnedValue, Query};
+use crate::value::{Binding, Matrix};
+
+/// Which pattern a rule set applies to.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MatchKind {
+    /// `target="pattern"`: rewrite the query before matching. The default.
+    Pattern,
+    /// `target="font"`: rewrite the chosen font afterwards.
+    Font,
+    /// `target="scan"`: rewrite a font as it is scanned into a cache.
+    Scan,
+}
+
+impl MatchKind {
+    pub(crate) fn parse(name: Option<&str>) -> Self {
+        match name {
+            Some("font") => Self::Font,
+            Some("scan") => Self::Scan,
+            _ => Self::Pattern,
+        }
+    }
+}
+
+/// Which values of a property a `<test>` must hold for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Qual {
+    /// At least one value matches. The default.
+    Any,
+    /// Every value matches -- and a property the pattern lacks passes
+    /// vacuously, where [`Qual::Any`] would fail.
+    All,
+    /// The first value matches.
+    First,
+    /// Some value other than the first matches.
+    NotFirst,
+}
+
+impl Qual {
+    pub(crate) fn parse(name: Option<&str>) -> Self {
+        match name {
+            Some("all") => Self::All,
+            Some("first") => Self::First,
+            Some("not_first") => Self::NotFirst,
+            _ => Self::Any,
+        }
+    }
+}
+
+/// How a `<test>` compares.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Compare {
+    /// Equal, ignoring case (and blanks, for strings).
+    Eq,
+    /// Not equal.
+    NotEq,
+    /// Numerically less.
+    Less,
+    /// Numerically less or equal.
+    LessEq,
+    /// Numerically greater.
+    More,
+    /// Numerically greater or equal.
+    MoreEq,
+    /// Substring, or inside a range.
+    Contains,
+    /// Neither a substring nor inside a range.
+    NotContains,
+}
+
+impl Compare {
+    pub(crate) fn parse(name: Option<&str>) -> Option<Self> {
+        Some(match name.unwrap_or("eq") {
+            "eq" => Self::Eq,
+            "not_eq" => Self::NotEq,
+            "less" => Self::Less,
+            "less_eq" => Self::LessEq,
+            "more" => Self::More,
+            "more_eq" => Self::MoreEq,
+            "contains" => Self::Contains,
+            "not_contains" => Self::NotContains,
+            _ => return None,
+        })
+    }
+}
+
+/// What an `<edit>` does with the values it produced.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EditMode {
+    /// Replace the value a test matched, or all values if no test matched.
+    Assign,
+    /// Replace every value regardless of what a test matched.
+    AssignReplace,
+    /// Insert before the matched value, or at the front.
+    Prepend,
+    /// Insert at the front of the whole list.
+    PrependFirst,
+    /// Insert after the matched value, or at the back.
+    Append,
+    /// Insert at the back of the whole list.
+    AppendLast,
+    /// Remove the matched value, or all of them.
+    Delete,
+    /// Remove every value.
+    DeleteAll,
+}
+
+impl EditMode {
+    pub(crate) fn parse(name: Option<&str>) -> Option<Self> {
+        Some(match name.unwrap_or("assign") {
+            "assign" => Self::Assign,
+            "assign_replace" => Self::AssignReplace,
+            "prepend" => Self::Prepend,
+            "prepend_first" => Self::PrependFirst,
+            "append" => Self::Append,
+            "append_last" => Self::AppendLast,
+            "delete" => Self::Delete,
+            "delete_all" => Self::DeleteAll,
+            _ => return None,
+        })
+    }
+}
+
+/// An expression in a `<test>` or `<edit>`.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Expr {
+    /// A literal.
+    Value(OwnedValue),
+    /// `<name>`: the current value of a property.
+    Field(MatchKind, Object),
+    /// A `<const>` that could not be resolved, or an unsupported element.
+    ///
+    /// Evaluating one yields nothing, which makes a test fail and an edit
+    /// contribute no values -- never a wrong value.
+    Unknown,
+    /// A binary operator.
+    Binary(BinaryOp, Box<Expr>, Box<Expr>),
+    /// A unary operator.
+    Unary(UnaryOp, Box<Expr>),
+    /// `<if>`: condition, then, else.
+    If(Box<Expr>, Box<Expr>, Box<Expr>),
+    /// A comma-separated list, which yields several values.
+    List(Vec<Expr>),
+}
+
+/// Binary operators an expression can use.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BinaryOp {
+    /// Logical or.
+    Or,
+    /// Logical and.
+    And,
+    /// Equal, ignoring case (and blanks, for strings).
+    Eq,
+    /// Not equal.
+    NotEq,
+    /// Numerically less.
+    Less,
+    /// Numerically less or equal.
+    LessEq,
+    /// Numerically greater.
+    More,
+    /// Numerically greater or equal.
+    MoreEq,
+    /// Substring, or inside a range.
+    Contains,
+    /// Neither a substring nor inside a range.
+    NotContains,
+    /// Addition, or string concatenation.
+    Plus,
+    /// Subtraction.
+    Minus,
+    /// Multiplication.
+    Times,
+    /// Division, always producing a double.
+    Divide,
+}
+
+/// Unary operators an expression can use.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum UnaryOp {
+    /// Logical negation.
+    Not,
+    /// Round towards negative infinity.
+    Floor,
+    /// Round towards positive infinity.
+    Ceil,
+    /// Round to nearest.
+    Round,
+    /// Round towards zero.
+    Trunc,
+}
+
+/// One `<test>`.
+#[derive(Clone, Debug)]
+pub struct Test {
+    /// Which pattern to read, which can differ from the rule's own target.
+    pub kind: MatchKind,
+    /// Which values must match.
+    pub qual: Qual,
+    /// The property being tested.
+    pub object: Object,
+    /// How to compare.
+    pub compare: Compare,
+    /// What to compare against.
+    pub expr: Expr,
+}
+
+/// One `<edit>`.
+#[derive(Clone, Debug)]
+pub struct Edit {
+    /// The property being edited.
+    pub object: Object,
+    /// What to do with the produced values.
+    pub mode: EditMode,
+    /// How strongly the new values are held.
+    pub binding: Binding,
+    /// What produces the new values.
+    pub expr: Expr,
+}
+
+/// A `<test>` or an `<edit>`, in the order they appeared.
+#[derive(Clone, Debug)]
+pub enum Step {
+    /// A condition that must hold.
+    Test(Test),
+    /// A change to apply.
+    Edit(Edit),
+}
+
+/// One `<match>`: a sequence of steps sharing a target.
+#[derive(Clone, Debug)]
+pub struct Rule {
+    /// Which pattern this rule rewrites.
+    pub kind: MatchKind,
+    /// Its tests and edits, in source order.
+    pub steps: Vec<Step>,
+}
+
+impl Rule {
+    /// Desugar an `<alias>` into the `<match>` it stands for.
+    ///
+    /// `FcParseAlias` builds a pattern-target rule testing `family` against
+    /// the alias family with blanks ignored, then one edit per section:
+    /// `<prefer>` prepends, `<accept>` appends, and `<default>` appends last.
+    /// The distinction is what makes `<prefer>` win over the caller's own
+    /// second choice while `<default>` only fills a gap.
+    pub fn from_alias(
+        family: Expr,
+        prefer: Option<Expr>,
+        accept: Option<Expr>,
+        default: Option<Expr>,
+        binding: Binding,
+    ) -> Option<Self> {
+        if prefer.is_none() && accept.is_none() && default.is_none() {
+            return None;
+        }
+        let mut steps = vec![Step::Test(Test {
+            kind: MatchKind::Pattern,
+            qual: Qual::Any,
+            object: Object::Family,
+            compare: Compare::Eq,
+            expr: family,
+        })];
+        for (expr, mode) in [
+            (prefer, EditMode::Prepend),
+            (accept, EditMode::Append),
+            (default, EditMode::AppendLast),
+        ] {
+            if let Some(expr) = expr {
+                steps.push(Step::Edit(Edit {
+                    object: Object::Family,
+                    mode,
+                    binding,
+                    expr,
+                }));
+            }
+        }
+        Some(Self { kind: MatchKind::Pattern, steps })
+    }
+
+    /// Apply this rule to `query`, if every test passes.
+    ///
+    /// Returns whether any edit was applied. Edits take effect as they are
+    /// reached, so a later test sees what an earlier edit did -- and a test
+    /// failing halfway leaves those edits in place, which is what fontconfig
+    /// does too.
+    pub fn apply(&self, query: &mut Query) -> bool {
+        // Where a test matched, per property, so a following edit knows which
+        // value to replace or insert beside.
+        let mut marks: Vec<(Object, Option<usize>)> = Vec::new();
+        let mut edited = false;
+
+        for step in &self.steps {
+            match step {
+                Step::Test(test) => match test.evaluate(query) {
+                    Some(position) => {
+                        if !marks.iter().any(|(o, _)| *o == test.object) {
+                            marks.push((test.object, position));
+                        }
+                    }
+                    None => return edited,
+                },
+                Step::Edit(edit) => {
+                    let mark = marks
+                        .iter()
+                        .find(|(o, _)| *o == edit.object)
+                        .and_then(|(_, at)| *at);
+                    edit.apply(query, mark);
+                    edited = true;
+                    // A replaced value invalidates the position we recorded.
+                    if matches!(
+                        edit.mode,
+                        EditMode::AssignReplace | EditMode::Delete | EditMode::DeleteAll
+                    ) {
+                        marks.retain(|(o, _)| *o != edit.object);
+                    }
+                }
+            }
+        }
+        edited
+    }
+}
+
+impl Test {
+    /// Evaluate against `query`, returning where it matched.
+    ///
+    /// `None` means the test failed. `Some(None)` means it passed without
+    /// marking a position, which is what a vacuous [`Qual::All`] does.
+    fn evaluate(&self, query: &Query) -> Option<Option<usize>> {
+        let wanted = self.expr.values(query);
+        if wanted.is_empty() {
+            return None;
+        }
+        let Some(element) = query.get(self.object) else {
+            // A property the pattern does not have: `all` passes vacuously,
+            // everything else fails.
+            return match self.qual {
+                Qual::All => Some(None),
+                _ => None,
+            };
+        };
+        let values: Vec<&OwnedValue> = element.values().map(|(v, _)| v).collect();
+
+        let matches: Vec<usize> = values
+            .iter()
+            .enumerate()
+            .filter(|(_, got)| wanted.iter().any(|want| compare(got, self.compare, want)))
+            .map(|(i, _)| i)
+            .collect();
+
+        match self.qual {
+            Qual::Any => matches.first().copied().map(Some),
+            Qual::All if matches.len() == values.len() => Some(matches.first().copied()),
+            Qual::All => None,
+            Qual::First if matches.first() == Some(&0) => Some(Some(0)),
+            Qual::First => None,
+            Qual::NotFirst => matches.iter().find(|i| **i != 0).copied().map(Some),
+        }
+    }
+}
+
+impl Edit {
+    /// Apply this edit, inserting relative to `mark` when a test set one.
+    fn apply(&self, query: &mut Query, mark: Option<usize>) {
+        let values = self.expr.values(query);
+        // Only the modes that insert *relative to* the mark pass a position
+        // to fontconfig's FcConfigAdd, and only a position gives
+        // binding="same" something to inherit from. append_last and friends
+        // ignore the mark entirely, so they always land weak.
+        let positional = match self.mode {
+            EditMode::Assign | EditMode::Prepend | EditMode::Append => mark,
+            _ => None,
+        };
+        let binding = self.resolve_binding(query, positional);
+        match self.mode {
+            EditMode::Assign => match mark {
+                Some(at) => query.replace_at(self.object, at, values, binding),
+                None => query.set_all(self.object, values, binding),
+            },
+            EditMode::AssignReplace => query.set_all(self.object, values, binding),
+            EditMode::Prepend => match mark {
+                Some(at) => query.insert_at(self.object, at, values, binding),
+                None => query.prepend(self.object, values, binding),
+            },
+            EditMode::PrependFirst => query.prepend(self.object, values, binding),
+            EditMode::Append => match mark {
+                Some(at) => query.insert_at(self.object, at + 1, values, binding),
+                None => query.append(self.object, values, binding),
+            },
+            EditMode::AppendLast => query.append(self.object, values, binding),
+            EditMode::Delete => match mark {
+                Some(at) => query.remove_at(self.object, at),
+                None => {
+                    query.remove(self.object);
+                }
+            },
+            EditMode::DeleteAll => {
+                query.remove(self.object);
+            }
+        }
+    }
+
+    /// What binding the new values actually get.
+    ///
+    /// `binding="same"` is not a binding of its own: it means "whatever the
+    /// value this edit is attached to already had". It inherits from the
+    /// value a test marked, and falls back to weak when there is no marked
+    /// position -- which includes every mode that ignores the mark, not just
+    /// the case where no test ran.
+    ///
+    /// This is what keeps an alias chain from promoting its substitutes: a
+    /// `<default>` appends last and so stays weak even when the family it
+    /// matched was the caller's own strong one.
+    fn resolve_binding(&self, query: &Query, mark: Option<usize>) -> Binding {
+        match self.binding {
+            Binding::Same => mark
+                .and_then(|at| query.binding_at(self.object, at))
+                .unwrap_or(Binding::Weak),
+            other => other,
+        }
+    }
+}
+
+impl Expr {
+    /// Evaluate to zero or more values.
+    ///
+    /// A list yields several; an unresolvable expression yields none, which
+    /// makes a test fail rather than match something arbitrary.
+    pub fn values(&self, query: &Query) -> Vec<OwnedValue> {
+        match self {
+            Self::Value(v) => vec![v.clone()],
+            Self::Unknown => Vec::new(),
+            Self::List(parts) => parts.iter().flat_map(|e| e.values(query)).collect(),
+            Self::Field(_, object) => query
+                .get(*object)
+                .map(|e| e.values().map(|(v, _)| v.clone()).collect())
+                .unwrap_or_default(),
+            Self::If(condition, then, otherwise) => {
+                match condition.values(query).first().and_then(as_bool) {
+                    Some(true) => then.values(query),
+                    Some(false) => otherwise.values(query),
+                    None => Vec::new(),
+                }
+            }
+            Self::Unary(op, inner) => inner
+                .values(query)
+                .first()
+                .and_then(|v| apply_unary(*op, v))
+                .into_iter()
+                .collect(),
+            Self::Binary(op, left, right) => {
+                let (left, right) = (left.values(query), right.values(query));
+                match (left.first(), right.first()) {
+                    (Some(a), Some(b)) => apply_binary(*op, a, b).into_iter().collect(),
+                    _ => Vec::new(),
+                }
+            }
+        }
+    }
+}
+
+fn as_bool(value: &OwnedValue) -> Option<bool> {
+    match value {
+        OwnedValue::Bool(b) => Some(*b),
+        _ => None,
+    }
+}
+
+fn as_number(value: &OwnedValue) -> Option<f64> {
+    match value {
+        OwnedValue::Int(i) => Some(f64::from(*i)),
+        OwnedValue::Double(d) => Some(*d),
+        _ => None,
+    }
+}
+
+/// Whether both sides were written as integers, so arithmetic stays integral.
+fn both_int(a: &OwnedValue, b: &OwnedValue) -> bool {
+    matches!((a, b), (OwnedValue::Int(_), OwnedValue::Int(_)))
+}
+
+fn number_result(value: f64, integral: bool) -> OwnedValue {
+    if integral {
+        OwnedValue::Int(value as i32)
+    } else {
+        OwnedValue::Double(value)
+    }
+}
+
+fn apply_unary(op: UnaryOp, value: &OwnedValue) -> Option<OwnedValue> {
+    Some(match op {
+        UnaryOp::Not => OwnedValue::Bool(!as_bool(value)?),
+        UnaryOp::Floor => OwnedValue::Int(as_number(value)?.floor() as i32),
+        UnaryOp::Ceil => OwnedValue::Int(as_number(value)?.ceil() as i32),
+        UnaryOp::Round => OwnedValue::Int(as_number(value)?.round() as i32),
+        UnaryOp::Trunc => OwnedValue::Int(as_number(value)?.trunc() as i32),
+    })
+}
+
+fn apply_binary(op: BinaryOp, a: &OwnedValue, b: &OwnedValue) -> Option<OwnedValue> {
+    use BinaryOp as B;
+    Some(match op {
+        B::Or => OwnedValue::Bool(as_bool(a)? || as_bool(b)?),
+        B::And => OwnedValue::Bool(as_bool(a)? && as_bool(b)?),
+        B::Eq => OwnedValue::Bool(compare(a, Compare::Eq, b)),
+        B::NotEq => OwnedValue::Bool(compare(a, Compare::NotEq, b)),
+        B::Less => OwnedValue::Bool(compare(a, Compare::Less, b)),
+        B::LessEq => OwnedValue::Bool(compare(a, Compare::LessEq, b)),
+        B::More => OwnedValue::Bool(compare(a, Compare::More, b)),
+        B::MoreEq => OwnedValue::Bool(compare(a, Compare::MoreEq, b)),
+        B::Contains => OwnedValue::Bool(compare(a, Compare::Contains, b)),
+        B::NotContains => OwnedValue::Bool(compare(a, Compare::NotContains, b)),
+        // Plus concatenates strings, and adds everything else.
+        B::Plus => match (a, b) {
+            (OwnedValue::String(a), OwnedValue::String(b)) => {
+                OwnedValue::String(format!("{a}{b}"))
+            }
+            _ => number_result(as_number(a)? + as_number(b)?, both_int(a, b)),
+        },
+        B::Minus => number_result(as_number(a)? - as_number(b)?, both_int(a, b)),
+        B::Times => number_result(as_number(a)? * as_number(b)?, both_int(a, b)),
+        B::Divide => {
+            let divisor = as_number(b)?;
+            // Division always produces a double, even between two integers.
+            OwnedValue::Double(as_number(a)? / divisor)
+        }
+    })
+}
+
+/// Compare a pattern value against a test value.
+///
+/// Strings compare with case folding; `eq` on a family also ignores blanks,
+/// which is `FcOpFlagIgnoreBlanks`. `contains` is a substring test for
+/// strings and a range test for numbers.
+pub(crate) fn compare(got: &OwnedValue, op: Compare, want: &OwnedValue) -> bool {
+    use OwnedValue as V;
+    match (got, want) {
+        (V::String(got), V::String(want)) => match op {
+            Compare::Eq => casefold::eq_ignoring_blanks(got, want),
+            Compare::NotEq => !casefold::eq_ignoring_blanks(got, want),
+            Compare::Contains => contains_folded(got, want),
+            Compare::NotContains => !contains_folded(got, want),
+            _ => false,
+        },
+        (V::Bool(got), V::Bool(want)) => match op {
+            Compare::Eq | Compare::Contains => got == want,
+            Compare::NotEq | Compare::NotContains => got != want,
+            _ => false,
+        },
+        (V::Matrix(got), V::Matrix(want)) => match op {
+            Compare::Eq | Compare::Contains => matrix_eq(got, want),
+            Compare::NotEq | Compare::NotContains => !matrix_eq(got, want),
+            _ => false,
+        },
+        _ => match (as_number(got), as_number(want), got, want) {
+            // A range contains a number, and equals another range.
+            (_, _, V::Range(range), other) | (_, _, other, V::Range(range))
+                if matches!(op, Compare::Contains | Compare::NotContains) =>
+            {
+                let inside = as_number(other)
+                    .is_some_and(|n| n >= range.begin && n <= range.end);
+                inside == matches!(op, Compare::Contains)
+            }
+            (Some(got), Some(want), _, _) => match op {
+                Compare::Eq | Compare::Contains => got == want,
+                Compare::NotEq | Compare::NotContains => got != want,
+                Compare::Less => got < want,
+                Compare::LessEq => got <= want,
+                Compare::More => got > want,
+                Compare::MoreEq => got >= want,
+            },
+            _ => false,
+        },
+    }
+}
+
+fn matrix_eq(a: &Matrix, b: &Matrix) -> bool {
+    a.xx == b.xx && a.xy == b.xy && a.yx == b.yx && a.yy == b.yy
+}
+
+/// Substring search that ignores case, the way `FcStrStrIgnoreCase` does.
+fn contains_folded(haystack: &str, needle: &str) -> bool {
+    let fold = |s: &str| casefold::fold_str(s).collect::<String>();
+    fold(haystack).contains(&fold(needle))
+}
