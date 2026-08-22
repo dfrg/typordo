@@ -20,7 +20,7 @@
 //! `<remap-dir>` and its `salt` attribute are unhandled, so a sandboxed
 //! configuration that remaps font paths will not find its caches.
 
-use std::collections::HashSet;
+use std::collections::{HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 
 use crate::cache::Cache;
@@ -487,7 +487,7 @@ impl Config {
     pub fn caches(&self) -> Caches<'_> {
         Caches {
             config: self,
-            pending: self.font_dirs.iter().rev().filter_map(|d| path_to_string(d)).collect(),
+            pending: self.font_dirs.iter().filter_map(|d| path_to_string(d)).collect(),
             seen: HashSet::new(),
         }
     }
@@ -697,10 +697,13 @@ impl Config {
 /// Iterator over every cache a [`Config`] reaches.
 ///
 /// Directories are visited breadth-first from the configured roots, following
-/// the subdirectory list each cache carries.
+/// the subdirectory list each cache carries, in the order the cache lists
+/// them. The order is not cosmetic: matching breaks exact ties by taking the
+/// font it saw first, so it has to agree with the order fontconfig builds its
+/// own font set in.
 pub struct Caches<'a> {
     config: &'a Config,
-    pending: Vec<String>,
+    pending: VecDeque<String>,
     seen: HashSet<String>,
 }
 
@@ -708,7 +711,7 @@ impl Iterator for Caches<'_> {
     type Item = (String, Cache);
 
     fn next(&mut self) -> Option<(String, Cache)> {
-        while let Some(dir) = self.pending.pop() {
+        while let Some(dir) = self.pending.pop_front() {
             if !self.seen.insert(dir.clone()) {
                 continue;
             }
@@ -723,7 +726,7 @@ impl Iterator for Caches<'_> {
                     // A rejected directory prunes the walk, the same way
                     // fontconfig filters subdirectories as it descends.
                     if !self.seen.contains(subdir) && self.config.accepts_filename(subdir) {
-                        self.pending.push(subdir.to_string());
+                        self.pending.push_back(subdir.to_string());
                     }
                 }
             }
