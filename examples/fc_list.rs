@@ -1,56 +1,59 @@
-//! Dump every font in a directory of cache files, for comparison with `fc-list`.
+//! List the fonts this system is configured to have, for comparison with `fc-list`.
 //!
 //! ```text
-//! cargo run --example fc_list -- ~/.cache/fontconfig
-//! cargo run --example fc_list -- ~/.cache/fontconfig --format file
+//! cargo run --example fc_list
+//! cargo run --example fc_list -- --format file
+//! cargo run --example fc_list -- --config /etc/fonts/fonts.conf --dirs
 //! ```
-//!
-//! This deliberately reads whatever caches are in the directory rather than
-//! consulting a configuration, so it is a check on the cache reader alone.
-//! Which directories a system actually considers is a configuration question,
-//! and answering it is the next slice of work, not this one.
 
 use std::collections::BTreeSet;
 use std::path::PathBuf;
 
-use fontconf::{Cache, Object, Value};
+use fontconf::{Config, Object, Pattern, Value};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let mut args = std::env::args().skip(1);
-    let dir = PathBuf::from(args.next().unwrap_or_else(|| {
-        eprintln!("usage: fc_list <cache-dir> [--format file|family|full] [--stats]");
-        std::process::exit(2)
-    }));
-
     let mut format = "full".to_string();
-    let mut stats = false;
+    let mut config_path: Option<PathBuf> = None;
+    let (mut stats, mut show_dirs) = (false, false);
+
+    let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--format" => format = args.next().unwrap_or_default(),
+            "--config" => config_path = args.next().map(PathBuf::from),
+            "--dirs" => show_dirs = true,
             "--stats" => stats = true,
             other => return Err(format!("unknown argument {other}").into()),
         }
     }
 
-    let mut caches = Vec::new();
-    for entry in std::fs::read_dir(&dir)? {
-        let path = entry?.path();
-        if path.extension().and_then(|e| e.to_str()).is_some_and(|e| e.starts_with("cache-")) {
-            caches.push(path);
+    let config = match &config_path {
+        Some(path) => Config::load_from(path)?,
+        None => Config::load()?,
+    };
+
+    if show_dirs {
+        println!("config files ({}):", config.files().len());
+        for file in config.files() {
+            println!("  {}", file.display());
         }
+        println!("font dirs:");
+        for dir in config.font_dirs() {
+            println!("  {}", dir.display());
+        }
+        println!("cache dirs:");
+        for dir in config.cache_dirs() {
+            println!("  {}", dir.display());
+        }
+        return Ok(());
     }
-    caches.sort();
 
     let mut lines = BTreeSet::new();
-    let (mut patterns, mut bytes) = (0usize, 0usize);
+    let (mut caches, mut patterns) = (0usize, 0usize);
 
-    for path in &caches {
-        let cache = Cache::open(path)?;
-        // Strict walk: a cache that does not hold up should fail loudly here
-        // rather than quietly contributing fewer fonts than it has.
-        cache.validate().map_err(|e| format!("{}: {e}", path.display()))?;
-        bytes += cache.as_bytes().len();
-
+    for (dir, cache) in config.caches() {
+        cache.validate().map_err(|e| format!("{dir}: {e}"))?;
+        caches += 1;
         for font in cache.fonts()? {
             patterns += 1;
             let file = font.string(Object::File).unwrap_or("<no file>");
@@ -80,9 +83,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     if stats {
         eprintln!(
-            "{} caches, {} bytes, {} patterns, {} distinct lines",
-            caches.len(),
-            bytes,
+            "{} config files, {} font dirs, {} caches, {} patterns, {} lines",
+            config.files().len(),
+            config.font_dirs().len(),
+            caches,
             patterns,
             lines.len()
         );
@@ -91,7 +95,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 /// Every string value of `object`, comma separated, the way `fc-list` prints them.
-fn join(font: fontconf::Pattern<'_>, object: Object) -> String {
+fn join(font: Pattern<'_>, object: Object) -> String {
     let mut out = String::new();
     let Some(element) = font.get(object) else {
         return out;

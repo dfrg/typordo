@@ -1,0 +1,1 @@
+<fontconfig><dir>/synthetic/ignored</dir></fontconfig>

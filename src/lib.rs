@@ -55,12 +55,16 @@
 
 mod bytes;
 mod cache;
+mod config;
 mod error;
+mod md5;
 mod object;
 mod pattern;
 mod value;
+mod xml;
 
 pub use cache::{Cache, Fonts, Subdirs, MAGIC_ALLOC, MAGIC_MMAP, VERSION};
+pub use config::{Caches, Config, ConfigError, ARCHITECTURE};
 pub use error::{Error, Result};
 pub use object::Object;
 pub use pattern::{Bindings, Element, Elements, Pattern, Values};
