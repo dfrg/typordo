@@ -352,3 +352,67 @@ fn all_instances_share_one_coverage() {
     assert_eq!(charsets.len(), 6);
     assert!(charsets.windows(2).all(|w| w[0] == w[1]));
 }
+
+// --- languages ------------------------------------------------------------
+
+fn cantarell_langs(cache: &Cache) -> fontconf::LangSet<'_> {
+    let font = cache.fonts().unwrap().next().unwrap();
+    match font.value(Object::Lang) {
+        Some(Value::LangSet(langs)) => langs,
+        other => panic!("expected a langset, got {other:?}"),
+    }
+}
+
+/// The leading names were checked against `fc-list --format='%{lang}'`, which
+/// reads the same caches. `fc-query` would rescan the font file instead and
+/// can legitimately disagree with what the cache recorded.
+#[test]
+fn a_langset_decodes_to_the_languages_fontconfig_reports() {
+    let cache = cantarell();
+    let langs = cantarell_langs(&cache);
+    langs.validate().expect("langset should be well formed");
+    assert!(langs.is_consistent(), "bitmap should fit our language table");
+
+    let names: Vec<_> = langs.langs().collect();
+    assert!(names.contains(&"en"), "{names:?}");
+    assert!(names.contains(&"de"), "{names:?}");
+    assert!(!names.contains(&"ja"), "a Latin font should not claim Japanese");
+    assert_eq!(langs.len(), names.len());
+    assert!(!langs.is_empty());
+}
+
+/// Languages come out in bit order, which is fontconfig's declaration order
+/// and is *not* alphabetical. `bm` before `be` is the giveaway.
+#[test]
+fn languages_are_reported_in_bit_order_not_alphabetically() {
+    use fontconf::langs::LANGS;
+    let bm = LANGS.iter().position(|l| *l == "bm").unwrap();
+    let be = LANGS.iter().position(|l| *l == "be").unwrap();
+    assert!(bm < be, "bit order should be declaration order");
+
+    let cache = cantarell();
+    let names: Vec<_> = cantarell_langs(&cache).langs().collect();
+    let mut sorted = names.clone();
+    sorted.sort_unstable();
+    assert_ne!(names, sorted, "output should not be alphabetical");
+}
+
+/// `has_lang` is the question matching asks: an exact language is best, the
+/// same language elsewhere is a near miss, an unrelated one is worst.
+#[test]
+fn has_lang_grades_a_request_rather_than_answering_yes_or_no() {
+    use fontconf::LangResult;
+    let cache = cantarell();
+    let langs = cantarell_langs(&cache);
+
+    assert_eq!(langs.has_lang("en"), LangResult::Equal);
+    // The font records plain "en", so a regional request is a near miss.
+    assert_eq!(langs.has_lang("en-US"), LangResult::DifferentTerritory);
+    assert_eq!(langs.has_lang("ja"), LangResult::DifferentLang);
+    // A tag fontconfig has never heard of cannot match anything.
+    assert_eq!(langs.has_lang("not-a-language"), LangResult::DifferentLang);
+
+    // `contains` is the exact-table version and does not grade.
+    assert!(langs.contains("en"));
+    assert!(!langs.contains("en-US"));
+}

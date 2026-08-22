@@ -141,10 +141,10 @@ impl Cache {
         // The array of patterns is itself an encoded offset from the set. A
         // directory with no fonts stores a null array rather than an empty one.
         let Some(array) = data.follow(set, set + FS_FONTS)? else {
-            return Ok(Fonts { data, raw: &self.bytes, set, array: 0, index: 0, len: 0 });
+            return Ok(Fonts { data, set, array: 0, index: 0, len: 0 });
         };
         let len = data.array(array, count, 8)?;
-        Ok(Fonts { data, raw: &self.bytes, set, array, index: 0, len })
+        Ok(Fonts { data, set, array, index: 0, len })
     }
 
     /// Walk every pattern, element and value, reporting the first problem.
@@ -219,7 +219,6 @@ impl ExactSizeIterator for Subdirs<'_> {}
 #[derive(Clone)]
 pub struct Fonts<'a> {
     data: Bytes<'a>,
-    raw: &'a [u8],
     set: usize,
     array: usize,
     index: usize,
@@ -232,7 +231,7 @@ impl<'a> Fonts<'a> {
         // Pattern offsets are encoded relative to the font set, not to the
         // slot holding them: see `FcFontSetFont` in `fcint.h`.
         let at = self.data.follow(self.set, slot)?.ok_or(Error::NotAnOffset(0))?;
-        Pattern::read(self.data, self.raw, at)
+        Pattern::read(self.data, at)
     }
 }
 

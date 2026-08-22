@@ -1,5 +1,6 @@
 use crate::bytes::Bytes;
 use crate::charset::CharSet;
+use crate::langset::LangSet;
 use crate::error::{Error, Result};
 
 /// A 2x2 transform, fontconfig's `FcMatrix`.
@@ -54,7 +55,7 @@ pub enum Value<'a> {
     Matrix(Matrix),
     /// The characters a font covers.
     CharSet(CharSet<'a>),
-    /// A set of supported languages. Not yet decoded — see [`LangSet`].
+    /// The languages a font can write.
     LangSet(LangSet<'a>),
     /// A span of numbers, as a variable axis reports its extent.
     Range(Range),
@@ -97,43 +98,6 @@ impl<'a> Value<'a> {
     }
 }
 
-/// A set of languages a font supports, left undecoded for now.
-///
-/// # Why this is not decoded yet
-///
-/// A `FcLangSet` is a bitmap over fontconfig's own language list, which is
-/// generated from `fc-lang/*.orth` and ordered by sorted filename. A bit
-/// index therefore means nothing without the exact list the *writing* build
-/// used, and the cache does not record which that was.
-///
-/// The cache format version is not a sufficient key. Version 9 spans at least
-/// three releases with two different lists:
-///
-/// | release | cache version | languages |
-/// | --- | --- | --- |
-/// | 2.15.0 | 9 | 279 |
-/// | 2.16.0 | 9 | 281 |
-/// | 2.17.0 | 9 | 281 |
-///
-/// 2.16.0 added `cop` and `got`, which sort into the middle, shifting every
-/// index after them. Upstream added an `fc_version` field to the cache header
-/// after 2.17 for related reasons, but version 9 headers do not carry it.
-///
-/// So decoding this needs either a table keyed by the writing fontconfig
-/// release -- which a version 9 cache cannot identify -- or the ability to
-/// rebuild the cache ourselves and stop depending on the writer's table.
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub struct LangSet<'a> {
-    pub(crate) data: &'a [u8],
-    pub(crate) at: usize,
-}
-
-impl std::fmt::Debug for LangSet<'_> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "LangSet(@{})", self.at)
-    }
-}
-
 /// How strongly a value is held, fontconfig's `FcValueBinding`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Binding {
@@ -165,7 +129,7 @@ pub(crate) fn binding_at(data: Bytes<'_>, node: usize) -> Result<Binding> {
 /// Offsets inside a value are relative to the value itself, not to the field
 /// holding them — `FcValueString` in `fcint.h` passes the whole `FcValue` as
 /// the base.
-pub(crate) fn value_at<'a>(data: Bytes<'a>, raw: &'a [u8], at: usize) -> Result<Value<'a>> {
+pub(crate) fn value_at<'a>(data: Bytes<'a>, at: usize) -> Result<Value<'a>> {
     let union = at + UNION;
     Ok(match data.i32(at)? {
         0 => Value::Void,
@@ -193,7 +157,7 @@ pub(crate) fn value_at<'a>(data: Bytes<'a>, raw: &'a [u8], at: usize) -> Result<
         // and must never appear in a file.
         8 => {
             let l = data.follow(at, union)?.ok_or(Error::BadOffset { base: at, delta: 0 })?;
-            Value::LangSet(LangSet { data: raw, at: l })
+            Value::LangSet(LangSet { data, at: l })
         }
         9 => {
             let r = data.follow(at, union)?.ok_or(Error::BadOffset { base: at, delta: 0 })?;

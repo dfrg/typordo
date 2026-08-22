@@ -108,13 +108,17 @@ done
 echo "=== the empty query ==="
 check ""
 
-echo "=== lang, which this slice does not score ==="
-lang_ok=0; lang_bad=0
-for q in ":lang=en" ":lang=ar" ":lang=ja" ":lang=fa" "DejaVu Sans:lang=ru"; do
-  before=$bad; check "$q"
-  if [ $bad -gt $before ]; then lang_bad=$((lang_bad+1)); else lang_ok=$((lang_ok+1)); fi
+echo "=== language requests ==="
+for q in ":lang=en" ":lang=ar" ":lang=ja" ":lang=ko" ":lang=fa" ":lang=ru"          ":lang=zh-cn" ":lang=zh-tw" ":lang=he" ":lang=hi" ":lang=th" ":lang=el"          ":lang=vi" ":lang=tr" ":lang=ur" ":lang=bn" ":lang=ta" ":lang=km"          ":lang=en-us" ":lang=en-gb" ":lang=pt-br" ":lang=zh-hk" ":lang=und"          ":lang=xx" ":lang=nonsense"          "DejaVu Sans:lang=ru" "Noto Sans:lang=ar" "serif:lang=ja"          "sans-serif:lang=ko" "monospace:lang=en" ; do
+  check "$q"
 done
-echo "  lang queries: $lang_ok identical, $lang_bad differing (expected to differ)"
+
+echo "=== language crossed with weight and slant ==="
+for l in en ar ja fa ru zh-cn; do
+  for p in "weight=200" "slant=100" "weight=40:slant=110"; do
+    check ":lang=$l:$p"
+  done
+done
 
 echo
 echo "match parity: $ok identical, $tied tie-broken differently, $bad genuinely differing"

@@ -12,6 +12,7 @@
 use crate::casefold;
 use crate::charset::CharSet;
 use crate::glob;
+use crate::langset;
 use crate::object::Object;
 use crate::pattern::Pattern;
 use crate::query::Query;
@@ -184,10 +185,7 @@ fn matcher(object: Object) -> Option<Matcher> {
         Object::NamedInstance => (compare_bool, P::NamedInstance, P::NamedInstance),
         Object::File => (compare_filename, P::File, P::File),
         Object::Charset => (compare_charset, P::CharSet, P::CharSet),
-        // `lang` needs fontconfig's language table to compare a langset; see
-        // `LangSet` for why that is not embedded yet. Until then a language
-        // contributes nothing rather than a wrong distance.
-        Object::Lang => return None,
+        Object::Lang => (compare_lang, P::Lang, P::Lang),
         _ => return None,
     };
     Some(Matcher { compare, strong, weak })
@@ -331,6 +329,22 @@ fn compare_charset(a: &Value<'_>, b: &Value<'_>) -> Option<f64> {
 
 fn subtract_count(want: &CharSet<'_>, got: &CharSet<'_>) -> usize {
     want.chars().filter(|c| !got.contains(*c)).count()
+}
+
+/// A language request scores by how close the font gets: the same language
+/// is 0, the same language in another region is 1, and unrelated is 2.
+///
+/// Either side may be a langset or a plain tag, which is why this has four
+/// arms rather than one.
+fn compare_lang(a: &Value<'_>, b: &Value<'_>) -> Option<f64> {
+    let result = match (a, b) {
+        (Value::LangSet(a), Value::LangSet(b)) => a.compare(b),
+        (Value::LangSet(a), Value::String(b)) => a.has_lang(b),
+        (Value::String(a), Value::LangSet(b)) => b.has_lang(a),
+        (Value::String(a), Value::String(b)) => langset::compare_lang(a, b),
+        _ => return None,
+    };
+    Some(result as u8 as f64)
 }
 
 /// Filenames score by how loosely they match: identical, same but for case,

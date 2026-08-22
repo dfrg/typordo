@@ -16,7 +16,6 @@ const ELT_VALUES: usize = 8;
 #[derive(Clone, Copy)]
 pub struct Pattern<'a> {
     data: Bytes<'a>,
-    raw: &'a [u8],
     /// Start of the element array, already resolved and bounds-checked.
     elts: usize,
     /// Number of elements, already checked to fit in the file.
@@ -25,11 +24,11 @@ pub struct Pattern<'a> {
 
 impl<'a> Pattern<'a> {
     /// Read the pattern at `at`, checking its element array fits in the file.
-    pub(crate) fn read(data: Bytes<'a>, raw: &'a [u8], at: usize) -> Result<Self> {
+    pub(crate) fn read(data: Bytes<'a>, at: usize) -> Result<Self> {
         let count = data.count(at)?;
         let elts = data.resolve(at, data.i64(at + PATTERN_ELTS)?)?;
         let len = data.array(elts, count, ELT_SIZE)?;
-        Ok(Self { data, raw, elts, len })
+        Ok(Self { data, elts, len })
     }
 
     /// How many distinct properties this pattern carries.
@@ -86,7 +85,7 @@ impl<'a> Pattern<'a> {
     /// Infallible: [`Pattern::read`] already proved the whole array is inside
     /// the file, so the header of every element is readable.
     fn element_at(&self, index: usize) -> Element<'a> {
-        Element { data: self.data, raw: self.raw, at: self.elts + index * ELT_SIZE }
+        Element { data: self.data, at: self.elts + index * ELT_SIZE }
     }
 }
 
@@ -135,7 +134,6 @@ impl ExactSizeIterator for Elements<'_> {}
 #[derive(Clone, Copy)]
 pub struct Element<'a> {
     data: Bytes<'a>,
-    raw: &'a [u8],
     at: usize,
 }
 
@@ -160,7 +158,6 @@ impl<'a> Element<'a> {
     pub fn values(&self) -> Values<'a> {
         Values {
             data: self.data,
-            raw: self.raw,
             next: self.head().ok().flatten(),
             budget: self.budget(),
         }
@@ -172,7 +169,7 @@ impl<'a> Element<'a> {
         let mut budget = self.budget();
         while let Some(at) = node {
             budget = budget.checked_sub(1).ok_or(Error::ChainTooLong)?;
-            value::value_at(self.data, self.raw, at + NODE_VALUE)?;
+            value::value_at(self.data, at + NODE_VALUE)?;
             value::binding_at(self.data, at)?;
             node = self.data.follow(at, at)?;
         }
@@ -209,7 +206,6 @@ impl std::fmt::Debug for Element<'_> {
 #[derive(Clone)]
 pub struct Values<'a> {
     data: Bytes<'a>,
-    raw: &'a [u8],
     next: Option<usize>,
     budget: usize,
 }
@@ -223,7 +219,7 @@ impl<'a> Values<'a> {
     fn step(&mut self) -> Option<(usize, Value<'a>)> {
         let at = self.next?;
         self.budget = self.budget.checked_sub(1)?;
-        let value = value::value_at(self.data, self.raw, at + NODE_VALUE).ok()?;
+        let value = value::value_at(self.data, at + NODE_VALUE).ok()?;
         self.next = self.data.follow(at, at).ok().flatten();
         Some((at, value))
     }
