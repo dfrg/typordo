@@ -163,3 +163,52 @@ fn an_unmatched_query_is_left_alone() {
     config.substitute(&mut query);
     assert_eq!(query, before);
 }
+
+// --- custom properties and name targets -----------------------------------
+
+/// A config can assign to a name fontconfig does not define, and read it back
+/// in a later rule. `10-scale-bitmap-fonts.conf` computes
+/// `pixelsizefixupfactor` this way, so dropping unknown names breaks it.
+#[test]
+fn a_config_can_invent_a_property_and_read_it_back() {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/rules/custom.conf");
+    let config = Config::load_from(&path).unwrap();
+
+    let mut query = Query::new();
+    query.add(Object::Family, "Scratch");
+    query.add(Object::PixelSize, 24.0);
+    config.substitute(&mut query);
+
+    // The first rule stored a factor, the second read it back into weight.
+    let custom = query.custom("scratchfactor").expect("custom property kept");
+    assert_eq!(custom.len(), 1);
+    assert_eq!(custom[0].0, OwnedValue::Double(3.0));
+    assert_eq!(query.number(Object::Weight), Some(72.0));
+}
+
+/// A `<name>` with no `target` means the pattern being edited, which is not
+/// the same as `target="pattern"`. Reading the query instead makes a
+/// font-target rule compute from the wrong side.
+#[test]
+fn a_bare_name_reads_the_pattern_being_edited() {
+    use fontconf::{Expr, MatchKind, Property};
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/rules/custom.conf");
+    let config = Config::load_from(&path).unwrap();
+
+    let bare = config.rules().iter().flat_map(|r| &r.steps).find_map(|step| match step {
+        fontconf::Step::Edit(edit) => match &edit.expr {
+            Expr::Binary(_, left, _) => match **left {
+                Expr::Field(kind, _) => Some(kind),
+                _ => None,
+            },
+            _ => None,
+        },
+        _ => None,
+    });
+    assert_eq!(bare, Some(MatchKind::Default), "a bare <name> must not be Pattern");
+    assert_eq!(
+        Property::parse("pixelsizefixupfactor"),
+        Property::Custom("pixelsizefixupfactor".into())
+    );
+    assert_eq!(Property::parse("family"), Property::Known(Object::Family));
+}

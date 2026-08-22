@@ -11,7 +11,7 @@
 
 use std::path::PathBuf;
 
-use fontconf::{Config, Object, Pattern, Query, Score};
+use fontconf::{render_prepare, Config, Object, OwnedValue, Pattern, Query, Score};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut config_path: Option<PathBuf> = None;
@@ -48,11 +48,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .filter(|font| config.accepts(font))
         .collect();
 
-    let field = match format.as_str() {
-        "family" => Object::Family,
-        "style" => Object::Style,
-        _ => Object::File,
-    };
+    let field = Object::from_name(&format)
+        .ok_or_else(|| format!("unknown property {format}"))?;
 
     // One query per line on stdin, one answer per line out. Loading every
     // cache costs more than matching does, so a harness running hundreds of
@@ -67,7 +64,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             config.substitute(&mut query);
             query.default_substitute();
             match fontconf::best(&query, fonts.clone()) {
-                Some((best, _)) => println!("{}", best.string(field).unwrap_or("")),
+                Some((best, _)) => {
+                    let prepared = fontconf::render_prepare(&config, &query, &best);
+                    println!("{}", show(&prepared, field));
+                }
                 None => println!(),
             }
         }
@@ -122,8 +122,42 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Err("no font matched".into());
     };
 
-    println!("{}", best.string(field).unwrap_or(""));
+    let prepared = render_prepare(&config, &query, &best);
+    println!("{}", show(&prepared, field));
     Ok(())
+}
+
+/// Render one property the way `fc-match --format='%{field}'` does.
+fn show(pattern: &Query, field: Object) -> String {
+    let Some(element) = pattern.get(field) else {
+        return String::new();
+    };
+    element
+        .values()
+        .map(|(value, _)| match value {
+            OwnedValue::String(s) => s.clone(),
+            OwnedValue::Int(i) => i.to_string(),
+            OwnedValue::Double(d) => format_g(*d),
+            OwnedValue::Bool(b) => if *b { "True" } else { "False" }.to_string(),
+            OwnedValue::Range(r) => format!("[{} {}]", format_g(r.begin), format_g(r.end)),
+            OwnedValue::Matrix(m) => {
+                format!("[{} {}; {} {}]", m.xx, m.xy, m.yx, m.yy)
+            }
+            OwnedValue::Void => String::new(),
+        })
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
+/// C's `%g`: six significant digits, no trailing zeroes.
+fn format_g(value: f64) -> String {
+    if value == value.trunc() && value.abs() < 1e15 {
+        return format!("{}", value as i64);
+    }
+    let magnitude = value.abs().log10().floor() as i32;
+    let decimals = (5 - magnitude).max(0) as usize;
+    let text = format!("{value:.decimals$}");
+    text.trim_end_matches('0').trim_end_matches('.').to_string()
 }
 
 fn format_score(score: &Score) -> String {

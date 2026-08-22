@@ -77,6 +77,46 @@ impl From<String> for OwnedValue {
     }
 }
 
+/// A property key: one of the built-in [`Object`]s, or a name a configuration
+/// file invented.
+///
+/// Fontconfig lets a config assign to any name; unknown ones get ids above the
+/// built-in range and act as scratch variables that rules pass between
+/// themselves. `10-scale-bitmap-fonts.conf` computes `pixelsizefixupfactor`
+/// this way and reads it back two rules later.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub enum Property {
+    /// One of the properties fontconfig defines.
+    Known(Object),
+    /// A name only this configuration knows.
+    Custom(String),
+}
+
+impl Property {
+    /// Resolve a name, preferring the built-in meaning.
+    pub fn parse(name: &str) -> Self {
+        match Object::from_name(name) {
+            Some(object) => Self::Known(object),
+            None => Self::Custom(name.to_string()),
+        }
+    }
+}
+
+impl From<Object> for Property {
+    fn from(object: Object) -> Self {
+        Self::Known(object)
+    }
+}
+
+impl std::fmt::Display for Property {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Known(object) => object.fmt(f),
+            Self::Custom(name) => f.write_str(name),
+        }
+    }
+}
+
 /// A pattern being built up and matched against.
 ///
 /// Properties are kept sorted by [`Object::id`], which is the order the cache
@@ -84,6 +124,10 @@ impl From<String> for OwnedValue {
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Query {
     elements: Vec<Element>,
+    /// Properties a configuration invented, kept apart from the built-in ones
+    /// because nothing scores against them: they exist only so rules can pass
+    /// values to later rules.
+    custom: Vec<(String, Vec<(OwnedValue, Binding)>)>,
 }
 
 /// One property of a query, with every value held against it.
@@ -205,99 +249,70 @@ impl Query {
         self.elements.binary_search_by_key(&object.id(), |e| e.object.id())
     }
 
+    // --- properties a configuration invented -----------------------------
+
+    /// The values held against a custom property.
+    pub fn custom(&self, name: &str) -> Option<&[(OwnedValue, Binding)]> {
+        self.custom.iter().find(|(n, _)| n == name).map(|(_, v)| v.as_slice())
+    }
+
+    /// The value list for `property`, creating it if needed.
+    pub(crate) fn values_mut(
+        &mut self,
+        property: &Property,
+    ) -> &mut Vec<(OwnedValue, Binding)> {
+        match property {
+            Property::Known(object) => {
+                let at = match self.position(*object) {
+                    Ok(at) => at,
+                    Err(at) => {
+                        self.elements
+                            .insert(at, Element { object: *object, values: Vec::new() });
+                        at
+                    }
+                };
+                &mut self.elements[at].values
+            }
+            Property::Custom(name) => {
+                if let Some(at) = self.custom.iter().position(|(n, _)| n == name) {
+                    return &mut self.custom[at].1;
+                }
+                self.custom.push((name.clone(), Vec::new()));
+                let last = self.custom.len() - 1;
+                &mut self.custom[last].1
+            }
+        }
+    }
+
+    /// The values held against `property`, if it has any.
+    pub(crate) fn values_of(&self, property: &Property) -> Option<&[(OwnedValue, Binding)]> {
+        match property {
+            Property::Known(object) => self.get(*object).map(|e| e.values.as_slice()),
+            Property::Custom(name) => self.custom(name),
+        }
+    }
+
+    /// Drop `property` entirely.
+    pub(crate) fn remove_property(&mut self, property: &Property) {
+        match property {
+            Property::Known(object) => {
+                self.remove(*object);
+            }
+            Property::Custom(name) => self.custom.retain(|(n, _)| n != name),
+        }
+    }
+
+    /// Discard a property that has been emptied by an edit.
+    pub(crate) fn prune(&mut self, property: &Property) {
+        if self.values_of(property).is_some_and(|v| v.is_empty()) {
+            self.remove_property(property);
+        }
+    }
+
     /// Set `object` to exactly this one value, replacing anything there.
     fn set(&mut self, object: Object, value: impl Into<OwnedValue>) {
         self.remove(object);
         self.add(object, value);
-    }
-
-    // --- the operations configuration edits need --------------------------
-
-    /// Replace every value of `object` with `values`.
-    pub(crate) fn set_all(
-        &mut self,
-        object: Object,
-        values: Vec<OwnedValue>,
-        binding: Binding,
-    ) {
-        self.remove(object);
-        self.insert_at(object, 0, values, binding);
-    }
-
-    /// Insert `values` at `index`, keeping everything already there.
-    pub(crate) fn insert_at(
-        &mut self,
-        object: Object,
-        index: usize,
-        values: Vec<OwnedValue>,
-        binding: Binding,
-    ) {
-        if values.is_empty() {
-            return;
-        }
-        let at = match self.position(object) {
-            Ok(at) => at,
-            Err(at) => {
-                self.elements.insert(at, Element { object, values: Vec::new() });
-                at
-            }
-        };
-        let slot = &mut self.elements[at];
-        let index = index.min(slot.values.len());
-        let tail = slot.values.split_off(index);
-        slot.values.extend(values.into_iter().map(|v| (v, binding)));
-        slot.values.extend(tail);
-    }
-
-    /// Insert `values` before everything already held against `object`.
-    pub(crate) fn prepend(
-        &mut self,
-        object: Object,
-        values: Vec<OwnedValue>,
-        binding: Binding,
-    ) {
-        self.insert_at(object, 0, values, binding);
-    }
-
-    /// Add `values` after everything already held against `object`.
-    pub(crate) fn append(
-        &mut self,
-        object: Object,
-        values: Vec<OwnedValue>,
-        binding: Binding,
-    ) {
-        let end = self.get(object).map_or(0, |e| e.values.len());
-        self.insert_at(object, end, values, binding);
-    }
-
-    /// Replace the value at `index` with `values`.
-    pub(crate) fn replace_at(
-        &mut self,
-        object: Object,
-        index: usize,
-        values: Vec<OwnedValue>,
-        binding: Binding,
-    ) {
-        // Insert after the marked value, then drop the marked value, so the
-        // replacement lands exactly where the old one was.
-        self.insert_at(object, index + 1, values, binding);
-        self.remove_at(object, index);
-    }
-
-    /// The binding of the value at `index`.
-    pub(crate) fn binding_at(&self, object: Object, index: usize) -> Option<Binding> {
-        self.get(object)?.values.get(index).map(|(_, b)| *b)
-    }
-
-    /// Remove the value at `index`, and the property if it becomes empty.
-    pub(crate) fn remove_at(&mut self, object: Object, index: usize) {
-        let Ok(at) = self.position(object) else { return };
-        if index < self.elements[at].values.len() {
-            self.elements[at].values.remove(index);
-        }
-        if self.elements[at].values.is_empty() {
-            self.elements.remove(at);
-        }
     }
 
     /// Fill in the values fontconfig assumes when a query does not say.
@@ -306,10 +321,8 @@ impl Query {
     /// that never mentions weight still has to score against every font's
     /// weight, and it does so as `normal`.
     ///
-    /// Two of fontconfig's defaults are deliberately not applied here, since
-    /// both name the calling process or its environment rather than the font:
-    /// `prgname`, and the `namelang` fallback chain that fills `familylang`,
-    /// `stylelang` and `fullnamelang`.
+    /// `prgname` is deliberately not filled in: it names the calling process
+    /// rather than anything about fonts, and nothing here scores against it.
     pub fn default_substitute(&mut self) {
         if !self.contains(Object::Weight) {
             self.add(Object::Weight, 80); // FC_WEIGHT_NORMAL
@@ -357,7 +370,49 @@ impl Query {
         if !self.contains(Object::HintStyle) {
             self.add(Object::HintStyle, 3); // FC_HINT_FULL
         }
+
+        // The name languages decide which localization of a family name a
+        // prepared pattern reports, so they have to be here even though
+        // nothing scores against them directly.
+        let namelang = match self.string(Object::Namelang) {
+            Some(lang) => lang.to_string(),
+            None => {
+                let lang = default_lang();
+                self.add(Object::Namelang, lang.as_str());
+                lang
+            }
+        };
+        for object in [Object::Familylang, Object::Stylelang, Object::Fullnamelang] {
+            if !self.contains(object) {
+                self.add(object, namelang.as_str());
+                // The English fallback is "en-us" rather than "en" on
+                // purpose: fontconfig notes that a bare "en" would score as an
+                // exact match against a font's "en" and outrank the language
+                // actually asked for.
+                self.add_weak(object, "en-us");
+            }
+        }
     }
+}
+
+/// The language fontconfig assumes when a query does not name one.
+///
+/// Taken from the environment the same way `FcGetDefaultLangs` does, with the
+/// encoding and modifier suffixes stripped, and falling back to English.
+fn default_lang() -> String {
+    for var in ["FC_LANG", "LC_ALL", "LC_CTYPE", "LANG"] {
+        let Ok(value) = std::env::var(var) else { continue };
+        let tag = value
+            .split(['.', '@'])
+            .next()
+            .unwrap_or("")
+            .replace('_', "-");
+        if tag.is_empty() || tag == "C" || tag == "POSIX" {
+            continue;
+        }
+        return tag.to_lowercase();
+    }
+    "en".to_string()
 }
 
 impl fmt::Display for Query {

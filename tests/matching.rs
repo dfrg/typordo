@@ -251,3 +251,100 @@ fn a_score_of_all_zeroes_beats_nothing_and_loses_to_nothing() {
     assert!(!score.beats(&score), "a score must not beat itself");
     assert_eq!(score.as_slice().len(), fontconf::PRIORITIES);
 }
+
+// --- preparing the answer -------------------------------------------------
+
+fn plain_config() -> fontconf::Config {
+    // A config with no rules at all, so prepare is tested on its own.
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/config/fonts.conf");
+    fontconf::Config::load_from(&path).expect("fixture config")
+}
+
+/// The answer is a merge, not the font's cache entry: properties both sides
+/// have collapse to the value that matched, and the query's own settings
+/// survive even though no font mentions them.
+#[test]
+fn preparing_merges_the_font_and_the_query() {
+    let cache = cantarell();
+    let config = plain_config();
+    let q = query(|q| {
+        q.add(Object::Family, "Cantarell");
+        q.add(Object::Weight, 200);
+        q.add(Object::Dpi, 96.0);
+    });
+    let fonts: Vec<_> = cache.fonts().unwrap().collect();
+    let (best, _) = fontconf::best(&q, fonts).unwrap();
+    let prepared = fontconf::render_prepare(&config, &q, &best);
+
+    // From the font.
+    assert_eq!(prepared.string(Object::Family), Some("Cantarell"));
+    assert_eq!(prepared.string(Object::Style), Some("Bold"));
+    assert_eq!(prepared.number(Object::Weight), Some(200.0));
+    // Only the query had these, and they still have to come out.
+    assert_eq!(prepared.number(Object::Dpi), Some(96.0));
+    assert!(prepared.contains(Object::HintStyle));
+}
+
+/// A variable font's weight is a range in the cache. The prepared pattern has
+/// to report a single number, and record the axis it pinned so a renderer can
+/// instantiate the same thing.
+#[test]
+fn preparing_pins_a_variable_axis() {
+    let cache = cantarell();
+    let config = plain_config();
+    let variable = cache
+        .fonts()
+        .unwrap()
+        .find(|f| f.value(Object::Variable) == Some(fontconf::Value::Bool(true)))
+        .expect("a variable pattern");
+
+    let q = query(|q| {
+        q.add(Object::Family, "Cantarell");
+        q.add(Object::Weight, 123);
+    });
+    let prepared = fontconf::render_prepare(&config, &q, &variable);
+
+    // The range collapsed to the requested weight, not to an endpoint.
+    assert_eq!(prepared.number(Object::Weight), Some(123.0));
+    let variations = prepared.string(Object::FontVariations).unwrap_or("");
+    assert!(variations.starts_with("wght="), "expected an axis, got {variations:?}");
+    // The axis is in OpenType units, so 123 on fontconfig's scale is not 123.
+    assert!(!variations.contains("=123"), "weight should be converted: {variations}");
+}
+
+/// A weight outside the font's range is pulled to the nearest end of it,
+/// rather than reported as asked for.
+#[test]
+fn a_request_outside_the_axis_clamps_to_it() {
+    let cache = cantarell();
+    let config = plain_config();
+    let variable = cache
+        .fonts()
+        .unwrap()
+        .find(|f| f.value(Object::Variable) == Some(fontconf::Value::Bool(true)))
+        .unwrap();
+    let q = query(|q| {
+        q.add(Object::Family, "Cantarell");
+        q.add(Object::Weight, 255); // the font stops at 205
+    });
+    let prepared = fontconf::render_prepare(&config, &q, &variable);
+    assert_eq!(prepared.number(Object::Weight), Some(205.0));
+}
+
+/// A static instance carries no range, so nothing is pinned.
+#[test]
+fn a_static_face_records_no_variations() {
+    let cache = cantarell();
+    let config = plain_config();
+    let regular = cache
+        .fonts()
+        .unwrap()
+        .find(|f| f.string(Object::Style) == Some("Regular"))
+        .unwrap();
+    let q = query(|q| {
+        q.add(Object::Family, "Cantarell");
+    });
+    let prepared = fontconf::render_prepare(&config, &q, &regular);
+    assert_eq!(prepared.string(Object::FontVariations), None);
+}

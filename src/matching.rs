@@ -497,6 +497,80 @@ where
     best
 }
 
+/// Which of a font's values best answered the query, and what it resolved to.
+///
+/// `FcCompareValueList` reports both: the index picks the localized name to
+/// promote, and the value is what a prepared pattern carries. They usually
+/// agree with "the font's value at that index", but a range collapses to a
+/// concrete number chosen against the query.
+pub struct BestValue {
+    /// Index into the font's value list.
+    pub index: usize,
+    /// The number a range resolved to, if it was one.
+    pub resolved: Option<f64>,
+}
+
+/// Find which font value answers `query` best for `object`.
+pub fn best_value(
+    query: &Query,
+    font: &Pattern<'_>,
+    object: Object,
+) -> Option<BestValue> {
+    let matcher = matcher(object)?;
+    let element = query.get(object)?;
+    let wanted: Vec<(Value<'_>, Binding)> =
+        element.values().map(|(v, b)| (v.as_value(), b)).collect();
+    let got: Vec<Value<'_>> = font.get(object)?.values().collect();
+
+    let (mut best, mut index) = (f64::MAX, 0usize);
+    for (j, (want, _)) in wanted.iter().enumerate() {
+        for (k, value) in got.iter().enumerate() {
+            let Some(distance) = (matcher.compare)(want, value) else {
+                continue;
+            };
+            let ordered = distance * 1000.0
+                + j as f64 * 100.0
+                + if matches!(value, Value::String(_)) { k as f64 } else { 0.0 };
+            if ordered < best {
+                best = ordered;
+                index = k;
+            }
+        }
+    }
+
+    // A range does not survive into a prepared pattern: fontconfig replaces
+    // it with a single number pulled from the font's span towards the query's,
+    // which is what gives a variable font a concrete weight.
+    let resolved = match (wanted.first().map(|(v, _)| v), got.get(index)) {
+        (Some(want), Some(got)) if matches!(object, Object::Weight | Object::Width) => {
+            resolve_range(want, got)
+        }
+        // Size is the exception: it resolves to the midpoint of what was
+        // *asked for*, not of what the font offers.
+        (Some(want), _) if object == Object::Size => {
+            span(want).map(|(b, e)| (b + e) * 0.5)
+        }
+        _ => None,
+    };
+    Some(BestValue { index, resolved })
+}
+
+/// The number a range comparison settles on, `FcCompareRange`'s `bestValue`.
+fn resolve_range(want: &Value<'_>, got: &Value<'_>) -> Option<f64> {
+    let ((b1, e1), (b2, e2)) = (span(want)?, span(got)?);
+    // Only a real range needs resolving; a scalar is already a number.
+    if !matches!(got, Value::Range(_)) {
+        return None;
+    }
+    Some(if e1 < b2 {
+        b2
+    } else if e2 < b1 {
+        e2
+    } else {
+        (b1.max(b2) + e1.min(e2)) * 0.5
+    })
+}
+
 /// Every font, ordered best first.
 ///
 /// This is `FcFontSort` without its trimming pass: it ranks the whole set

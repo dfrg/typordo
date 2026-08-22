@@ -6,8 +6,7 @@
 //! sugar for the same thing -- see [`Rule::from_alias`].
 
 use crate::casefold;
-use crate::object::Object;
-use crate::query::{OwnedValue, Query};
+use crate::query::{OwnedValue, Property, Query};
 use crate::value::{Binding, Matrix};
 
 /// Which pattern a rule set applies to.
@@ -19,14 +18,32 @@ pub enum MatchKind {
     Font,
     /// `target="scan"`: rewrite a font as it is scanned into a cache.
     Scan,
+    /// No target given, on a `<name>` that did not name one.
+    ///
+    /// This is not the same as `target="pattern"`, and conflating the two
+    /// reads the wrong pattern: a bare `<name>` inside a font rule means the
+    /// font being edited, while `target="pattern"` means the original query.
+    Default,
 }
 
 impl MatchKind {
+    /// The target of a `<match>`, which defaults to the pattern.
     pub(crate) fn parse(name: Option<&str>) -> Self {
         match name {
             Some("font") => Self::Font,
             Some("scan") => Self::Scan,
+            Some("default") => Self::Default,
             _ => Self::Pattern,
+        }
+    }
+
+    /// The target of a `<name>`, which defaults to "whichever pattern this
+    /// rule is editing".
+    pub(crate) fn parse_field(name: Option<&str>) -> Self {
+        match name {
+            Some("pattern") => Self::Pattern,
+            Some("font") => Self::Font,
+            _ => Self::Default,
         }
     }
 }
@@ -135,8 +152,9 @@ impl EditMode {
 pub enum Expr {
     /// A literal.
     Value(OwnedValue),
-    /// `<name>`: the current value of a property.
-    Field(MatchKind, Object),
+    /// `<name>`: the current value of a property, read from whichever
+    /// pattern its `target` names.
+    Field(MatchKind, Property),
     /// A `<const>` that could not be resolved, or an unsupported element.
     ///
     /// Evaluating one yields nothing, which makes a test fail and an edit
@@ -208,7 +226,7 @@ pub struct Test {
     /// Which values must match.
     pub qual: Qual,
     /// The property being tested.
-    pub object: Object,
+    pub object: Property,
     /// How to compare.
     pub compare: Compare,
     /// What to compare against.
@@ -219,7 +237,7 @@ pub struct Test {
 #[derive(Clone, Debug)]
 pub struct Edit {
     /// The property being edited.
-    pub object: Object,
+    pub object: Property,
     /// What to do with the produced values.
     pub mode: EditMode,
     /// How strongly the new values are held.
@@ -267,7 +285,7 @@ impl Rule {
         let mut steps = vec![Step::Test(Test {
             kind: MatchKind::Pattern,
             qual: Qual::Any,
-            object: Object::Family,
+            object: Property::Known(crate::Object::Family),
             compare: Compare::Eq,
             expr: family,
         })];
@@ -278,7 +296,7 @@ impl Rule {
         ] {
             if let Some(expr) = expr {
                 steps.push(Step::Edit(Edit {
-                    object: Object::Family,
+                    object: Property::Known(crate::Object::Family),
                     mode,
                     binding,
                     expr,
@@ -294,18 +312,18 @@ impl Rule {
     /// reached, so a later test sees what an earlier edit did -- and a test
     /// failing halfway leaves those edits in place, which is what fontconfig
     /// does too.
-    pub fn apply(&self, query: &mut Query) -> bool {
+    pub fn apply(&self, query: &mut Query, pattern: Option<&Query>) -> bool {
         // Where a test matched, per property, so a following edit knows which
         // value to replace or insert beside.
-        let mut marks: Vec<(Object, Option<usize>)> = Vec::new();
+        let mut marks: Vec<(Property, Option<usize>)> = Vec::new();
         let mut edited = false;
 
         for step in &self.steps {
             match step {
-                Step::Test(test) => match test.evaluate(query) {
+                Step::Test(test) => match test.evaluate(query, pattern) {
                     Some(position) => {
                         if !marks.iter().any(|(o, _)| *o == test.object) {
-                            marks.push((test.object, position));
+                            marks.push((test.object.clone(), position));
                         }
                     }
                     None => return edited,
@@ -315,7 +333,7 @@ impl Rule {
                         .iter()
                         .find(|(o, _)| *o == edit.object)
                         .and_then(|(_, at)| *at);
-                    edit.apply(query, mark);
+                    edit.apply(query, pattern, mark);
                     edited = true;
                     // A replaced value invalidates the position we recorded.
                     if matches!(
@@ -336,12 +354,20 @@ impl Test {
     ///
     /// `None` means the test failed. `Some(None)` means it passed without
     /// marking a position, which is what a vacuous [`Qual::All`] does.
-    fn evaluate(&self, query: &Query) -> Option<Option<usize>> {
-        let wanted = self.expr.values(query);
+    ///
+    /// A `target="pattern"` test inside a font-target rule reads the original
+    /// query instead, which is how a font rule compares what the caller asked
+    /// for against what it got.
+    fn evaluate(&self, query: &Query, pattern: Option<&Query>) -> Option<Option<usize>> {
+        let source = match (self.kind, pattern) {
+            (MatchKind::Pattern, Some(pattern)) => pattern,
+            _ => query,
+        };
+        let wanted = self.expr.values(query, pattern);
         if wanted.is_empty() {
             return None;
         }
-        let Some(element) = query.get(self.object) else {
+        let Some(values) = source.values_of(&self.object) else {
             // A property the pattern does not have: `all` passes vacuously,
             // everything else fails.
             return match self.qual {
@@ -349,12 +375,11 @@ impl Test {
                 _ => None,
             };
         };
-        let values: Vec<&OwnedValue> = element.values().map(|(v, _)| v).collect();
 
         let matches: Vec<usize> = values
             .iter()
             .enumerate()
-            .filter(|(_, got)| wanted.iter().any(|want| compare(got, self.compare, want)))
+            .filter(|(_, (got, _))| wanted.iter().any(|want| compare(got, self.compare, want)))
             .map(|(i, _)| i)
             .collect();
 
@@ -371,52 +396,72 @@ impl Test {
 
 impl Edit {
     /// Apply this edit, inserting relative to `mark` when a test set one.
-    fn apply(&self, query: &mut Query, mark: Option<usize>) {
-        let values = self.expr.values(query);
-        // Only the modes that insert *relative to* the mark pass a position
-        // to fontconfig's FcConfigAdd, and only a position gives
-        // binding="same" something to inherit from. append_last and friends
-        // ignore the mark entirely, so they always land weak.
+    fn apply(&self, query: &mut Query, pattern: Option<&Query>, mark: Option<usize>) {
+        let values = self.expr.values(query, pattern);
+        // Only the modes that insert *relative to* the mark pass a position to
+        // fontconfig's FcConfigAdd, and only a position gives binding="same"
+        // something to inherit from. append_last and friends ignore the mark
+        // entirely, so their values always land weak.
         let positional = match self.mode {
             EditMode::Assign | EditMode::Prepend | EditMode::Append => mark,
             _ => None,
         };
         let binding = self.resolve_binding(query, positional);
-        match self.mode {
-            EditMode::Assign => match mark {
-                Some(at) => query.replace_at(self.object, at, values, binding),
-                None => query.set_all(self.object, values, binding),
-            },
-            EditMode::AssignReplace => query.set_all(self.object, values, binding),
-            EditMode::Prepend => match mark {
-                Some(at) => query.insert_at(self.object, at, values, binding),
-                None => query.prepend(self.object, values, binding),
-            },
-            EditMode::PrependFirst => query.prepend(self.object, values, binding),
-            EditMode::Append => match mark {
-                Some(at) => query.insert_at(self.object, at + 1, values, binding),
-                None => query.append(self.object, values, binding),
-            },
-            EditMode::AppendLast => query.append(self.object, values, binding),
-            EditMode::Delete => match mark {
-                Some(at) => query.remove_at(self.object, at),
-                None => {
-                    query.remove(self.object);
+        let tagged: Vec<(OwnedValue, Binding)> =
+            values.into_iter().map(|v| (v, binding)).collect();
+
+        {
+            let slot = query.values_mut(&self.object);
+            match self.mode {
+                EditMode::Assign => match mark {
+                    Some(at) if at < slot.len() => {
+                        let tail = slot.split_off(at + 1);
+                        slot.pop();
+                        slot.extend(tagged);
+                        slot.extend(tail);
+                    }
+                    _ => *slot = tagged,
+                },
+                EditMode::AssignReplace => *slot = tagged,
+                EditMode::Prepend => {
+                    let at = mark.unwrap_or(0).min(slot.len());
+                    let tail = slot.split_off(at);
+                    slot.extend(tagged);
+                    slot.extend(tail);
                 }
-            },
-            EditMode::DeleteAll => {
-                query.remove(self.object);
+                EditMode::PrependFirst => {
+                    let tail = std::mem::take(slot);
+                    slot.extend(tagged);
+                    slot.extend(tail);
+                }
+                EditMode::Append => {
+                    let at = mark.map_or(slot.len(), |at| (at + 1).min(slot.len()));
+                    let tail = slot.split_off(at);
+                    slot.extend(tagged);
+                    slot.extend(tail);
+                }
+                EditMode::AppendLast => slot.extend(tagged),
+                EditMode::Delete => match mark {
+                    Some(at) if at < slot.len() => {
+                        slot.remove(at);
+                    }
+                    _ => slot.clear(),
+                },
+                EditMode::DeleteAll => slot.clear(),
             }
         }
+        // Fontconfig runs FcConfigPatternCanon after every edit, which drops a
+        // property left holding no values at all.
+        query.prune(&self.object);
     }
 
     /// What binding the new values actually get.
     ///
     /// `binding="same"` is not a binding of its own: it means "whatever the
-    /// value this edit is attached to already had". It inherits from the
-    /// value a test marked, and falls back to weak when there is no marked
-    /// position -- which includes every mode that ignores the mark, not just
-    /// the case where no test ran.
+    /// value this edit attached to already had". It inherits from the value a
+    /// test marked, and falls back to weak when there is no marked position --
+    /// which includes every mode that ignores the mark, not just the case
+    /// where no test ran.
     ///
     /// This is what keeps an alias chain from promoting its substitutes: a
     /// `<default>` appends last and so stays weak even when the family it
@@ -424,7 +469,7 @@ impl Edit {
     fn resolve_binding(&self, query: &Query, mark: Option<usize>) -> Binding {
         match self.binding {
             Binding::Same => mark
-                .and_then(|at| query.binding_at(self.object, at))
+                .and_then(|at| Some(query.values_of(&self.object)?.get(at)?.1))
                 .unwrap_or(Binding::Weak),
             other => other,
         }
@@ -436,30 +481,45 @@ impl Expr {
     ///
     /// A list yields several; an unresolvable expression yields none, which
     /// makes a test fail rather than match something arbitrary.
-    pub fn values(&self, query: &Query) -> Vec<OwnedValue> {
+    pub fn values(&self, query: &Query, pattern: Option<&Query>) -> Vec<OwnedValue> {
         match self {
             Self::Value(v) => vec![v.clone()],
             Self::Unknown => Vec::new(),
-            Self::List(parts) => parts.iter().flat_map(|e| e.values(query)).collect(),
-            Self::Field(_, object) => query
-                .get(*object)
-                .map(|e| e.values().map(|(v, _)| v.clone()).collect())
-                .unwrap_or_default(),
+            Self::List(parts) => parts.iter().flat_map(|e| e.values(query, pattern)).collect(),
+            // `<name target="pattern">` inside a font rule reads the original
+            // query: the only way a font rule can see what was asked for
+            // rather than what was found.
+            Self::Field(kind, object) => {
+                // `pattern` is supplied only while running font-target rules,
+                // so it doubles as "this is a font rule".
+                let source = match (kind, pattern) {
+                    (MatchKind::Pattern, Some(pattern)) => pattern,
+                    // target="font" inside a pattern rule has nothing to read;
+                    // fontconfig warns and yields nothing.
+                    (MatchKind::Font, None) => return Vec::new(),
+                    _ => query,
+                };
+                source
+                    .values_of(object)
+                    .map(|v| v.iter().map(|(value, _)| value.clone()).collect())
+                    .unwrap_or_default()
+            }
             Self::If(condition, then, otherwise) => {
-                match condition.values(query).first().and_then(as_bool) {
-                    Some(true) => then.values(query),
-                    Some(false) => otherwise.values(query),
+                match condition.values(query, pattern).first().and_then(as_bool) {
+                    Some(true) => then.values(query, pattern),
+                    Some(false) => otherwise.values(query, pattern),
                     None => Vec::new(),
                 }
             }
             Self::Unary(op, inner) => inner
-                .values(query)
+                .values(query, pattern)
                 .first()
                 .and_then(|v| apply_unary(*op, v))
                 .into_iter()
                 .collect(),
             Self::Binary(op, left, right) => {
-                let (left, right) = (left.values(query), right.values(query));
+                let left = left.values(query, pattern);
+                let right = right.values(query, pattern);
                 match (left.first(), right.first()) {
                     (Some(a), Some(b)) => apply_binary(*op, a, b).into_iter().collect(),
                     _ => Vec::new(),

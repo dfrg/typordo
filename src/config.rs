@@ -29,7 +29,7 @@ use crate::glob;
 use crate::md5;
 use crate::object::Object;
 use crate::pattern::Pattern;
-use crate::query::{OwnedValue, Query};
+use crate::query::{OwnedValue, Property, Query};
 use crate::rules::{
     BinaryOp, Compare, Edit, EditMode, Expr, MatchKind, Qual, Rule, Step, Test, UnaryOp,
 };
@@ -560,14 +560,23 @@ impl Config {
     /// Call [`Query::default_substitute`] *after* this, as fontconfig does:
     /// the rules run first and the defaults only fill what is still missing.
     pub fn substitute(&self, query: &mut Query) {
-        self.substitute_kind(query, MatchKind::Pattern);
+        self.substitute_kind(query, MatchKind::Pattern, None);
     }
 
     /// Rewrite `query` with the rules for one target.
-    pub fn substitute_kind(&self, query: &mut Query, kind: MatchKind) {
+    ///
+    /// `pattern` is the original query, which a font-target rule can read
+    /// through `target="pattern"` to compare what was asked for against what
+    /// was found. It is unused for pattern-target rules.
+    pub fn substitute_kind(
+        &self,
+        query: &mut Query,
+        kind: MatchKind,
+        pattern: Option<&Query>,
+    ) {
         for rule in &self.rules {
             if rule.kind == kind {
-                rule.apply(query);
+                rule.apply(query, pattern);
             }
         }
     }
@@ -774,7 +783,9 @@ impl Config {
                 }
             }
             "test" => {
-                let Some(object) = frame.object.as_deref().and_then(Object::from_name) else {
+                // Any name works: one a config invented becomes a scratch
+                // property rather than being dropped.
+                let Some(object) = frame.object.as_deref().map(Property::parse) else {
                     return Ok(());
                 };
                 let Some(compare) = Compare::parse(frame.attr("compare")) else {
@@ -798,7 +809,7 @@ impl Config {
                 }
             }
             "edit" => {
-                let Some(object) = frame.object.as_deref().and_then(Object::from_name) else {
+                let Some(object) = frame.object.as_deref().map(Property::parse) else {
                     return Ok(());
                 };
                 let Some(mode) = EditMode::parse(frame.attr("mode")) else {
@@ -850,12 +861,8 @@ impl Config {
             }
             "name" => {
                 if let Some(parent) = stack.last_mut() {
-                    let kind = MatchKind::parse(frame.attr("target"));
-                    let expr = match Object::from_name(body) {
-                        Some(object) => Expr::Field(kind, object),
-                        None => Expr::Unknown,
-                    };
-                    parent.exprs.push(expr);
+                    let kind = MatchKind::parse_field(frame.attr("target"));
+                    parent.exprs.push(Expr::Field(kind, Property::parse(body)));
                 }
             }
             "or" | "and" | "eq" | "not_eq" | "less" | "less_eq" | "more" | "more_eq"
