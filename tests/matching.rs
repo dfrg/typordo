@@ -348,3 +348,73 @@ fn a_static_face_records_no_variations() {
     let prepared = fontconf::render_prepare(&config, &q, &regular);
     assert_eq!(prepared.string(Object::FontVariations), None);
 }
+
+// --- sorting and trimming -------------------------------------------------
+
+/// An untrimmed sort keeps every font; a trimmed one keeps only those that
+/// draw something the earlier ones could not.
+#[test]
+fn trimming_drops_fonts_that_add_no_coverage() {
+    let cache = cantarell();
+    let q = query(|q| {
+        q.add(Object::Family, "Cantarell");
+    });
+    let fonts: Vec<_> = cache.fonts().unwrap().collect();
+
+    let all = fontconf::sort(&q, fonts.clone(), false);
+    let trimmed = fontconf::sort(&q, fonts, true);
+
+    assert_eq!(all.len(), 6, "an untrimmed sort keeps everything");
+    // Every instance of one variable font has identical coverage, so only the
+    // first can add anything.
+    assert_eq!(trimmed.len(), 1, "identical coverage should collapse to one");
+    assert_eq!(
+        trimmed[0].0.string(Object::Style),
+        all[0].0.string(Object::Style),
+        "trimming must not change who wins"
+    );
+}
+
+#[test]
+fn sorting_agrees_with_best_on_the_winner() {
+    let cache = cantarell();
+    for weight in [0, 80, 200, 205] {
+        let q = query(|q| {
+            q.add(Object::Family, "Cantarell");
+            q.add(Object::Weight, weight);
+        });
+        let fonts: Vec<_> = cache.fonts().unwrap().collect();
+        let ranked = fontconf::sort(&q, fonts.clone(), false);
+        let (best, _) = fontconf::best(&q, fonts).unwrap();
+        assert_eq!(
+            ranked[0].0.string(Object::Style),
+            best.string(Object::Style),
+            "weight={weight}"
+        );
+    }
+}
+
+/// Coverage accumulates: merging the same set twice adds nothing the second
+/// time, which is exactly the signal trimming uses.
+#[test]
+fn coverage_reports_whether_a_font_contributed() {
+    use fontconf::{Coverage, Value};
+    let cache = cantarell();
+    let charset = match cache
+        .fonts()
+        .unwrap()
+        .next()
+        .unwrap()
+        .value(Object::Charset)
+    {
+        Some(Value::CharSet(c)) => c,
+        other => panic!("expected a charset, got {other:?}"),
+    };
+
+    let mut coverage = Coverage::new();
+    assert!(coverage.merge(&charset), "the first merge must contribute");
+    assert!(!coverage.merge(&charset), "the same set adds nothing twice");
+    assert_eq!(coverage.len(), charset.len());
+    assert!(coverage.contains('A'));
+    assert!(!coverage.contains('\u{4e00}'));
+}

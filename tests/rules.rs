@@ -154,14 +154,74 @@ fn substitution_runs_before_default_substitute() {
     assert_eq!(query.number(Object::Weight), Some(200.0));
 }
 
-/// A query nothing matches passes through untouched.
+/// A query nothing matches keeps its own values, but substitution is not a
+/// no-op even then: it always injects the locale's languages first.
 #[test]
-fn an_unmatched_query_is_left_alone() {
+fn an_unmatched_query_keeps_its_values() {
     let config = config();
     let mut query = with_family("Untouched");
-    let before = query.clone();
     config.substitute(&mut query);
-    assert_eq!(query, before);
+    assert_eq!(query.string(Object::Family), Some("Untouched"));
+    assert_eq!(query.get(Object::Family).unwrap().values().count(), 1);
+}
+
+/// `FcConfigSubstitute` adds the locale's languages before any rule runs, and
+/// weakly, so a font that answers them is preferred without outranking the
+/// caller's own choices. Sorting demotes fonts that answer no requested
+/// language, so leaving this out reorders an entire fallback chain.
+#[test]
+fn substitution_injects_the_locale_languages() {
+    let config = config();
+    let mut query = with_family("Untouched");
+    config.substitute(&mut query);
+
+    let langs = query.get(Object::Lang).expect("a language was added");
+    let values: Vec<_> = langs.values().collect();
+    assert!(!values.is_empty());
+    for (value, binding) in &values {
+        assert!(matches!(value, OwnedValue::String(_)), "{value:?}");
+        assert_eq!(*binding, Binding::Weak, "injected languages must be weak");
+    }
+    assert_eq!(
+        values.iter().filter_map(|(v, _)| match v {
+            OwnedValue::String(s) => Some(s.as_str()),
+            _ => None,
+        }).collect::<Vec<_>>(),
+        fontconf::default_langs().iter().map(String::as_str).collect::<Vec<_>>()
+    );
+}
+
+/// The injection stops only on an exact match or on `und`, not on any
+/// language at all: asking for Japanese still gets the locale's language
+/// appended, because a font good at both is a better answer than one good at
+/// only Japanese.
+#[test]
+fn injection_stops_at_und_but_not_at_an_unrelated_language() {
+    let langs_after = |existing: &str| -> Vec<String> {
+        let config = config();
+        let mut query = with_family("Untouched");
+        query.add(Object::Lang, existing);
+        config.substitute(&mut query);
+        query
+            .get(Object::Lang)
+            .unwrap()
+            .values()
+            .filter_map(|(v, _)| match v {
+                OwnedValue::String(s) => Some(s.clone()),
+                _ => None,
+            })
+            .collect()
+    };
+
+    // "und" means "do not assume", so nothing is added.
+    assert_eq!(langs_after("und"), ["und"]);
+    // An unrelated language does not stop it.
+    let with_ja = langs_after("ja");
+    assert_eq!(with_ja[0], "ja");
+    assert!(with_ja.len() > 1, "the locale language should still be appended");
+    // The locale's own language is already there, so it is not duplicated.
+    let locale = fontconf::default_langs().remove(0);
+    assert_eq!(langs_after(&locale), [locale]);
 }
 
 // --- custom properties and name targets -----------------------------------

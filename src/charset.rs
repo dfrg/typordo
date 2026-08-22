@@ -146,7 +146,7 @@ impl<'a> CharSet<'a> {
     }
 
     /// The page number stored at `index`.
-    fn page_number(&self, index: usize) -> Result<u16> {
+    pub(crate) fn page_number(&self, index: usize) -> Result<u16> {
         let at = self.numbers_base()? + index * 2;
         Ok(u16::try_from(self.data.u32(at)? & 0xffff).unwrap_or(0))
     }
@@ -155,7 +155,7 @@ impl<'a> CharSet<'a> {
     ///
     /// Leaf offsets are relative to the start of the leaf array, the same
     /// convention the cache's subdirectory list uses.
-    fn leaf_word(&self, index: usize, word: usize) -> Result<u32> {
+    pub(crate) fn leaf_word(&self, index: usize, word: usize) -> Result<u32> {
         let leaves = self.leaves_base()?;
         let delta = self.data.i64(leaves + index * 8)?;
         let leaf = self.data.resolve(leaves, delta)?;
@@ -210,5 +210,66 @@ impl std::fmt::Display for CharSet<'_> {
             }
         }
         Ok(())
+    }
+}
+
+/// A growable union of character sets.
+///
+/// Sorting a font list needs to know whether each font adds anything the ones
+/// before it did not, which means accumulating coverage as the walk proceeds.
+/// The layout mirrors [`CharSet`]'s -- 256-codepoint pages of eight words --
+/// so merging a font is a handful of word-ORs per page rather than a pass over
+/// its characters.
+#[derive(Clone, Debug, Default)]
+pub struct Coverage {
+    pages: std::collections::HashMap<u16, [u32; LEAF_WORDS]>,
+}
+
+impl Coverage {
+    /// An empty set.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Add everything in `other`, reporting whether it contributed anything.
+    ///
+    /// The bool is the whole point: it is what decides that a font earns its
+    /// place in a fallback list.
+    pub fn merge(&mut self, other: &CharSet<'_>) -> bool {
+        let mut added = false;
+        for index in 0..other.pages() {
+            let Ok(page) = other.page_number(index) else { continue };
+            let leaf = self.pages.entry(page).or_insert([0; LEAF_WORDS]);
+            for (word, slot) in leaf.iter_mut().enumerate() {
+                let Ok(bits) = other.leaf_word(index, word) else { continue };
+                // Anything set there that was not set here is new.
+                if bits & !*slot != 0 {
+                    added = true;
+                }
+                *slot |= bits;
+            }
+        }
+        added
+    }
+
+    /// Whether `c` is covered.
+    pub fn contains(&self, c: char) -> bool {
+        let page = (c as u32 / PAGE) as u16;
+        self.pages.get(&page).is_some_and(|leaf| {
+            leaf[((c as u32 % PAGE) / 32) as usize] & (1 << (c as u32 % 32)) != 0
+        })
+    }
+
+    /// How many characters the union holds.
+    pub fn len(&self) -> usize {
+        self.pages
+            .values()
+            .map(|leaf| leaf.iter().map(|w| w.count_ones() as usize).sum::<usize>())
+            .sum()
+    }
+
+    /// Whether nothing has been merged in.
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
     }
 }

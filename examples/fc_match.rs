@@ -20,6 +20,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut debug = false;
     let mut dump = false;
     let mut batch = false;
+    // Some(true) = sorted and trimmed (-s), Some(false) = sorted, untrimmed (-a).
+    let mut sort: Option<bool> = None;
     let mut terms: Vec<String> = Vec::new();
 
     let mut args = std::env::args().skip(1);
@@ -29,6 +31,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             "--format" => format = args.next().unwrap_or_default(),
             "--score-of" => score_of = args.next(),
             "--batch" => batch = true,
+            "--sort" => sort = Some(true),
+            "--all" => sort = Some(false),
             "--debug" => debug = true,
             "--dump-query" => dump = true,
             other => terms.push(other.to_string()),
@@ -63,13 +67,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             parse_name(&mut query, line.trim_end())?;
             config.substitute(&mut query);
             query.default_substitute();
-            match fontconf::best(&query, fonts.clone()) {
-                Some((best, _)) => {
-                    let prepared = fontconf::render_prepare(&config, &query, &best);
-                    println!("{}", show(&prepared, field));
-                }
-                None => println!(),
-            }
+            answer(&config, &query, &fonts, field, sort);
         }
         return Ok(());
     }
@@ -118,13 +116,36 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
-    let Some((best, _)) = fontconf::best(&query, fonts) else {
-        return Err("no font matched".into());
-    };
-
-    let prepared = render_prepare(&config, &query, &best);
-    println!("{}", show(&prepared, field));
+    answer(&config, &query, &fonts, field, sort);
     Ok(())
+}
+
+/// Print the answer, either one font or a whole sorted list.
+///
+/// `fc-match` runs every entry of a sort through render_prepare too, not just
+/// the winner, so the same has to happen here.
+fn answer(
+    config: &Config,
+    query: &Query,
+    fonts: &[Pattern<'_>],
+    field: Object,
+    sort: Option<bool>,
+) {
+    match sort {
+        Some(trim) => {
+            for (font, _) in fontconf::sort(query, fonts.to_vec(), trim) {
+                let prepared = render_prepare(config, query, &font);
+                println!("{}", show(&prepared, field));
+            }
+        }
+        None => match fontconf::best(query, fonts.to_vec()) {
+            Some((best, _)) => {
+                let prepared = render_prepare(config, query, &best);
+                println!("{}", show(&prepared, field));
+            }
+            None => println!(),
+        },
+    }
 }
 
 /// Render one property the way `fc-match --format='%{field}'` does.

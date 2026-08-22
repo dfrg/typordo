@@ -395,24 +395,43 @@ impl Query {
     }
 }
 
+/// The languages fontconfig assumes when a query names none.
+///
+/// `FcGetDefaultLangs` reads them from the environment and falls back to
+/// English. These are added to a query *by substitution*, not by the
+/// defaults, and they matter more than they look: a sort demotes every font
+/// that answers no requested language, so without them the whole fallback
+/// chain is ordered differently.
+pub fn default_langs() -> Vec<String> {
+    for var in ["FC_LANG", "LC_ALL", "LC_CTYPE", "LANG"] {
+        let Ok(value) = std::env::var(var) else { continue };
+        // macOS sets LC_CTYPE to "UTF-8", which names no language at all.
+        if value.is_empty() || value.eq_ignore_ascii_case("UTF-8") {
+            continue;
+        }
+        let langs: Vec<String> = value
+            .split(':')
+            .filter_map(|entry| {
+                let tag = entry.split(['.', '@']).next()?.replace('_', "-");
+                match tag.as_str() {
+                    "" | "C" | "POSIX" => None,
+                    _ => Some(tag.to_lowercase()),
+                }
+            })
+            .collect();
+        if !langs.is_empty() {
+            return langs;
+        }
+    }
+    vec!["en".to_string()]
+}
+
 /// The language fontconfig assumes when a query does not name one.
 ///
 /// Taken from the environment the same way `FcGetDefaultLangs` does, with the
 /// encoding and modifier suffixes stripped, and falling back to English.
 fn default_lang() -> String {
-    for var in ["FC_LANG", "LC_ALL", "LC_CTYPE", "LANG"] {
-        let Ok(value) = std::env::var(var) else { continue };
-        let tag = value
-            .split(['.', '@'])
-            .next()
-            .unwrap_or("")
-            .replace('_', "-");
-        if tag.is_empty() || tag == "C" || tag == "POSIX" {
-            continue;
-        }
-        return tag.to_lowercase();
-    }
-    "en".to_string()
+    default_langs().into_iter().next().unwrap_or_else(|| "en".to_string())
 }
 
 impl fmt::Display for Query {

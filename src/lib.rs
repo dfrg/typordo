@@ -76,14 +76,16 @@ mod xml;
 pub use cache::{Cache, Fonts, Subdirs, MAGIC_ALLOC, MAGIC_MMAP, VERSION};
 pub use config::{Caches, Config, ConfigError, ARCHITECTURE};
 pub use error::{Error, Result};
-pub use matching::{best, best_value, score, sorted, BestValue, Priority, Score, PRIORITIES};
+pub use charset::{CharSet, Coverage};
+pub use matching::{
+    best, best_value, score, sort, sorted, BestValue, Priority, Score, PRIORITIES,
+};
 pub use object::Object;
 pub use pattern::{Bindings, Element, Elements, Pattern, Values};
 pub use prepare::render_prepare;
-pub use query::{OwnedValue, Property, Query};
+pub use query::{default_langs, OwnedValue, Property, Query};
 pub use rules::{
     BinaryOp, Compare, Edit, EditMode, Expr, MatchKind, Qual, Rule, Step, Test, UnaryOp,
 };
-pub use charset::CharSet;
 pub use langset::{LangResult, LangSet};
 pub use value::{Binding, Matrix, Range, Value};

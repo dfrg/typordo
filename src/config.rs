@@ -237,6 +237,34 @@ fn charset_from(values: &[SelectorValue]) -> SelectorValue {
     SelectorValue::CharSet(chars)
 }
 
+/// Add the locale's languages to a query that does not already name one.
+///
+/// `FcConfigSubstituteWithPat` does this before any rule runs, for pattern
+/// targets only. It looks minor and is not: sorting demotes every font that
+/// answers no requested language, so a query with no `lang` at all produces a
+/// differently ordered fallback chain.
+///
+/// A query that already mentions the language, or the undetermined tag `und`,
+/// is left alone entirely -- fontconfig stops at the first such value rather
+/// than skipping just that one language.
+fn add_default_langs(query: &mut Query) {
+    let langs = crate::query::default_langs();
+    for lang in langs {
+        if let Some(element) = query.get(Object::Lang) {
+            let already = element.values().any(|(value, _)| match value {
+                OwnedValue::String(s) => {
+                    s.eq_ignore_ascii_case(&lang) || s.eq_ignore_ascii_case("und")
+                }
+                _ => false,
+            });
+            if already {
+                return;
+            }
+        }
+        query.add_weak(Object::Lang, lang.as_str());
+    }
+}
+
 /// Build a matrix literal from four evaluated number expressions.
 fn literal_matrix(xx: &Expr, xy: &Expr, yx: &Expr, yy: &Expr) -> Expr {
     let number = |e: &Expr| match e {
@@ -560,6 +588,7 @@ impl Config {
     /// Call [`Query::default_substitute`] *after* this, as fontconfig does:
     /// the rules run first and the defaults only fill what is still missing.
     pub fn substitute(&self, query: &mut Query) {
+        add_default_langs(query);
         self.substitute_kind(query, MatchKind::Pattern, None);
     }
 

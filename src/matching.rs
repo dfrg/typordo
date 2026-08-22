@@ -15,7 +15,7 @@ use crate::glob;
 use crate::langset;
 use crate::object::Object;
 use crate::pattern::Pattern;
-use crate::query::Query;
+use crate::query::{OwnedValue, Query};
 use crate::value::{Binding, Value};
 
 /// Where a property sits in the match priority order.
@@ -571,11 +571,30 @@ fn resolve_range(want: &Value<'_>, got: &Value<'_>) -> Option<f64> {
     })
 }
 
-/// Every font, ordered best first.
+/// The score fontconfig assigns a font that satisfies no language the query
+/// asked for.
 ///
-/// This is `FcFontSort` without its trimming pass: it ranks the whole set
-/// rather than stopping at the fonts that add coverage.
-pub fn sorted<'a, I>(query: &Query, fonts: I) -> Vec<(Pattern<'a>, Score)>
+/// Large enough to sink it below every font that does, but still finite, so
+/// the demoted fonts stay ordered among themselves.
+const LANG_UNSATISFIED: f64 = 10_000.0;
+
+/// A language result worse than this means the font did not answer at all.
+const LANG_ANSWERED: f64 = 2_000.0;
+
+/// Every font, ordered best first, optionally trimmed.
+///
+/// This is `FcFontSetSort`, and it is not just [`score`] plus a sort. Two
+/// passes shape the result into a fallback chain rather than a ranking:
+///
+/// 1. **Language satisfaction.** Walking in score order, a font keeps its
+///    language score only if it answers a language the query asked for that
+///    nothing before it already answered. Otherwise it is demoted. Without
+///    this a query naming three languages gets fifty fonts that all cover the
+///    first one.
+/// 2. **Trimming**, when `trim` is set. A font is kept only if it draws a
+///    character none of its predecessors could. This is what `fc-match -s`
+///    reports and `fc-match -a` does not.
+pub fn sort<'a, I>(query: &Query, fonts: I, trim: bool) -> Vec<(Pattern<'a>, Score)>
 where
     I: IntoIterator<Item = Pattern<'a>>,
 {
@@ -583,13 +602,87 @@ where
         .into_iter()
         .filter_map(|font| score(query, &font).map(|s| (font, s)))
         .collect();
-    // A stable sort keeps the original order among equal scores, which is
-    // what the "first font wins a tie" rule amounts to.
+    sort_by_score(&mut scored);
+
+    satisfy_languages(query, &mut scored);
+    sort_by_score(&mut scored);
+
+    if !trim {
+        return scored;
+    }
+
+    let mut coverage = crate::charset::Coverage::new();
+    let mut kept = Vec::with_capacity(scored.len());
+    for (font, score) in scored {
+        // A font with no charset cannot be judged, and fontconfig skips it
+        // outright rather than keeping it on faith.
+        let Some(Value::CharSet(charset)) = font.value(Object::Charset) else {
+            continue;
+        };
+        let adds = coverage.merge(&charset);
+        if kept.is_empty() || adds {
+            kept.push((font, score));
+        }
+    }
+    kept
+}
+
+/// Demote every font that answers no language the query still needs.
+///
+/// Each pattern language can be satisfied once. A font that satisfies one
+/// keeps its score and claims that language; a font that satisfies none has
+/// its language slot pushed to [`LANG_UNSATISFIED`].
+fn satisfy_languages(query: &Query, scored: &mut [(Pattern<'_>, Score)]) {
+    let Some(element) = query.get(Object::Lang) else {
+        return;
+    };
+    let wanted: Vec<OwnedValue> = element.values().map(|(v, _)| v.clone()).collect();
+    if wanted.is_empty() {
+        return;
+    }
+    let mut satisfied = vec![false; wanted.len()];
+
+    for (font, score) in scored.iter_mut() {
+        let mut satisfies = false;
+        if score.get(Priority::Lang) < LANG_ANSWERED {
+            // Only the font's *first* language value is consulted, which is
+            // what fontconfig does.
+            if let Some(font_lang) = font.value(Object::Lang) {
+                for (index, want) in wanted.iter().enumerate() {
+                    if satisfied[index] {
+                        continue;
+                    }
+                    let distance = compare_lang(&want.as_value(), &font_lang);
+                    if distance.is_some_and(|d| (0.0..2.0).contains(&d)) {
+                        satisfied[index] = true;
+                        satisfies = true;
+                        break;
+                    }
+                }
+            }
+        }
+        if !satisfies {
+            score.0[Priority::Lang as usize] = LANG_UNSATISFIED;
+        }
+    }
+}
+
+/// Order by the score vector, keeping equal scores in the order they arrived.
+fn sort_by_score(scored: &mut [(Pattern<'_>, Score)]) {
     scored.sort_by(|(_, a), (_, b)| {
         a.0.iter()
             .zip(&b.0)
             .find_map(|(x, y)| x.partial_cmp(y).filter(|o| o.is_ne()))
             .unwrap_or(std::cmp::Ordering::Equal)
     });
-    scored
+}
+
+/// Every font, ordered best first, without trimming.
+///
+/// Equivalent to [`sort`] with `trim` unset.
+pub fn sorted<'a, I>(query: &Query, fonts: I) -> Vec<(Pattern<'a>, Score)>
+where
+    I: IntoIterator<Item = Pattern<'a>>,
+{
+    sort(query, fonts, false)
 }
