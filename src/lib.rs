@@ -55,6 +55,7 @@
 
 mod bytes;
 mod cache;
+pub mod casefold;
 mod charset;
 mod config;
 mod error;

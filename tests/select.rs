@@ -110,3 +110,64 @@ fn rejecting_a_file_removes_every_instance_in_it() {
     assert_eq!(total, 6);
     assert_eq!(kept, 0);
 }
+
+// --- value kinds inside <patelt> ------------------------------------------
+
+/// `<const>roman</const>` resolves to 0, and every Cantarell instance is
+/// upright, so all six are rejected.
+#[test]
+fn a_const_resolves_to_its_numeric_value() {
+    let config = fixture("const-slant.conf");
+    let cache = cantarell();
+    let kept = cache.fonts().unwrap().filter(|f| config.accepts(f)).count();
+    assert_eq!(kept, 0, "slant=roman should have matched every instance");
+}
+
+/// A selector this crate cannot fully evaluate must match nothing, rather
+/// than being applied without the part it did not understand. Each of these
+/// fixtures pairs a condition that *would* match with one that cannot be
+/// evaluated; if the bad half were dropped, every font would be rejected.
+#[test]
+fn an_unevaluable_selector_never_matches() {
+    let cache = cantarell();
+    for name in ["const-unknown.conf", "langset-poison.conf", "unknown-object.conf"] {
+        let config = fixture(name);
+        let kept = cache.fonts().unwrap().filter(|f| config.accepts(f)).count();
+        assert_eq!(kept, 6, "{name} narrowed to its understood half and rejected fonts");
+    }
+}
+
+/// Selector strings are compared with full Unicode case folding, not ASCII
+/// lowercasing. Nothing on a typical system exercises this, so it is checked
+/// directly rather than through a font.
+#[test]
+fn selector_strings_fold_beyond_ascii() {
+    use fontconf::casefold;
+    assert!(casefold::eq_ignoring_blanks("STRA\u{00df}E", "strasse"));
+    // U+FB01 LATIN SMALL LIGATURE FI folds to "fi", and the blank is dropped.
+    assert!(casefold::eq_ignoring_blanks("\u{fb01} le", "FILE"));
+    assert!(casefold::eq_ignoring_blanks("\u{0391}\u{03a9}", "\u{03b1}\u{03c9}"));
+}
+
+/// `<const>` inside a `<patelt>` is looked up by name alone, so `normal` in a
+/// `width` element resolves to the *weight* constant 80 that is declared
+/// first. No font has width 80, so nothing is rejected. Resolving it per
+/// property to 100 would be more sensible and would disagree with `fc-list`.
+#[test]
+fn a_const_ignores_the_property_it_appears_under() {
+    let config = fixture("const-shadow.conf");
+    let cache = cantarell();
+    let kept = cache.fonts().unwrap().filter(|f| config.accepts(f)).count();
+    assert_eq!(kept, 6, "width=normal must resolve to weight 80 and match nothing");
+}
+
+/// `FcParseInt` uses `strtol` with base 0, so a codepoint written in hex is
+/// normal in a config and a plain decimal parse would silently drop it.
+#[test]
+fn charset_codepoints_may_be_hex() {
+    let config = fixture("charset-hex.conf");
+    let cache = cantarell();
+    // 0x41 is 'A', which Cantarell covers, so every instance is rejected.
+    let kept = cache.fonts().unwrap().filter(|f| config.accepts(f)).count();
+    assert_eq!(kept, 0, "0x41 should have parsed as hex and matched");
+}

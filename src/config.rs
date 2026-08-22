@@ -11,10 +11,11 @@
 //! none of that happens here: `<match>`, `<test>`, `<edit>` and `<alias>` are
 //! skipped, so this crate cannot yet answer a query the way `fc-match` does.
 //!
-//! Within `<selectfont>`, a `<patelt>` holding `<matrix>`, `<charset>`,
-//! `<langset>` or `<const>` is dropped rather than guessed at, so a selector
-//! built entirely from those matches nothing. Selector strings fold ASCII
-//! case only, where fontconfig folds the full Unicode simple-case table.
+//! Within `<selectfont>`, every value kind the DTD allows is handled except
+//! `<langset>`, which needs fontconfig's own language table. A selector this
+//! crate cannot fully evaluate never matches, rather than being applied
+//! without the part it did not understand: dropping a condition would *widen*
+//! a rule, so a reject selector would start rejecting fonts fontconfig keeps.
 //!
 //! `<remap-dir>` and its `salt` attribute are unhandled, so a sandboxed
 //! configuration that remaps font paths will not find its caches.
@@ -23,11 +24,12 @@ use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 use crate::cache::Cache;
+use crate::casefold;
 use crate::glob;
 use crate::md5;
 use crate::object::Object;
 use crate::pattern::Pattern;
-use crate::value::Value;
+use crate::value::{Matrix, Value};
 use crate::xml::{Event, Reader, XmlError};
 
 /// The architecture tag fontconfig builds into a cache file name.
@@ -87,74 +89,232 @@ struct Frame {
     values: Vec<SelectorValue>,
     /// Properties collected by a `<pattern>` from its `<patelt>` children.
     elements: Vec<(Object, Vec<SelectorValue>)>,
+    /// Set when a child could not be understood, so the whole element must
+    /// not be applied in its weakened form.
+    poisoned: bool,
 }
 
 /// A `<pattern>` inside an `<acceptfont>` or `<rejectfont>`.
 ///
 /// It matches a font when *every* property it names is present on the font
 /// and shares at least one value with it.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 struct Selector {
     elements: Vec<(Object, Vec<SelectorValue>)>,
+    /// False when part of the selector could not be understood.
+    usable: bool,
 }
 
 /// A constant a `<patelt>` can hold.
 ///
-/// `<matrix>`, `<charset>`, `<langset>` and `<const>` are permitted by the
-/// DTD but are not accepted here; a selector using one is dropped rather than
-/// silently matching everything.
+/// The DTD permits `int`, `double`, `string`, `matrix`, `bool`, `charset`,
+/// `langset` and `const`. Everything but `langset` is handled; anything that
+/// cannot be evaluated becomes [`SelectorValue::Unsupported`].
 #[derive(Clone, Debug, PartialEq)]
 enum SelectorValue {
     String(String),
     Int(i32),
     Double(f64),
     Bool(bool),
+    Matrix(Matrix),
+    /// Codepoints, from `<charset><int>..</int></charset>`.
+    CharSet(Vec<char>),
+    /// A value this crate cannot evaluate.
+    ///
+    /// It never matches, and poisons the selector that holds it. Dropping it
+    /// instead would *widen* the selector: a reject rule reading "family X and
+    /// langset Y" would decay to "family X" and start rejecting fonts that
+    /// fontconfig keeps.
+    Unsupported,
 }
 
 impl SelectorValue {
-    fn parse(kind: &str, body: &str) -> Option<Self> {
-        Some(match kind {
+    /// Parse one value element of a `<patelt>`.
+    ///
+    /// The property the `<patelt>` names is deliberately not consulted: see
+    /// [`constant`] for why `<const>` ignores it.
+    fn parse(kind: &str, body: &str) -> Self {
+        let body = body.trim();
+        match kind {
             "string" => Self::String(body.to_string()),
-            "int" => Self::Int(body.trim().parse().ok()?),
-            "double" => Self::Double(body.trim().parse().ok()?),
-            "bool" => Self::Bool(match body.trim() {
-                "true" => true,
-                "false" => false,
-                _ => return None,
-            }),
-            _ => return None,
-        })
+            "int" => parse_int(body).map_or(Self::Unsupported, Self::Int),
+            "double" => body.parse().map_or(Self::Unsupported, Self::Double),
+            "bool" => match body {
+                "true" => Self::Bool(true),
+                "false" => Self::Bool(false),
+                _ => Self::Unsupported,
+            },
+            "const" => match constant(body) {
+                Some(value) => Self::Int(value),
+                None => Self::Unsupported,
+            },
+            _ => Self::Unsupported,
+        }
     }
 
     /// Whether a font's value counts as matching this one.
     ///
-    /// Strings compare case-insensitively and ignoring blanks, which is what
-    /// `FcOpListing` with `FcOpFlagIgnoreBlanks` does. Case folding here is
-    /// ASCII-only; fontconfig folds the full Unicode simple-case table, so a
-    /// selector naming a non-ASCII family in a different case will not match.
+    /// Strings compare with case folding and blanks ignored, which is what
+    /// `FcOpListing` with `FcOpFlagIgnoreBlanks` does.
     fn matches(&self, value: &Value<'_>) -> bool {
         match (self, value) {
-            (Self::String(want), Value::String(got)) => fold_eq(want, got),
+            (Self::String(want), Value::String(got)) => casefold::eq_ignoring_blanks(want, got),
             (Self::Int(want), Value::Int(got)) => want == got,
             (Self::Int(want), Value::Double(got)) => f64::from(*want) == *got,
+            (Self::Int(want), Value::Bool(got)) => (*want != 0) == *got,
             (Self::Double(want), Value::Double(got)) => want == got,
             (Self::Double(want), Value::Int(got)) => *want == f64::from(*got),
             (Self::Bool(want), Value::Bool(got)) => want == got,
+            (Self::Matrix(want), Value::Matrix(got)) => want == got,
+            (Self::CharSet(want), Value::CharSet(got)) => want.iter().all(|c| got.contains(*c)),
             _ => false,
         }
     }
 }
 
-/// Compare ignoring ASCII case and all blanks, as fontconfig's
-/// `FcStrCmpIgnoreBlanksAndCase` does.
-fn fold_eq(a: &str, b: &str) -> bool {
-    let fold = |s: &str| -> Vec<u8> {
-        s.bytes()
-            .filter(|c| !c.is_ascii_whitespace())
-            .map(|c| c.to_ascii_lowercase())
-            .collect()
+/// Build a `<matrix>` from the four `<double>` children it collected.
+fn matrix_from(values: &[SelectorValue]) -> SelectorValue {
+    let numbers: Vec<f64> = values
+        .iter()
+        .filter_map(|v| match v {
+            SelectorValue::Double(d) => Some(*d),
+            SelectorValue::Int(i) => Some(f64::from(*i)),
+            _ => None,
+        })
+        .collect();
+    match numbers[..] {
+        [xx, xy, yx, yy] => SelectorValue::Matrix(Matrix { xx, xy, yx, yy }),
+        _ => SelectorValue::Unsupported,
+    }
+}
+
+/// Build a `<charset>` from the `<int>` codepoints it collected.
+fn charset_from(values: &[SelectorValue]) -> SelectorValue {
+    let mut chars = Vec::with_capacity(values.len());
+    for value in values {
+        let SelectorValue::Int(cp) = value else {
+            return SelectorValue::Unsupported;
+        };
+        match u32::try_from(*cp).ok().and_then(char::from_u32) {
+            Some(c) => chars.push(c),
+            None => return SelectorValue::Unsupported,
+        }
+    }
+    if chars.is_empty() {
+        return SelectorValue::Unsupported;
+    }
+    SelectorValue::CharSet(chars)
+}
+
+/// The named constants, in `_FcBaseConstants` declaration order.
+///
+/// The order is load-bearing: see [`constant`].
+static CONSTANTS: &[(&str, i32)] = &[
+    // weight
+    ("thin", 0),
+    ("extralight", 40),
+    ("ultralight", 40),
+    ("demilight", 55),
+    ("semilight", 55),
+    ("light", 50),
+    ("book", 75),
+    ("regular", 80),
+    ("normal", 80),
+    ("medium", 100),
+    ("demibold", 180),
+    ("semibold", 180),
+    ("bold", 200),
+    ("extrabold", 205),
+    ("ultrabold", 205),
+    ("black", 210),
+    ("heavy", 210),
+    ("extrablack", 215),
+    ("ultrablack", 215),
+    // slant
+    ("roman", 0),
+    ("italic", 100),
+    ("oblique", 110),
+    // width -- note "normal" is 100 here, but the weight entry above shadows it
+    ("ultracondensed", 50),
+    ("extracondensed", 63),
+    ("condensed", 75),
+    ("semicondensed", 87),
+    ("normal", 100),
+    ("semiexpanded", 113),
+    ("expanded", 125),
+    ("extraexpanded", 150),
+    ("ultraexpanded", 200),
+    // spacing
+    ("proportional", 0),
+    ("dual", 90),
+    ("mono", 100),
+    ("charcell", 110),
+    // rgba
+    ("unknown", 0),
+    ("rgb", 1),
+    ("bgr", 2),
+    ("vrgb", 3),
+    ("vbgr", 4),
+    ("none", 5),
+    // hintstyle
+    ("hintnone", 0),
+    ("hintslight", 1),
+    ("hintmedium", 2),
+    ("hintfull", 3),
+    // the boolean constants, each named after its own property
+    ("antialias", 1),
+    ("hinting", 1),
+    ("verticallayout", 1),
+    ("autohint", 1),
+    ("globaladvance", 1),
+    ("outline", 1),
+    ("scalable", 1),
+    ("minspace", 1),
+    ("embolden", 1),
+    ("embeddedbitmap", 1),
+    ("decorative", 1),
+    // lcdfilter
+    ("lcdnone", 0),
+    ("lcddefault", 1),
+    ("lcdlight", 2),
+    ("lcdlegacy", 3),
+];
+
+/// The value of a `<const>` name inside a `<patelt>`.
+///
+/// Looked up by **name alone**, taking the first entry in `_FcBaseConstants`
+/// order -- not by the property the `<patelt>` names. That is what
+/// `FcPopValue` does: it calls `FcNameConstant`, the name-only lookup, rather
+/// than the `FcNameConstantWithObjectCheck` variant that also exists.
+///
+/// The observable consequence is that `<patelt name="width"><const>normal`
+/// resolves to **80**, the *weight* constant, because weight is declared
+/// first -- so it matches no font, since widths run 50 to 200. Resolving it
+/// per property to 100 would be the more sensible answer and the wrong one;
+/// `fc-list` rejects nothing for that selector, and so must this.
+fn constant(name: &str) -> Option<i32> {
+    CONSTANTS
+        .iter()
+        .find(|(constant, _)| *constant == name)
+        .map(|(_, value)| *value)
+}
+
+/// Parse an integer the way `FcParseInt` does, with `strtol` base 0.
+///
+/// That means `0x4e00` is hex and `0755` is octal, both of which a plain
+/// `str::parse` rejects. Configs really do write codepoints in hex.
+fn parse_int(body: &str) -> Option<i32> {
+    let (negative, digits) = match body.strip_prefix('-') {
+        Some(rest) => (true, rest),
+        None => (false, body.strip_prefix('+').unwrap_or(body)),
     };
-    fold(a) == fold(b)
+    let (radix, digits) = match digits.as_bytes() {
+        [b'0', b'x' | b'X', ..] => (16, &digits[2..]),
+        [b'0', _, ..] => (8, &digits[1..]),
+        _ => (10, digits),
+    };
+    let magnitude = i64::from_str_radix(digits, radix).ok()?;
+    i32::try_from(if negative { -magnitude } else { magnitude }).ok()
 }
 
 /// The `<selectfont>` rules, which decide what is listed at all.
@@ -205,6 +365,9 @@ impl Selectors {
 
 impl Selector {
     fn matches(&self, font: &Pattern<'_>) -> bool {
+        if !self.usable {
+            return false;
+        }
         self.elements.iter().all(|(object, wanted)| {
             let Some(element) = font.get(*object) else {
                 return false;
@@ -367,6 +530,7 @@ impl Config {
                         text: String::new(),
                         values: Vec::new(),
                         elements: Vec::new(),
+                        poisoned: false,
                     });
                 }
                 Event::Text(text) => {
@@ -408,25 +572,46 @@ impl Config {
                 };
                 self.selectors.globs_mut().push(glob);
             }
-            // The value elements a <patelt> may contain.
-            "string" | "int" | "double" | "bool" => {
-                if let Some(parent) = stack.last_mut() {
-                    if parent.name == "patelt" {
-                        if let Some(value) = SelectorValue::parse(&frame.name, body) {
-                            parent.values.push(value);
-                        }
+            // The value elements a <patelt> may contain, and the two that
+            // build themselves out of nested <double>/<int> children.
+            "string" | "int" | "double" | "bool" | "const" | "matrix" | "charset"
+            | "langset" => {
+                let Some(parent) = stack.last_mut() else { return Ok(()) };
+                match parent.name.as_str() {
+                    // <matrix> holds four <double>s, <charset> holds <int>
+                    // codepoints; both collected their children into `values`.
+                    "matrix" | "charset" => {
+                        parent.values.push(SelectorValue::parse(&frame.name, body));
                     }
+                    "patelt" => {
+                        let value = match frame.name.as_str() {
+                            "matrix" => matrix_from(&frame.values),
+                            "charset" => charset_from(&frame.values),
+                            // A langset selector needs fontconfig's language
+                            // table, which is not embedded yet.
+                            "langset" => SelectorValue::Unsupported,
+                            kind => SelectorValue::parse(kind, body),
+                        };
+                        parent.values.push(value);
+                    }
+                    _ => {}
                 }
             }
             "patelt" => {
                 if let Some(parent) = stack.last_mut() {
-                    if let Some(object) = frame.object.as_deref().and_then(Object::from_name) {
-                        parent.elements.push((object, frame.values));
+                    match frame.object.as_deref().and_then(Object::from_name) {
+                        Some(object) => parent.elements.push((object, frame.values)),
+                        // A property name fontconfig assigns at runtime cannot
+                        // be resolved here, so the selector must not narrow to
+                        // its remaining elements.
+                        None => parent.poisoned = true,
                     }
                 }
             }
             "pattern" if !frame.elements.is_empty() => {
-                self.selectors.patterns_mut().push(Selector { elements: frame.elements });
+                let selector =
+                    Selector { elements: frame.elements, usable: !frame.poisoned };
+                self.selectors.patterns_mut().push(selector);
             }
             _ => {}
         }

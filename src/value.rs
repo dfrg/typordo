@@ -98,6 +98,30 @@ impl<'a> Value<'a> {
 }
 
 /// A set of languages a font supports, left undecoded for now.
+///
+/// # Why this is not decoded yet
+///
+/// A `FcLangSet` is a bitmap over fontconfig's own language list, which is
+/// generated from `fc-lang/*.orth` and ordered by sorted filename. A bit
+/// index therefore means nothing without the exact list the *writing* build
+/// used, and the cache does not record which that was.
+///
+/// The cache format version is not a sufficient key. Version 9 spans at least
+/// three releases with two different lists:
+///
+/// | release | cache version | languages |
+/// | --- | --- | --- |
+/// | 2.15.0 | 9 | 279 |
+/// | 2.16.0 | 9 | 281 |
+/// | 2.17.0 | 9 | 281 |
+///
+/// 2.16.0 added `cop` and `got`, which sort into the middle, shifting every
+/// index after them. Upstream added an `fc_version` field to the cache header
+/// after 2.17 for related reasons, but version 9 headers do not carry it.
+///
+/// So decoding this needs either a table keyed by the writing fontconfig
+/// release -- which a version 9 cache cannot identify -- or the ability to
+/// rebuild the cache ourselves and stop depending on the writer's table.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub struct LangSet<'a> {
     pub(crate) data: &'a [u8],

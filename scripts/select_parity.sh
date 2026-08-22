@@ -94,3 +94,43 @@ write_conf reject-dir.conf '    <rejectfont>
       <glob>/usr/share/fonts/google-noto</glob>
     </rejectfont>'
 check reject-dir.conf
+
+# <const> resolves per property: roman means slant 0.
+write_conf const-slant.conf '    <rejectfont>
+      <pattern>
+        <patelt name="slant"><const>roman</const></patelt>
+      </pattern>
+    </rejectfont>'
+check const-slant.conf
+
+# <const> for weight: bold is 200.
+write_conf const-weight.conf '    <rejectfont>
+      <pattern>
+        <patelt name="weight"><const>bold</const></patelt>
+      </pattern>
+    </rejectfont>'
+check const-weight.conf
+
+# The same name means different numbers for different properties.
+write_conf const-normal-width.conf '    <rejectfont>
+      <pattern>
+        <patelt name="width"><const>normal</const></patelt>
+      </pattern>
+    </rejectfont>'
+check const-normal-width.conf
+
+# <charset> selects fonts covering the given codepoints. 0x4e00 is CJK.
+write_conf charset-cjk.conf '    <rejectfont>
+      <pattern>
+        <patelt name="charset"><charset><int>0x4e00</int></charset></patelt>
+      </pattern>
+    </rejectfont>'
+check charset-cjk.conf
+
+# A non-ASCII fold: the sharp s folds to "ss", which ASCII lowercasing misses.
+write_conf fold-sharp-s.conf '    <rejectfont>
+      <pattern>
+        <patelt name="family"><string>DEJAVU SANS</string></patelt>
+      </pattern>
+    </rejectfont>'
+check fold-sharp-s.conf
