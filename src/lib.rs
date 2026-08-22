@@ -55,8 +55,10 @@
 
 mod bytes;
 mod cache;
+mod charset;
 mod config;
 mod error;
+mod glob;
 mod md5;
 mod object;
 mod pattern;
@@ -68,4 +70,5 @@ pub use config::{Caches, Config, ConfigError, ARCHITECTURE};
 pub use error::{Error, Result};
 pub use object::Object;
 pub use pattern::{Bindings, Element, Elements, Pattern, Values};
-pub use value::{Binding, CharSet, LangSet, Matrix, Range, Value};
+pub use charset::CharSet;
+pub use value::{Binding, LangSet, Matrix, Range, Value};

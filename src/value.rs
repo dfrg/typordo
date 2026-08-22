@@ -1,4 +1,5 @@
 use crate::bytes::Bytes;
+use crate::charset::CharSet;
 use crate::error::{Error, Result};
 
 /// A 2x2 transform, fontconfig's `FcMatrix`.
@@ -51,7 +52,7 @@ pub enum Value<'a> {
     Bool(bool),
     /// A 2x2 transform to apply to the face.
     Matrix(Matrix),
-    /// A coverage set. Not yet decoded — see [`CharSet`].
+    /// The characters a font covers.
     CharSet(CharSet<'a>),
     /// A set of supported languages. Not yet decoded — see [`LangSet`].
     LangSet(LangSet<'a>),
@@ -93,23 +94,6 @@ impl<'a> Value<'a> {
             Self::Bool(b) => Some(*b),
             _ => None,
         }
-    }
-}
-
-/// A character coverage set, left undecoded for now.
-///
-/// The bytes are located and bounds-checked, but the leaf structure is not
-/// yet interpreted; this exists so a pattern carrying a charset round-trips
-/// intact instead of being silently dropped.
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub struct CharSet<'a> {
-    pub(crate) data: &'a [u8],
-    pub(crate) at: usize,
-}
-
-impl std::fmt::Debug for CharSet<'_> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "CharSet(@{})", self.at)
     }
 }
 
@@ -179,7 +163,7 @@ pub(crate) fn value_at<'a>(data: Bytes<'a>, raw: &'a [u8], at: usize) -> Result<
         }
         6 => {
             let c = data.follow(at, union)?.ok_or(Error::BadOffset { base: at, delta: 0 })?;
-            Value::CharSet(CharSet { data: raw, at: c })
+            Value::CharSet(CharSet { data, at: c })
         }
         // 7 is FcTypeFTFace, a live FT_Face pointer. It cannot be serialized
         // and must never appear in a file.

@@ -55,6 +55,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         cache.validate().map_err(|e| format!("{dir}: {e}"))?;
         caches += 1;
         for font in cache.fonts()? {
+            // <selectfont> decides what is listed at all.
+            if !config.accepts(&font) {
+                continue;
+            }
             patterns += 1;
             let file = font.string(Object::File).unwrap_or("<no file>");
             match format.as_str() {
@@ -83,12 +87,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     if stats {
         eprintln!(
-            "{} config files, {} font dirs, {} caches, {} patterns, {} lines",
+            "{} config files, {} font dirs, {} caches, {} patterns, {} lines, selectfont: {}",
             config.files().len(),
             config.font_dirs().len(),
             caches,
             patterns,
-            lines.len()
+            lines.len(),
+            config.has_selectors()
         );
     }
     Ok(())

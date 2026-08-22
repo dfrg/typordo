@@ -268,3 +268,87 @@ fn a_cyclic_value_chain_terminates() {
         }
     }
 }
+
+// --- character coverage ---------------------------------------------------
+
+fn cantarell_charset(cache: &Cache) -> fontconf::CharSet<'_> {
+    let font = cache.fonts().unwrap().next().unwrap();
+    match font.value(Object::Charset) {
+        Some(Value::CharSet(charset)) => charset,
+        other => panic!("expected a charset, got {other:?}"),
+    }
+}
+
+/// The leading ranges were checked against `fc-query --format='%{charset}'`.
+#[test]
+fn a_charset_decodes_to_the_ranges_fontconfig_reports() {
+    let cache = cantarell();
+    let charset = cantarell_charset(&cache);
+    charset.validate().expect("charset should be well formed");
+    let text = charset.to_string();
+    assert!(
+        text.starts_with("20-7e a0-131 134-148 14a-17e 18f 192 1a0-1a1"),
+        "unexpected ranges: {}",
+        &text[..text.len().min(80)]
+    );
+}
+
+#[test]
+fn charset_membership_agrees_with_its_ranges() {
+    let cache = cantarell();
+    let charset = cantarell_charset(&cache);
+
+    assert!(charset.contains('A'));
+    assert!(charset.contains(' '));
+    assert!(charset.contains('~'));
+    // 0x7f is DEL: the first range stops at 0x7e, so it must be absent.
+    assert!(!charset.contains('\u{7f}'));
+    // Well outside anything a Latin font covers.
+    assert!(!charset.contains('\u{4e00}'));
+
+    // Every range reported must be fully contained, and the gaps between
+    // ranges must not be.
+    let ranges: Vec<_> = charset.ranges().take(40).collect();
+    for (start, end) in &ranges {
+        assert!(charset.contains(*start), "{start:?} starts a range but is absent");
+        assert!(charset.contains(*end), "{end:?} ends a range but is absent");
+    }
+    for pair in ranges.windows(2) {
+        let gap = pair[0].1 as u32 + 1;
+        if gap < pair[1].0 as u32 {
+            let gap = char::from_u32(gap).unwrap();
+            assert!(!charset.contains(gap), "{gap:?} is between ranges but present");
+        }
+    }
+}
+
+#[test]
+fn charset_len_matches_the_characters_it_yields() {
+    let cache = cantarell();
+    let charset = cantarell_charset(&cache);
+    assert_eq!(charset.len(), charset.chars().count());
+    assert!(!charset.is_empty());
+    // Ranges must partition the same set of characters, in the same order.
+    let from_ranges: usize = charset
+        .ranges()
+        .map(|(a, b)| (b as u32 - a as u32 + 1) as usize)
+        .sum();
+    assert_eq!(from_ranges, charset.len());
+}
+
+/// Every instance of the variable font reports the same coverage, and the
+/// charsets compare equal without either being copied out of the cache.
+#[test]
+fn all_instances_share_one_coverage() {
+    let cache = cantarell();
+    let charsets: Vec<_> = cache
+        .fonts()
+        .unwrap()
+        .filter_map(|f| match f.value(Object::Charset) {
+            Some(Value::CharSet(c)) => Some(c),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(charsets.len(), 6);
+    assert!(charsets.windows(2).all(|w| w[0] == w[1]));
+}
