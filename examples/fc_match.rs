@@ -19,6 +19,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut format = "file".to_string();
     let mut score_of: Option<String> = None;
     let mut debug = false;
+    let mut batch = false;
     let mut terms: Vec<String> = Vec::new();
 
     let mut args = std::env::args().skip(1);
@@ -27,6 +28,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             "--config" => config_path = args.next().map(PathBuf::from),
             "--format" => format = args.next().unwrap_or_default(),
             "--score-of" => score_of = args.next(),
+            "--batch" => batch = true,
             "--debug" => debug = true,
             other => terms.push(other.to_string()),
         }
@@ -37,12 +39,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         None => Config::load()?,
     };
 
-    let mut query = Query::new();
-    for term in &terms {
-        parse_name(&mut query, term)?;
-    }
-    query.default_substitute();
-
     let caches: Vec<_> = config.caches().collect();
     let fonts: Vec<Pattern<'_>> = caches
         .iter()
@@ -50,6 +46,37 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .flatten()
         .filter(|font| config.accepts(font))
         .collect();
+
+    let field = match format.as_str() {
+        "family" => Object::Family,
+        "style" => Object::Style,
+        _ => Object::File,
+    };
+
+    // One query per line on stdin, one answer per line out. Loading every
+    // cache costs more than matching does, so a harness running hundreds of
+    // queries should pay for it once.
+    if batch {
+        use std::io::BufRead;
+        let stdin = std::io::stdin();
+        for line in stdin.lock().lines() {
+            let line = line?;
+            let mut query = Query::new();
+            parse_name(&mut query, line.trim_end())?;
+            query.default_substitute();
+            match fontconf::best(&query, fonts.clone()) {
+                Some((best, _)) => println!("{}", best.string(field).unwrap_or("")),
+                None => println!(),
+            }
+        }
+        return Ok(());
+    }
+
+    let mut query = Query::new();
+    for term in &terms {
+        parse_name(&mut query, term)?;
+    }
+    query.default_substitute();
 
     // Report our own score for one specific file, so a harness can tell
     // "we picked a worse font" apart from "the two fonts scored identically
@@ -78,11 +105,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Err("no font matched".into());
     };
 
-    let field = match format.as_str() {
-        "family" => Object::Family,
-        "style" => Object::Style,
-        _ => Object::File,
-    };
     println!("{}", best.string(field).unwrap_or(""));
     Ok(())
 }

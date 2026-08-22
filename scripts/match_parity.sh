@@ -23,33 +23,67 @@ cat > $CONF <<'EOF'
 </fontconfig>
 EOF
 
-ok=0; bad=0; tied=0; failed=()
-check() {
-  local q="$1"
-  local ours theirs
-  ours=$(cargo run -q --example fc_match -- --config "$CONF" "$q" 2>/dev/null)
-  theirs=$(FONTCONFIG_FILE="$CONF" fc-match --format='%{file}
-' "$q" 2>/dev/null)
-  if [ "$ours" = "$theirs" ]; then
-    ok=$((ok+1)); return
-  fi
+QUERIES=/tmp/fc-queries.txt
+: > $QUERIES
+check() { printf '%s
+' "$1" >> $QUERIES; }
+
+run_all() {
+  local n; n=$(wc -l < $QUERIES)
+  echo
+  echo "running $n queries"
+  # Ours in one process: loading every cache costs far more than matching.
+  cargo run -q --example fc_match -- --config "$CONF" --batch < $QUERIES > /tmp/fc-ours.txt
+  # fc-match has no batch mode, so this is one process per query.
+  : > /tmp/fc-theirs.txt
+  while IFS= read -r q; do
+    FONTCONFIG_FILE="$CONF" fc-match --format='%{file}
+' "$q" </dev/null >> /tmp/fc-theirs.txt 2>/dev/null || echo >> /tmp/fc-theirs.txt
+  done < $QUERIES
+
+  # Two passes. The first is pure text and runs no subprocess, so nothing can
+  # steal the loop's stdin; the second re-checks only the mismatches.
+  #
+  # The field separator is , not a tab: `read` strips leading IFS
+  # *whitespace*, so with a tab the empty-query test's blank first field
+  # vanished and every field shifted left, inventing a mismatch that the same
+  # three files do not contain.
+  ok=0; bad=0; tied=0; failed=()
+  : > /tmp/fc-mismatch.txt
+  paste -d$'' $QUERIES /tmp/fc-ours.txt /tmp/fc-theirs.txt > /tmp/fc-joined.txt
+  while IFS=$'' read -r q ours theirs; do
+    if [ "$ours" = "$theirs" ]; then
+      ok=$((ok+1))
+    else
+      printf '%s%s%s
+' "$q" "$ours" "$theirs" >> /tmp/fc-mismatch.txt
+    fi
+  done < /tmp/fc-joined.txt
+
   # Differing is not the same as wrong. Fontconfig breaks an exact tie by
-  # taking whichever font its internal hash table happened to yield first,
-  # which is not reproducible from outside. Score their pick with our own
-  # scorer: if it ties ours, both answers are defensible.
-  local sa sb
-  sa=$(cargo run -q --example fc_match -- --config "$CONF" --score-of "$ours" "$q" 2>/dev/null)
-  sb=$(cargo run -q --example fc_match -- --config "$CONF" --score-of "$theirs" "$q" 2>/dev/null)
-  if [ -n "$sa" ] && [ "$sa" = "$sb" ]; then
-    tied=$((tied+1)); return
-  fi
-  bad=$((bad+1)); failed+=("$q")
-  if [ ${#failed[@]} -le 12 ]; then
-    printf 'DIFF  %-40s
+  # taking whichever font its hash table yielded first, which is not
+  # reproducible from outside. Score their pick with our own scorer: if it
+  # ties ours, both answers are defensible.
+  local total; total=$(wc -l < /tmp/fc-mismatch.txt)
+  for i in $(seq 1 "$total"); do
+    local line q ours theirs sa sb
+    line=$(sed -n "${i}p" /tmp/fc-mismatch.txt)
+    q=$(printf '%s' "$line" | cut -d$'' -f1)
+    ours=$(printf '%s' "$line" | cut -d$'' -f2)
+    theirs=$(printf '%s' "$line" | cut -d$'' -f3)
+    sa=$(cargo run -q --example fc_match -- --config "$CONF" --score-of "$ours" "$q" 2>/dev/null </dev/null)
+    sb=$(cargo run -q --example fc_match -- --config "$CONF" --score-of "$theirs" "$q" 2>/dev/null </dev/null)
+    if [ -n "$sa" ] && [ "$sa" = "$sb" ]; then
+      tied=$((tied+1)); continue
+    fi
+    bad=$((bad+1)); failed+=("$q")
+    if [ ${#failed[@]} -le 12 ]; then
+      printf 'DIFF  %s
         ours   %s
         theirs %s
-'       "$q" "${ours:-<none>}" "${theirs:-<none>}"
-  fi
+'         "$q" "${ours:-<none>}" "${theirs:-<none>}"
+    fi
+  done
 }
 
 echo "=== every installed family, by name ==="
@@ -119,6 +153,8 @@ for l in en ar ja fa ru zh-cn; do
     check ":lang=$l:$p"
   done
 done
+
+run_all
 
 echo
 echo "match parity: $ok identical, $tied tie-broken differently, $bad genuinely differing"
