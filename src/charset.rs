@@ -7,6 +7,8 @@
 
 use crate::bytes::Bytes;
 use crate::error::{Error, Result};
+use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::Ordering::Relaxed;
 
 use crate::layout::{self, NATIVE as L};
 
@@ -369,10 +371,16 @@ pub struct OwnedCharSet {
     pages: Vec<(u16, Leaf)>,
     /// Where the last insert landed, since characters arrive in runs.
     ///
+    /// Atomic only so that a set can be shared between threads, which a C
+    /// caller through an FFI would expect of anything reachable from a
+    /// pattern. Relaxed throughout: this is a hint, and a stale or torn one
+    /// costs a binary search that would otherwise have been skipped, never a
+    /// wrong answer.
+    ///
     /// A font's cmap walks upwards, so the next character is almost always on
     /// the page the last one was, and that turns a binary search into a
     /// comparison.
-    recent: std::cell::Cell<usize>,
+    recent: AtomicUsize,
     /// A spare page list, swapped with `pages` when a merge rebuilds it.
     ///
     /// Building a fallback list merges hundreds of fonts into one set, so the
@@ -399,7 +407,11 @@ impl Eq for OwnedCharSet {}
 /// one rather than carrying a copy of whatever the last merge left behind.
 impl Clone for OwnedCharSet {
     fn clone(&self) -> Self {
-        Self { pages: self.pages.clone(), recent: self.recent.clone(), scratch: Vec::new() }
+        Self {
+            pages: self.pages.clone(),
+            recent: AtomicUsize::new(self.recent.load(Relaxed)),
+            scratch: Vec::new(),
+        }
     }
 }
 
@@ -419,7 +431,7 @@ impl OwnedCharSet {
     fn find(&self, page: u16) -> std::result::Result<usize, usize> {
         // The run cache first: a scan inserts thousands of characters in
         // ascending order, and they share a page 255 times out of 256.
-        let recent = self.recent.get();
+        let recent = self.recent.load(Relaxed);
         if let Some((at, _)) = self.pages.get(recent) {
             if *at == page {
                 return Ok(recent);
@@ -427,7 +439,7 @@ impl OwnedCharSet {
         }
         let found = self.pages.binary_search_by_key(&page, |(at, _)| *at);
         if let Ok(index) = found {
-            self.recent.set(index);
+            self.recent.store(index, Relaxed);
         }
         found
     }
@@ -438,7 +450,7 @@ impl OwnedCharSet {
             Ok(index) => index,
             Err(index) => {
                 self.pages.insert(index, (page, [0; LEAF_WORDS]));
-                self.recent.set(index);
+                self.recent.store(index, Relaxed);
                 index
             }
         };
@@ -552,7 +564,7 @@ impl OwnedCharSet {
 
         std::mem::swap(&mut self.pages, &mut merged);
         self.scratch = merged;
-        self.recent.set(0);
+        self.recent.store(0, Relaxed);
         added
     }
 

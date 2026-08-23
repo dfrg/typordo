@@ -408,3 +408,25 @@ fn has_lang_grades_a_request_rather_than_answering_yes_or_no() {
     assert!(langs.contains("en"));
     assert!(!langs.contains("en-US"));
 }
+
+/// Everything a C caller could hold behind a handle has to cross threads.
+///
+/// libfontconfig is thread-safe and its users share `FcConfig*` and
+/// `FcPattern*` freely, so an FFI over these types would have to wrap every
+/// one of them in a mutex if they were not `Sync` -- turning a lock-free read
+/// path into a contended one, on the library every process uses to draw text.
+///
+/// This is a compile-time check; it asserts nothing at runtime.
+#[test]
+fn the_types_an_ffi_would_expose_are_send_and_sync() {
+    fn assert_send_sync<T: Send + Sync>() {}
+    assert_send_sync::<Cache>();
+    assert_send_sync::<fontconf::Config>();
+    assert_send_sync::<fontconf::Query>();
+    assert_send_sync::<fontconf::OwnedCharSet>();
+    assert_send_sync::<fontconf::OwnedLangSet>();
+    assert_send_sync::<fontconf::Pattern<'static>>();
+    assert_send_sync::<fontconf::CharSetRef<'static>>();
+    assert_send_sync::<fontconf::LangSetRef<'static>>();
+    assert_send_sync::<fontconf::Score>();
+}
