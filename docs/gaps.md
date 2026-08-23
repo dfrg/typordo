@@ -12,7 +12,8 @@ fontconfig would have been the worse answer. The history of what was
 actually wrong stays readable.
 
 The corpus everything is measured against: Fedora 44 under WSL, 2385 font
-files producing 2999 patterns across 336 families and 281 languages,
+files producing 2999 patterns across 336 primary family names (1931
+including localized aliases) and 281 languages,
 `/etc/fonts` with 51 configuration files. Broad -- CJK collections, Type 1,
 variable fonts, OpenType bitmaps, colour emoji, a Dingbats clone, and a Noto
 face for nearly every script there is -- but one machine.
@@ -35,7 +36,7 @@ do not cover, so that they are read for what they are.
 ### Testing
 
 - **One machine is the whole corpus.** Every claim about fontconfig is
-  checked against fontconfig itself, on Fedora 44 x86_64 with 695 font files.
+  checked against fontconfig itself, on one machine -- see the corpus above.
   That is the only place an oracle exists; Windows runs the test suite and
   the harnesses that do not need fontconfig. Anything platform-specific --
   the 32-bit layouts, the `statfs` filesystem check, the Windows listing

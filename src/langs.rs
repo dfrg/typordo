@@ -9,9 +9,9 @@
 //! [`LANGS`] is in *bit* order, which is the order the orthography files are
 //! declared in fontconfig's `fc-lang/meson.build`, and that list is not
 //! sorted. Fontconfig keeps its own `fcLangCharSets` sorted by name and maps
-//! a position in it through `fcLangCharSetIndices` to reach the bit;
-//! [`SORTED`] is that mapping. Using the sorted order as the bit order
-//! decodes every langset wrongly, and plausibly enough to look right.
+//! a position in it through `fcLangCharSetIndices` to reach the bit, which
+//! this module mirrors. Using the sorted order as the bit order decodes every
+//! langset wrongly, and plausibly enough to look right.
 //!
 //! # This table is an assumption about the writer
 //!
@@ -91,7 +91,7 @@ pub static LANGS: [&str; 281] = [
 /// Bit indices ordered by language name, for lookup.
 ///
 /// `LANGS[SORTED[k]]` is the k-th language alphabetically.
-pub static SORTED: [u16; 281] = [
+pub(crate) static SORTED: [u16; 281] = [
     0, 1, 2, 252, 190, 3, 191, 246, 4, 5, 6, 7,
     8, 253, 9, 10, 11, 13, 254, 192, 193, 14, 15, 247,
     16, 17, 18, 12, 19, 20, 21, 240, 22, 23, 194, 24,

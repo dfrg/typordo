@@ -4,8 +4,9 @@ Each of these is something this crate works around today. They are listed
 with the evidence that found them: a font in the Fedora 44 set where our
 scan disagreed with `fc-query`, which runs fontconfig's FreeType backend.
 
-Scan parity over 695 files and 21 fields is the measurement throughout, so
-"fixed by the workaround" means the field went to 695/695.
+Scan parity against `fc-query`, field by field over the whole corpus, is the
+measurement throughout: "fixed by the workaround" means the field agrees on
+every file. See `docs/gaps.md` for the corpus.
 
 ## 1. ZapfDingbats glyph names are not mapped to Unicode
 

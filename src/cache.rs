@@ -6,11 +6,10 @@ use crate::error::{Error, Result};
 use crate::pattern::Pattern;
 
 /// Magic on a cache written to disk, `FC_CACHE_MAGIC_MMAP`.
-pub const MAGIC_MMAP: u32 = 0xFC02_FC04;
-/// Magic on a cache built in memory, `FC_CACHE_MAGIC_ALLOC`.
 ///
-/// It never appears in a file, and is rejected on read.
-pub const MAGIC_ALLOC: u32 = 0xFC02_FC05;
+/// Fontconfig also has `FC_CACHE_MAGIC_ALLOC` (`0xFC02FC05`) for a cache it
+/// built in memory. That one never reaches a file, so seeing it is an error.
+pub(crate) const MAGIC_MMAP: u32 = 0xFC02_FC04;
 
 /// The only cache format this crate reads.
 ///

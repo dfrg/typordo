@@ -148,6 +148,27 @@ impl std::fmt::Display for Property {
 
 /// A pattern being built up and matched against.
 ///
+/// The owned counterpart to [`Pattern`](crate::Pattern), which borrows from a
+/// cache. This is what a caller constructs and what matching takes.
+///
+/// Two rewrites have to happen between building one and matching it, in this
+/// order, because fontconfig does the same and its scoring assumes both ran:
+///
+/// ```no_run
+/// # use fontconf::{Config, Object, Query};
+/// # let config = Config::load()?;
+/// let mut query = Query::new();
+/// query.add(Object::Family, "sans-serif");
+///
+/// config.substitute(&mut query);   // apply the config's <match> rules
+/// query.default_substitute();      // fill in what the query left unsaid
+/// # Ok::<_, Box<dyn std::error::Error>>(())
+/// ```
+///
+/// Skipping the first leaves generic aliases unresolved -- `sans-serif` never
+/// becomes a real family. Skipping the second scores an unstated weight or
+/// slant as absent rather than as `normal`, which changes the answer.
+///
 /// Properties are kept sorted by [`Object::id`], which is the order the cache
 /// stores them in and the order scoring walks them in.
 #[derive(Clone, Debug, Default, PartialEq)]

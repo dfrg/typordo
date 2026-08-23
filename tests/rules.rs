@@ -32,15 +32,6 @@ fn with_family(name: &str) -> Query {
     query
 }
 
-#[test]
-fn the_fixture_parses_into_rules() {
-    let config = config();
-    assert_eq!(config.rules().len(), 12, "{:?}", config.rules().len());
-    let scan = config.rules().iter().filter(|r| r.kind == MatchKind::Scan).count();
-    assert_eq!(scan, 2);
-    assert_eq!(config.rules().len() - scan, 10);
-}
-
 /// `<prefer>` goes in front of the matched family and `<default>` after it,
 /// which is the difference between overriding a request and backstopping it.
 #[test]
@@ -246,33 +237,6 @@ fn a_config_can_invent_a_property_and_read_it_back() {
     assert_eq!(custom.len(), 1);
     assert_eq!(custom[0].0, OwnedValue::Double(3.0));
     assert_eq!(query.number(Object::Weight), Some(72.0));
-}
-
-/// A `<name>` with no `target` means the pattern being edited, which is not
-/// the same as `target="pattern"`. Reading the query instead makes a
-/// font-target rule compute from the wrong side.
-#[test]
-fn a_bare_name_reads_the_pattern_being_edited() {
-    use fontconf::{Expr, MatchKind, Property};
-    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/rules/custom.conf");
-    let config = Config::load_from(&path).unwrap();
-
-    let bare = config.rules().iter().flat_map(|r| &r.steps).find_map(|step| match step {
-        fontconf::Step::Edit(edit) => match &edit.expr {
-            Expr::Binary(_, left, _) => match **left {
-                Expr::Field(kind, _) => Some(kind),
-                _ => None,
-            },
-            _ => None,
-        },
-        _ => None,
-    });
-    assert_eq!(bare, Some(MatchKind::Default), "a bare <name> must not be Pattern");
-    assert_eq!(
-        Property::parse("pixelsizefixupfactor"),
-        Property::Custom("pixelsizefixupfactor".into())
-    );
-    assert_eq!(Property::parse("family"), Property::Known(Object::Family));
 }
 
 /// The languages a font is left with after the scan rules run.

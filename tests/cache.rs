@@ -141,10 +141,12 @@ fn object_ids_and_names_round_trip() {
 #[test]
 fn a_cache_built_in_memory_is_rejected() {
     let mut bytes = cantarell().as_bytes().to_vec();
-    bytes[0..4].copy_from_slice(&fontconf::MAGIC_ALLOC.to_le_bytes());
+    // FC_CACHE_MAGIC_ALLOC: a cache fontconfig built in memory.
+    const ALLOC: u32 = 0xFC02_FC05;
+    bytes[0..4].copy_from_slice(&ALLOC.to_le_bytes());
     assert_eq!(
         Cache::new(bytes.into_boxed_slice()).err(),
-        Some(Error::BadMagic(fontconf::MAGIC_ALLOC))
+        Some(Error::BadMagic(ALLOC))
     );
 }
 

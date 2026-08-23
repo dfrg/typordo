@@ -107,7 +107,7 @@ fn run(op: &str, iterations: u32) -> Result<u64, Box<dyn std::error::Error>> {
         //
         // The duplicates are dropped, because `FcFontList` drops them: it
         // returns one entry per distinct combination of the properties asked
-        // for, which is why `fc-list` prints 795 lines for 819 patterns.
+        // for, so `fc-list` prints fewer lines than there are patterns.
         // Without this the two sides would be listing different things.
         "list" => {
             let (config, caches) = loaded()?;

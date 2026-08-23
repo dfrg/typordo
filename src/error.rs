@@ -14,7 +14,7 @@ pub enum Error {
         /// Bytes the read needed.
         len: usize,
     },
-    /// The leading magic was not [`MAGIC_MMAP`](crate::cache::MAGIC_MMAP).
+    /// The leading magic was not `FC_CACHE_MAGIC_MMAP` (`0xFC02FC04`).
     ///
     /// A cache built in memory rather than mapped from disk carries a
     /// different magic and never appears in a file.

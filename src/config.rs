@@ -42,8 +42,9 @@ use crate::xml::{Event, Reader, XmlError};
 /// The architecture tag fontconfig builds into a cache file name.
 ///
 /// It records the layout the cache was written for, and this build asks for
-/// the one it was compiled for: see [`layout`](crate::layout) for how the
-/// six formats differ and which of them this is.
+/// the one it was compiled for. Fontconfig has six: `le64`, `be64`, and for
+/// 32-bit machines `le32d4`/`be32d4` and `le32d8`/`be32d8`, where `d4` and
+/// `d8` are whether a `double` aligns to one word or two.
 pub const ARCHITECTURE: &str = crate::layout::ARCHITECTURE;
 
 /// The configuration directory compiled into fontconfig on Unix.
@@ -770,7 +771,11 @@ impl Config {
     }
 
     /// The `<match>` rules this configuration defines, in order.
-    pub fn rules(&self) -> &[Rule] {
+    ///
+    /// Test-only: the rule AST is an implementation detail of parsing, and
+    /// callers reach its effects through [`Config::substitute`] instead.
+    #[cfg(test)]
+    fn rules(&self) -> &[Rule] {
         &self.rules
     }
 
@@ -1415,6 +1420,46 @@ fn config_dir() -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn fixture(name: &str) -> Config {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/rules").join(name);
+        Config::load_from(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()))
+    }
+
+    /// The rule AST is crate-internal, so what it parses into is checked
+    /// here rather than in `tests/rules.rs`, which sees only the effects.
+    #[test]
+    fn the_fixture_parses_into_rules() {
+        let config = fixture("fonts.conf");
+        assert_eq!(config.rules().len(), 12);
+        let scan = config.rules().iter().filter(|r| r.kind == MatchKind::Scan).count();
+        assert_eq!(scan, 2);
+        assert_eq!(config.rules().len() - scan, 10);
+    }
+
+    /// A `<name>` with no `target` means the pattern being edited, which is
+    /// not the same as `target="pattern"`. Reading the query instead makes a
+    /// font-target rule compute from the wrong side.
+    #[test]
+    fn a_bare_name_reads_the_pattern_being_edited() {
+        let config = fixture("custom.conf");
+        let bare = config.rules().iter().flat_map(|r| &r.steps).find_map(|step| match step {
+            Step::Edit(edit) => match &edit.expr {
+                Expr::Binary(_, left, _) => match **left {
+                    Expr::Field(kind, _) => Some(kind),
+                    _ => None,
+                },
+                _ => None,
+            },
+            _ => None,
+        });
+        assert_eq!(bare, Some(MatchKind::Default), "a bare <name> must not be Pattern");
+        assert_eq!(
+            Property::parse("pixelsizefixupfactor"),
+            Property::Custom("pixelsizefixupfactor".into())
+        );
+        assert_eq!(Property::parse("family"), Property::Known(Object::Family));
+    }
 
     /// Verified against `md5sum` and against the real file names in
     /// `~/.cache/fontconfig` on the machine this was developed on.

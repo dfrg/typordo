@@ -703,8 +703,7 @@ fn score_prepared(query: &Prepared<'_>, font: &Pattern<'_>) -> Option<Score> {
     let mut score = Score::zero();
 
     // Both sides are sorted by object id, so the two are walked in lockstep
-    // and only properties they share are scored -- a merge join, in the
-    // database sense, and nothing to do with the set union in `charset`.
+    // and only properties they share are scored: a merge join.
     //
     // Nothing is copied out of either side: this runs once per font per
     // match, and a `Vec` here was the difference between microseconds and
