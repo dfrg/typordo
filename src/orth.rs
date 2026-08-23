@@ -14,6 +14,7 @@
 //! 281 languages.
 
 /// Where each language's ranges sit in [`RANGES`]: offset and count.
+#[rustfmt::skip]
 static SPANS: [(u32, u32); 281] = [
     (0,12), (12,11), (23,11), (34,23), (57,2), (59,14), (73,18), (91,4),
     (95,10), (105,13), (118,12), (130,9), (139,9), (148,5), (153,5), (158,2),
@@ -54,6 +55,7 @@ static SPANS: [(u32, u32); 281] = [
 ];
 
 /// Every orthography's ranges, inclusive, concatenated.
+#[rustfmt::skip]
 static RANGES: [(u32, u32); 34979] = [
     (0x41,0x5a), (0x61,0x7a), (0xc2,0xc2), (0xca,0xca), (0xce,0xce), (0xd4,0xd4),
     (0xdb,0xdb), (0xe2,0xe2), (0xea,0xea), (0xee,0xee), (0xf4,0xf4), (0xfb,0xfb),

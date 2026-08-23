@@ -63,9 +63,9 @@ header = '''//! Fontconfig's language list, in the order a serialized langset in
 //! [`LANGS`] is in *bit* order, which is the order the orthography files are
 //! declared in fontconfig's `fc-lang/meson.build`, and that list is not
 //! sorted. Fontconfig keeps its own `fcLangCharSets` sorted by name and maps
-//! a position in it through `fcLangCharSetIndices` to reach the bit;
-//! [`SORTED`] is that mapping. Using the sorted order as the bit order
-//! decodes every langset wrongly, and plausibly enough to look right.
+//! a position in it through `fcLangCharSetIndices` to reach the bit, which
+//! this module mirrors. Using the sorted order as the bit order decodes every
+//! langset wrongly, and plausibly enough to look right.
 //!
 //! # This table is an assumption about the writer
 //!
@@ -92,6 +92,7 @@ pub const RELEASE: &str = "%s";
 pub const MAP_WORDS: usize = %d;
 
 /// Every language fontconfig knows an orthography for, indexed by bit.
+#[rustfmt::skip]
 pub static LANGS: [&str; %d] = [
 ''' % (len(langs), RELEASE, RELEASE, words, len(langs))
 
@@ -100,7 +101,8 @@ mid = '''];
 /// Bit indices ordered by language name, for lookup.
 ///
 /// `LANGS[SORTED[k]]` is the k-th language alphabetically.
-pub static SORTED: [u16; %d] = [
+#[rustfmt::skip]
+pub(crate) static SORTED: [u16; %d] = [
 ''' % len(langs)
 
 tail = '''];
@@ -117,8 +119,29 @@ pub fn bit_of_rank(rank: usize) -> Option<usize> {
 
 /// Where `lang` sits alphabetically: its rank if known, else where it would go.
 pub fn rank_of(lang: &str) -> std::result::Result<usize, usize> {
-    let lang = lang.to_ascii_lowercase();
-    SORTED.binary_search_by(|bit| LANGS[*bit as usize].cmp(lang.as_str()))
+    // Folded as it is compared, rather than by lowercasing a copy first.
+    // Scoring asks this once per font per language, so the copy was an
+    // allocation on the hottest path there is.
+    SORTED.binary_search_by(|bit| cmp_ignoring_ascii_case(LANGS[*bit as usize], lang))
+}
+
+/// Order two language tags without regard to case, and without allocating.
+///
+/// The table is lowercase already -- there is a test -- so this only has to
+/// fold the side that came from a caller. Folding both costs nothing and
+/// means the ordering does not depend on that fact staying true.
+fn cmp_ignoring_ascii_case(a: &str, b: &str) -> std::cmp::Ordering {
+    let mut a = a.bytes().map(|c| c.to_ascii_lowercase());
+    let mut b = b.bytes().map(|c| c.to_ascii_lowercase());
+    loop {
+        match (a.next(), b.next()) {
+            (None, None) => return std::cmp::Ordering::Equal,
+            (None, Some(_)) => return std::cmp::Ordering::Less,
+            (Some(_), None) => return std::cmp::Ordering::Greater,
+            (Some(x), Some(y)) if x == y => {}
+            (Some(x), Some(y)) => return x.cmp(&y),
+        }
+    }
 }
 
 /// The bit index of `lang`, matched case-insensitively.
@@ -129,6 +152,36 @@ pub fn index_of(lang: &str) -> Option<usize> {
 #[cfg(test)]
 mod tests {
     use super::{index_of, nth_sorted, rank_of, LANGS, MAP_WORDS, SORTED};
+
+    /// The table is lowercase, which is what lets a lookup fold only the
+    /// caller's side and still order the same way.
+    #[test]
+    fn every_language_name_is_lowercase() {
+        for lang in LANGS {
+            assert_eq!(*lang, lang.to_ascii_lowercase(), "{lang}");
+        }
+    }
+
+    /// A lookup ignores case, and does so without a copy.
+    #[test]
+    fn a_lookup_ignores_case() {
+        for spelling in ["zh-tw", "ZH-TW", "Zh-Tw"] {
+            assert_eq!(rank_of(spelling), rank_of("zh-tw"), "{spelling}");
+            assert_eq!(index_of(spelling), index_of("zh-tw"), "{spelling}");
+        }
+    }
+
+    /// A tag that is not there lands where it would be inserted, which is
+    /// what the outward walk in `has_lang` starts from.
+    #[test]
+    fn a_missing_tag_reports_its_insertion_point() {
+        let at = rank_of("en-gb").expect_err("not in the table");
+        let before = nth_sorted(at.saturating_sub(1)).expect("a neighbour");
+        assert!(before <= "en-gb", "{before} should sort before en-gb");
+        if let Some(after) = nth_sorted(at) {
+            assert!(after >= "en-gb", "{after} should sort after en-gb");
+        }
+    }
 
     /// Bit order is fontconfig's declaration order, and it is not sorted.
     /// `bm` really does come before `be`, which is the cheapest way to tell

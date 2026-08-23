@@ -13,6 +13,7 @@
 //! the fold fontconfig would have done for the same release.
 
 /// Single-character folds, sorted by source codepoint.
+#[rustfmt::skip]
 static SINGLE: [(u32, u32); 1426] = [
     (0x00041, 0x00061), (0x00042, 0x00062), (0x00043, 0x00063), (0x00044, 0x00064),
     (0x00045, 0x00065), (0x00046, 0x00066), (0x00047, 0x00067), (0x00048, 0x00068),
@@ -374,6 +375,7 @@ static SINGLE: [(u32, u32); 1426] = [
 ];
 
 /// Folds that expand to more than one character, sorted by source codepoint.
+#[rustfmt::skip]
 static MULTI: [(u32, &[char]); 104] = [
     (0x000df, &['\u{0073}', '\u{0073}']),
     (0x00130, &['\u{0069}', '\u{0307}']),

@@ -38,6 +38,7 @@ pub const RELEASE: &str = "2.17.0";
 pub const MAP_WORDS: usize = 9;
 
 /// Every language fontconfig knows an orthography for, indexed by bit.
+#[rustfmt::skip]
 pub static LANGS: [&str; 281] = [
     "aa", "ab", "af", "am", "ar", "as",
     "ast", "av", "ay", "az-az", "az-ir", "ba",
@@ -91,6 +92,7 @@ pub static LANGS: [&str; 281] = [
 /// Bit indices ordered by language name, for lookup.
 ///
 /// `LANGS[SORTED[k]]` is the k-th language alphabetically.
+#[rustfmt::skip]
 pub(crate) static SORTED: [u16; 281] = [
     0, 1, 2, 252, 190, 3, 191, 246, 4, 5, 6, 7,
     8, 253, 9, 10, 11, 13, 254, 192, 193, 14, 15, 247,

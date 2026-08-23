@@ -52,6 +52,7 @@ header = '''//! ZapfDingbats glyph names.
 //! %d names.
 
 /// Name to codepoint, sorted, so a lookup is a binary search.
+#[rustfmt::skip]
 static NAMES: [(&str, u32); %d] = [
 ''' % (len(rows), len(rows))
 

@@ -100,6 +100,7 @@ header = '''//! Which codepoints each language needs, from fontconfig's `fc-lang
 //! %d languages.
 
 /// Where each language's ranges sit in [`RANGES`]: offset and count.
+#[rustfmt::skip]
 static SPANS: [(u32, u32); %d] = [
 ''' % (RELEASE, total, len(tables), len(spans))
 
@@ -110,6 +111,7 @@ for i in range(0, len(spans), 8):
 mid = '''];
 
 /// Every orthography's ranges, inclusive, concatenated.
+#[rustfmt::skip]
 static RANGES: [(u32, u32); %d] = [
 ''' % len(flat)
 

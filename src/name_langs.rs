@@ -12,6 +12,7 @@
 
 /// Platform, language id, and the tag fontconfig gives it. Sorted, so a
 /// lookup is a binary search.
+#[rustfmt::skip]
 static LANGUAGES: [(u16, u16, &str); 331] = [
     (1,0x0000,"en"), (1,0x0001,"fr"), (1,0x0002,"de"),
     (1,0x0003,"it"), (1,0x0004,"nl"), (1,0x0005,"sv"),

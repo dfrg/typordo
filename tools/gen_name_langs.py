@@ -136,6 +136,7 @@ header = '''//! What language a `name` record is written in.
 
 /// Platform, language id, and the tag fontconfig gives it. Sorted, so a
 /// lookup is a binary search.
+#[rustfmt::skip]
 static LANGUAGES: [(u16, u16, &str); %d] = [
 ''' % (len(table), len(table))
 

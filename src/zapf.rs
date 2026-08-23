@@ -13,6 +13,7 @@
 //! 201 names.
 
 /// Name to codepoint, sorted, so a lookup is a binary search.
+#[rustfmt::skip]
 static NAMES: [(&str, u32); 201] = [
     ("a1",0x2701), ("a10",0x2721), ("a100",0x275e), ("a101",0x2761),
     ("a102",0x2762), ("a103",0x2763), ("a104",0x2764), ("a105",0x2710),
