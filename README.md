@@ -85,18 +85,21 @@ and `scripts/bench_fc.c` are the two drivers.
 
 | operation | ours | fontconfig | |
 | --- | --- | --- | --- |
-| open a config | 6.80 ms | 13.70 ms | **2.01x** |
-| load every cache | 10.77 ms | 15.86 ms | **1.47x** |
-| list every font | 1.41 ms | 2.14 ms | **1.52x** |
-| prepare a query | 1.08 ms | 425 us | 0.39x |
-| match | 2.04 ms | 1.21 ms | 0.59x |
-| sort | 3.82 ms | 2.89 ms | 0.76x |
+| open a config | 7.71 ms | 15.05 ms | **1.95x** |
+| load every cache | 11.30 ms | 17.88 ms | **1.58x** |
+| list every font | 1.45 ms | 2.21 ms | **1.52x** |
+| prepare a query | 268 us | 443 us | **1.65x** |
+| match | 1.30 ms | 1.26 ms | 0.97x |
+| sort | 3.22 ms | 3.10 ms | 0.96x |
+| match on coverage + language | 1.56 ms | 1.42 ms | 0.91x |
 
-Faster at everything that touches a cache, slower at everything that runs the
-configuration or scores a font. The `prepare` column is the honest one to
-look at: it is config rules alone, no fonts involved, and this machine has
-378 of them. Fontconfig's rule engine scales better than this one does, and
-that cost is inherited by `match` and `sort`, which run `prepare` first.
+Ahead on everything that touches a cache, and level on matching. `prepare`
+is the interesting column: it is configuration rules alone, no fonts
+involved, and it was 0.39x until the profile was read rather than guessed at.
+Substitution grows the family list it scans, so a test late in a pass walked
+a hundred names; fontconfig hashes them, its own comment saying that is where
+the time goes. Doing the same took it to 1.65x, and carried `match` and
+`sort` -- which run `prepare` first -- most of the way with it.
 
 ## Design
 
