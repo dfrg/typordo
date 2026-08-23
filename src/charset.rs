@@ -300,7 +300,7 @@ impl std::fmt::Display for CharSet<'_> {
 /// The layout mirrors [`CharSet`]'s -- 256-codepoint pages of eight words --
 /// so merging a font is a handful of word-ORs per page rather than a pass over
 /// its characters.
-#[derive(Clone, Default)]
+#[derive(Default)]
 pub struct Coverage {
     /// Pages in ascending order, which is how a cache stores them and how
     /// every reader of this wants them.
@@ -317,6 +317,12 @@ pub struct Coverage {
     /// the page the last one was, and that turns a binary search into a
     /// comparison.
     recent: std::cell::Cell<usize>,
+    /// A spare page list, swapped with `pages` when a merge rebuilds it.
+    ///
+    /// Building a fallback list merges hundreds of fonts into one set, so the
+    /// two buffers ping-pong and keep their capacity instead of allocating a
+    /// destination per merge.
+    scratch: Vec<(u16, Leaf)>,
 }
 
 /// One page of coverage: 256 codepoints as eight words.
@@ -332,6 +338,14 @@ impl PartialEq for Coverage {
 }
 
 impl Eq for Coverage {}
+
+/// The scratch buffer is working space, not content: a clone starts without
+/// one rather than carrying a copy of whatever the last merge left behind.
+impl Clone for Coverage {
+    fn clone(&self) -> Self {
+        Self { pages: self.pages.clone(), recent: self.recent.clone(), scratch: Vec::new() }
+    }
+}
 
 impl std::fmt::Debug for Coverage {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -402,16 +416,12 @@ impl Coverage {
     pub fn merge(&mut self, other: &CharSet<'_>) -> bool {
         // Building a fallback list merges every candidate font into a set
         // that only grows, so this runs hundreds of times against something
-        // thousands of pages long. Rebuilding that list each time -- even as
-        // a clean linear merge -- copies far more than it changes.
-        //
-        // So: pages already here are updated in place, and the few that are
-        // new are collected and spliced once. Trimming keeps a font only if
-        // it adds something, which means the second phase is usually empty by
-        // the time it matters.
+        // thousands of pages long. Pages already here are updated where they
+        // sit; only a set that brings pages we have never seen rebuilds the
+        // list, and trimming means that stops happening early.
         let mut added = false;
+        let mut unseen = 0usize;
         let mut cursor = 0usize;
-        let mut fresh: Vec<(u16, Leaf)> = Vec::new();
 
         // The two array bases are resolved once. Reading them per page --
         // which `page_number` and `leaf` each do -- is two offset decodes and
@@ -443,16 +453,50 @@ impl Coverage {
                     if theirs.iter().any(|word| *word != 0) {
                         added = true;
                     }
-                    fresh.push((page, theirs));
+                    unseen += 1;
                 }
             }
         }
 
-        if !fresh.is_empty() {
-            self.pages.extend(fresh);
-            self.pages.sort_unstable_by_key(|(page, _)| *page);
-            self.recent.set(0);
+        if unseen == 0 {
+            return added;
         }
+
+        // Both lists ascend, so the new pages are woven in with a single pass
+        // rather than appended and re-sorted. Sorting was O(n log n) over
+        // thousands of pages to place a handful, and it moved the whole list
+        // twice to do it.
+        let mut merged = std::mem::take(&mut self.scratch);
+        merged.clear();
+        merged.reserve(self.pages.len() + unseen);
+
+        let mut mine = 0usize;
+        for index in 0..other.pages() {
+            let Ok(page) = other.data.u16(numbers + index * 2) else { continue };
+            let Ok(theirs) = other.leaf_at(leaves, index) else { continue };
+
+            // Everything of ours that sorts before this page passes through,
+            // including the page itself if we have it -- phase one already
+            // merged the bits into it.
+            while let Some(&(at, leaf)) = self.pages.get(mine) {
+                if at > page {
+                    break;
+                }
+                merged.push((at, leaf));
+                mine += 1;
+                if at == page {
+                    break;
+                }
+            }
+            if merged.last().map(|(at, _)| *at) != Some(page) {
+                merged.push((page, theirs));
+            }
+        }
+        merged.extend_from_slice(&self.pages[mine..]);
+
+        std::mem::swap(&mut self.pages, &mut merged);
+        self.scratch = merged;
+        self.recent.set(0);
         added
     }
 

@@ -858,18 +858,26 @@ where
         .into_iter()
         .filter_map(|font| score_prepared(&prepared, &font).map(|s| (font, s)))
         .collect();
-    sort_by_score(&mut scored);
 
-    satisfy_languages(query, &mut scored);
-    sort_by_score(&mut scored);
+    // What gets ordered is a list of indices, not the fonts. A scored font is
+    // 264 bytes -- the score alone is 29 doubles -- and there are two passes
+    // over a few thousand of them, so sorting them in place moved a quarter
+    // of a kilobyte per swap to decide something four bytes wide.
+    let mut order: Vec<u32> = (0..scored.len() as u32).collect();
+    sort_order(&mut order, &scored);
+    satisfy_languages(query, &order, &mut scored);
+    sort_order(&mut order, &scored);
 
     if !trim {
-        return scored;
+        return order.iter().map(|&i| scored[i as usize]).collect();
     }
 
+    // Trimming reads the order directly, so the gather above never happens
+    // on this path: the fonts that survive are copied, and the rest are not.
     let mut coverage = crate::charset::Coverage::new();
-    let mut kept = Vec::with_capacity(scored.len());
-    for (font, score) in scored {
+    let mut kept = Vec::new();
+    for &index in &order {
+        let (font, score) = scored[index as usize];
         // A font with no charset cannot be judged, and fontconfig skips it
         // outright rather than keeping it on faith.
         let Some(Value::CharSet(charset)) = font.value(Object::Charset) else {
@@ -888,7 +896,7 @@ where
 /// Each pattern language can be satisfied once. A font that satisfies one
 /// keeps its score and claims that language; a font that satisfies none has
 /// its language slot pushed to [`LANG_UNSATISFIED`].
-fn satisfy_languages(query: &Query, scored: &mut [(Pattern<'_>, Score)]) {
+fn satisfy_languages(query: &Query, order: &[u32], scored: &mut [(Pattern<'_>, Score)]) {
     let Some(element) = query.get(Object::Lang) else {
         return;
     };
@@ -898,7 +906,10 @@ fn satisfy_languages(query: &Query, scored: &mut [(Pattern<'_>, Score)]) {
     }
     let mut satisfied = vec![false; wanted.len()];
 
-    for (font, score) in scored.iter_mut() {
+    // In score order, which is what makes "the first font to answer a
+    // language claims it" mean the best one.
+    for &index in order {
+        let (font, score) = &mut scored[index as usize];
         let mut satisfies = false;
         if score.get(Priority::Lang) < LANG_ANSWERED {
             // Only the font's *first* language value is consulted, which is
@@ -923,9 +934,13 @@ fn satisfy_languages(query: &Query, scored: &mut [(Pattern<'_>, Score)]) {
     }
 }
 
-/// Order by the score vector, keeping equal scores in the order they arrived.
-fn sort_by_score(scored: &mut [(Pattern<'_>, Score)]) {
-    scored.sort_by(|(_, a), (_, b)| {
+/// Order the indices by the score each one names.
+///
+/// Stable, so fonts with equal scores stay in the order they arrived -- which
+/// is the order the caches were walked in, and what fontconfig keeps.
+fn sort_order(order: &mut [u32], scored: &[(Pattern<'_>, Score)]) {
+    order.sort_by(|&left, &right| {
+        let (a, b) = (&scored[left as usize].1, &scored[right as usize].1);
         a.0.iter()
             .zip(&b.0)
             .find_map(|(x, y)| x.partial_cmp(y).filter(|o| o.is_ne()))
