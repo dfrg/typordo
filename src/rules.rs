@@ -329,10 +329,8 @@ impl Rule {
                     None => return edited,
                 },
                 Step::Edit(edit) => {
-                    let mark = marks
-                        .iter()
-                        .find(|(o, _)| *o == edit.object)
-                        .and_then(|(_, at)| *at);
+                    let mark =
+                        marks.iter().find(|(o, _)| *o == edit.object).and_then(|(_, at)| *at);
                     edit.apply(query, pattern, mark);
                     edited = true;
                     // A replaced value invalidates the position we recorded.
@@ -407,8 +405,7 @@ impl Edit {
             _ => None,
         };
         let binding = self.resolve_binding(query, positional);
-        let tagged: Vec<(OwnedValue, Binding)> =
-            values.into_iter().map(|v| (v, binding)).collect();
+        let tagged: Vec<(OwnedValue, Binding)> = values.into_iter().map(|v| (v, binding)).collect();
 
         {
             let slot = query.values_mut(&self.object);
@@ -582,26 +579,16 @@ fn apply_binary(op: BinaryOp, a: &OwnedValue, b: &OwnedValue) -> Option<OwnedVal
         B::NotContains => OwnedValue::Bool(compare(a, Compare::NotContains, b)),
         // Plus concatenates strings, unions sets, and adds everything else.
         B::Plus => match (a, b) {
-            (OwnedValue::String(a), OwnedValue::String(b)) => {
-                OwnedValue::String(format!("{a}{b}"))
-            }
-            (OwnedValue::LangSet(a), OwnedValue::LangSet(b)) => {
-                OwnedValue::LangSet(a.union(b))
-            }
-            (OwnedValue::CharSet(a), OwnedValue::CharSet(b)) => {
-                OwnedValue::CharSet(a.union(b))
-            }
+            (OwnedValue::String(a), OwnedValue::String(b)) => OwnedValue::String(format!("{a}{b}")),
+            (OwnedValue::LangSet(a), OwnedValue::LangSet(b)) => OwnedValue::LangSet(a.union(b)),
+            (OwnedValue::CharSet(a), OwnedValue::CharSet(b)) => OwnedValue::CharSet(a.union(b)),
             _ => number_result(as_number(a)? + as_number(b)?, both_int(a, b)),
         },
         // Minus subtracts sets as well as numbers, which is how a config
         // takes a language away from a font that only appears to have it.
         B::Minus => match (a, b) {
-            (OwnedValue::LangSet(a), OwnedValue::LangSet(b)) => {
-                OwnedValue::LangSet(a.subtract(b))
-            }
-            (OwnedValue::CharSet(a), OwnedValue::CharSet(b)) => {
-                OwnedValue::CharSet(a.subtract(b))
-            }
+            (OwnedValue::LangSet(a), OwnedValue::LangSet(b)) => OwnedValue::LangSet(a.subtract(b)),
+            (OwnedValue::CharSet(a), OwnedValue::CharSet(b)) => OwnedValue::CharSet(a.subtract(b)),
             _ => number_result(as_number(a)? - as_number(b)?, both_int(a, b)),
         },
         B::Times => number_result(as_number(a)? * as_number(b)?, both_int(a, b)),
@@ -643,8 +630,7 @@ pub(crate) fn compare(got: &OwnedValue, op: Compare, want: &OwnedValue) -> bool 
             (_, _, V::Range(range), other) | (_, _, other, V::Range(range))
                 if matches!(op, Compare::Contains | Compare::NotContains) =>
             {
-                let inside = as_number(other)
-                    .is_some_and(|n| n >= range.begin && n <= range.end);
+                let inside = as_number(other).is_some_and(|n| n >= range.begin && n <= range.end);
                 inside == matches!(op, Compare::Contains)
             }
             (Some(got), Some(want), _, _) => match op {

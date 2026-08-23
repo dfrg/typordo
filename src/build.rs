@@ -125,8 +125,7 @@ impl<'a> Builder<'a> {
             }
         }
 
-        let names: Vec<String> =
-            subdirs.iter().map(|p| p.to_string_lossy().into_owned()).collect();
+        let names: Vec<String> = subdirs.iter().map(|p| p.to_string_lossy().into_owned()).collect();
         let mut writer = CacheWriter::new(&name);
         let (stamp, nanoseconds) = directory_stamp(dir)?;
         writer.mtime(stamp, nanoseconds);
@@ -138,7 +137,13 @@ impl<'a> Builder<'a> {
         }
 
         let cache = self.write(&name, &writer.finish())?;
-        Ok(Some(Built { dir: dir.to_path_buf(), cache, fonts: fonts.len(), subdirs, rescanned: true }))
+        Ok(Some(Built {
+            dir: dir.to_path_buf(),
+            cache,
+            fonts: fonts.len(),
+            subdirs,
+            rescanned: true,
+        }))
     }
 
     /// Bring a whole tree up to date, depth first.

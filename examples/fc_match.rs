@@ -52,8 +52,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .filter(|font| config.accepts(font))
         .collect();
 
-    let field = Object::from_name(&format)
-        .ok_or_else(|| format!("unknown property {format}"))?;
+    let field = Object::from_name(&format).ok_or_else(|| format!("unknown property {format}"))?;
 
     // One query per line on stdin, one answer per line out. Loading every
     // cache costs more than matching does, so a harness running hundreds of
@@ -104,8 +103,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 if let Some(score) = fontconf::score(&query, font) {
                     println!(
                         "weight={:<10} instance={:<6} {}",
-                        font.value(Object::Weight)
-                            .map_or("?".to_string(), |v| format!("{v:?}")),
+                        font.value(Object::Weight).map_or("?".to_string(), |v| format!("{v:?}")),
                         font.value(Object::NamedInstance)
                             .and_then(|v| v.as_bool())
                             .unwrap_or(false),
@@ -194,12 +192,7 @@ fn format_g(value: f64) -> String {
 }
 
 fn format_score(score: &Score) -> String {
-    score
-        .as_slice()
-        .iter()
-        .map(|v| format!("{v:.6e}"))
-        .collect::<Vec<_>>()
-        .join(" ")
+    score.as_slice().iter().map(|v| format!("{v:.6e}")).collect::<Vec<_>>().join(" ")
 }
 
 /// Parse a font name the way `FcNameParse` does.
@@ -245,8 +238,8 @@ fn parse_name(query: &mut Query, name: &str) -> Result<(), String> {
         let Some((key, value)) = property.split_once('=') else {
             continue;
         };
-        let object = Object::from_name(key.trim())
-            .ok_or_else(|| format!("unknown property {key}"))?;
+        let object =
+            Object::from_name(key.trim()).ok_or_else(|| format!("unknown property {key}"))?;
         for value in value.split(',') {
             add_typed(query, object, value);
         }

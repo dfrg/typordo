@@ -175,10 +175,8 @@ impl<'a> Reader<'a> {
             // own '>' opens one: searching the rest of the file for a bracket
             // would let a '[' anywhere later swallow the whole document.
             let body_start = self.pos + 2;
-            let unterminated = |what| XmlError {
-                at: self.pos,
-                kind: XmlErrorKind::Unterminated(what),
-            };
+            let unterminated =
+                |what| XmlError { at: self.pos, kind: XmlErrorKind::Unterminated(what) };
             let body = &self.source[body_start..];
             let close = body.find('>').ok_or_else(|| unterminated("doctype"))?;
             let end = match body.find('[') {
@@ -188,10 +186,7 @@ impl<'a> Reader<'a> {
                         .find(']')
                         .ok_or_else(|| unterminated("doctype subset"))?;
                     let after = subset + close;
-                    after
-                        + self.source[after..]
-                            .find('>')
-                            .ok_or_else(|| unterminated("doctype"))?
+                    after + self.source[after..].find('>').ok_or_else(|| unterminated("doctype"))?
                 }
                 _ => body_start + close,
             };
@@ -202,10 +197,9 @@ impl<'a> Reader<'a> {
         };
 
         let body = self.pos + opener.len();
-        let close = self.source[body..].find(closer).ok_or(XmlError {
-            at: self.pos,
-            kind: XmlErrorKind::Unterminated(what),
-        })?;
+        let close = self.source[body..]
+            .find(closer)
+            .ok_or(XmlError { at: self.pos, kind: XmlErrorKind::Unterminated(what) })?;
         self.pos = body + close + closer.len();
         Ok(true)
     }
@@ -229,9 +223,8 @@ impl<'a> Iterator for Reader<'a> {
 
             // Text runs up to the next '<'.
             if !self.source[self.pos..].starts_with('<') {
-                let end = self.source[self.pos..]
-                    .find('<')
-                    .map_or(self.source.len(), |i| self.pos + i);
+                let end =
+                    self.source[self.pos..].find('<').map_or(self.source.len(), |i| self.pos + i);
                 let text = &self.source[self.pos..end];
                 self.pos = end;
                 if text.trim().is_empty() {
@@ -273,9 +266,7 @@ impl<'a> Iterator for Reader<'a> {
                 None => (inner, false),
             };
             let inner = inner.trim_start();
-            let split = inner
-                .find(|c: char| c.is_whitespace())
-                .unwrap_or(inner.len());
+            let split = inner.find(|c: char| c.is_whitespace()).unwrap_or(inner.len());
             let (name, raw) = inner.split_at(split);
             if name.is_empty() || name.contains('<') {
                 return self.error(start, XmlErrorKind::Malformed("tag name"));
@@ -355,10 +346,7 @@ mod tests {
         assert_eq!(
             events(r#"<include ignore_missing="yes"/>"#),
             [
-                Event::Start {
-                    name: "include",
-                    attrs: Attrs { raw: r#" ignore_missing="yes""# }
-                },
+                Event::Start { name: "include", attrs: Attrs { raw: r#" ignore_missing="yes""# } },
                 Event::End { name: "include" },
             ]
         );
@@ -383,12 +371,12 @@ mod tests {
     #[test]
     fn rejects_malformed_input() {
         for source in [
-            "<a></b>",           // mismatched
-            "<a>",               // unterminated element
-            "</a>",              // unbalanced
-            "<a",                // unterminated tag
-            "<!-- oops",         // unterminated comment
-            "<a><",              // unterminated tag, nested
+            "<a></b>",   // mismatched
+            "<a>",       // unterminated element
+            "</a>",      // unbalanced
+            "<a",        // unterminated tag
+            "<!-- oops", // unterminated comment
+            "<a><",      // unterminated tag, nested
         ] {
             let result: Result<Vec<_>, _> = Reader::new(source).collect();
             assert!(result.is_err(), "{source:?} should not parse");

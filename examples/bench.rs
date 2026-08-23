@@ -231,7 +231,9 @@ fn run(op: &str, iterations: u32) -> Result<u64, Box<dyn std::error::Error>> {
                 let families = query.get(Object::Family).map_or(0, |e| e.values().count());
                 let langs = query.get(Object::Lang).map_or(0, |e| e.values().count());
                 let elements = query.len();
-                eprintln!("  {name:<32} families={families:<4} langs={langs:<4} elements={elements}");
+                eprintln!(
+                    "  {name:<32} families={families:<4} langs={langs:<4} elements={elements}"
+                );
             }
             Ok(0)
         }

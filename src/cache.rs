@@ -1,8 +1,8 @@
 use std::path::Path;
 
 use crate::bytes::Bytes;
-use crate::layout;
 use crate::error::{Error, Result};
+use crate::layout;
 use crate::pattern::Pattern;
 
 /// Magic on a cache written to disk, `FC_CACHE_MAGIC_MMAP`.

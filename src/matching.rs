@@ -11,15 +11,15 @@
 
 use crate::casefold;
 use crate::charset::Chars;
+use crate::fnv::BuildPassthrough;
 use crate::glob;
 use crate::langset;
 use crate::object::Object;
 use crate::pattern::Pattern;
-use crate::fnv::BuildPassthrough;
 use crate::pattern::Values;
 use crate::query::{Element, OwnedValue, Query};
-use std::collections::HashMap;
 use crate::value::{Binding, Value};
+use std::collections::HashMap;
 
 /// Where a property sits in the match priority order.
 ///
@@ -236,9 +236,7 @@ fn compare_postscript(a: &Value<'_>, b: &Value<'_>) -> Option<f64> {
 fn first_chars_could_match(a: &str, b: &str) -> bool {
     let first = |s: &str| s.chars().next();
     match (first(a), first(b)) {
-        (Some(x), Some(y)) => {
-            x.to_lowercase().eq(y.to_lowercase()) || x == ' ' || y == ' '
-        }
+        (Some(x), Some(y)) => x.to_lowercase().eq(y.to_lowercase()) || x == ' ' || y == ' ',
         _ => true,
     }
 }
@@ -378,12 +376,7 @@ fn compare_filename(a: &Value<'_>, b: &Value<'_>) -> Option<f64> {
 /// lists: `v * 1000 + j * 100 + k`, so a worse match on an earlier-listed
 /// value still beats a better match on a later one. The `k` term only counts
 /// for strings, where list order is a real preference rather than an accident.
-fn score_values(
-    matcher: &Matcher,
-    query: &Element,
-    font: &Values<'_>,
-    score: &mut Score,
-) -> bool {
+fn score_values(matcher: &Matcher, query: &Element, font: &Values<'_>, score: &mut Score) -> bool {
     let (mut best, mut best_strong, mut best_weak) = (NO_MATCH, NO_MATCH, NO_MATCH);
     let split = matcher.strong != matcher.weak;
 
@@ -460,8 +453,7 @@ struct Family<'q> {
 impl<'q> Families<'q> {
     /// Index the family element of `query`, if it has one.
     fn new(query: &'q Query) -> Self {
-        let mut families =
-            Self { heads: HashMap::default(), entries: Vec::new() };
+        let mut families = Self { heads: HashMap::default(), entries: Vec::new() };
         let Some(element) = query.get(Object::Family) else { return families };
         families.entries.reserve(element.values().count());
 
@@ -472,9 +464,9 @@ impl<'q> Families<'q> {
 
             // The same name can appear twice with different bindings, and
             // only the earliest mention of each counts.
-            let existing = families.chain(hash).find(|at| {
-                casefold::eq_ignoring_blanks(families.entries[*at as usize].name, name)
-            });
+            let existing = families
+                .chain(hash)
+                .find(|at| casefold::eq_ignoring_blanks(families.entries[*at as usize].name, name));
             let at = match existing {
                 Some(at) => at as usize,
                 None => {
@@ -549,12 +541,7 @@ fn score_charsets(chars: &[Vec<char>], font: &Values<'_>, score: &mut Score) -> 
 /// search lifted out. The arms that are not a tag against a set fall back to
 /// the general comparison, which is what a query carrying a language *set*
 /// takes.
-fn score_langs(
-    ranks: &[LangRank],
-    query: &Element,
-    font: &Values<'_>,
-    score: &mut Score,
-) -> bool {
+fn score_langs(ranks: &[LangRank], query: &Element, font: &Values<'_>, score: &mut Score) -> bool {
     let mut best = NO_MATCH;
     'outer: for (j, (want, _binding)) in query.values().enumerate() {
         let want = want.as_value();
@@ -738,9 +725,7 @@ fn score_prepared(query: &Prepared<'_>, font: &Pattern<'_>) -> Option<Score> {
             }
             How::Langs => score_langs(&query.langs, prepped.element, &got, &mut score),
             How::CharSets(chars) => score_charsets(chars, &got, &mut score),
-            How::Values(matcher) => {
-                score_values(matcher, prepped.element, &got, &mut score)
-            }
+            How::Values(matcher) => score_values(matcher, prepped.element, &got, &mut score),
             How::Skip => true,
         };
         if !scored {
@@ -787,11 +772,7 @@ pub struct BestValue {
 }
 
 /// Find which font value answers `query` best for `object`.
-pub fn best_value(
-    query: &Query,
-    font: &Pattern<'_>,
-    object: Object,
-) -> Option<BestValue> {
+pub fn best_value(query: &Query, font: &Pattern<'_>, object: Object) -> Option<BestValue> {
     let matcher = matcher(object)?;
     let element = query.get(object)?;
     let wanted: Vec<(Value<'_>, Binding)> =
@@ -823,9 +804,7 @@ pub fn best_value(
         }
         // Size is the exception: it resolves to the midpoint of what was
         // *asked for*, not of what the font offers.
-        (Some(want), _) if object == Object::Size => {
-            span(want).map(|(b, e)| (b + e) * 0.5)
-        }
+        (Some(want), _) if object == Object::Size => span(want).map(|(b, e)| (b + e) * 0.5),
         _ => None,
     };
     Some(BestValue { index, resolved })

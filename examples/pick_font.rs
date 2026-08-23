@@ -85,9 +85,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     // it does not reject them. Whether the answer is usable is a question
     // about coverage, and it is the caller's to ask.
     let missing: Vec<char> = match font.value(Object::Charset) {
-        Some(fontconf::Value::CharSet(set)) => {
-            text.chars().filter(|c| !set.contains(*c)).collect()
-        }
+        Some(fontconf::Value::CharSet(set)) => text.chars().filter(|c| !set.contains(*c)).collect(),
         _ => text.chars().collect(),
     };
     if missing.is_empty() {
@@ -101,12 +99,9 @@ fn main() -> Result<(), Box<dyn Error>> {
     // matter how large they get. Zero means the font answered that part of
     // the query exactly. These four are the ones this query is about.
     println!();
-    for priority in [
-        Priority::CharSet,
-        Priority::Lang,
-        Priority::FamilyStrong,
-        Priority::FamilyWeak,
-    ] {
+    for priority in
+        [Priority::CharSet, Priority::Lang, Priority::FamilyStrong, Priority::FamilyWeak]
+    {
         let distance = score.get(priority);
         // A generic family resolves into aliases the configuration prefers,
         // and those are weak bindings -- so `FamilyStrong` staying at its

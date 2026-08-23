@@ -264,9 +264,7 @@ impl Object {
 
     /// The object with this fontconfig property name.
     pub fn from_name(name: &str) -> Option<Self> {
-        (1..=Self::MAX)
-            .filter_map(Self::from_id)
-            .find(|o| o.name() == name)
+        (1..=Self::MAX).filter_map(Self::from_id).find(|o| o.name() == name)
     }
 }
 

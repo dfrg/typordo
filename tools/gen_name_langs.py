@@ -175,9 +175,9 @@ mod tests {
     #[test]
     fn the_common_english_ids_resolve() {
         assert_eq!(tag(3, 0x0409), Some("en")); // Windows, English (US)
-        assert_eq!(tag(1, 0), Some("en"));      // Macintosh, English
-        assert_eq!(tag(0, 0), Some("en"));      // Unicode platform
-        assert_eq!(tag(0, 12345), Some("en"));  // ...whatever the id says
+        assert_eq!(tag(1, 0), Some("en")); // Macintosh, English
+        assert_eq!(tag(0, 0), Some("en")); // Unicode platform
+        assert_eq!(tag(0, 12345), Some("en")); // ...whatever the id says
     }
 
     /// Regional variants are distinct ids that fontconfig maps to distinct

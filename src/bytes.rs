@@ -98,10 +98,7 @@ impl<'a> Bytes<'a> {
     /// this cannot be a plain unsigned add.
     pub fn resolve(&self, base: usize, delta: i64) -> Result<usize> {
         let bad = || Error::BadOffset { base, delta };
-        let at = i64::try_from(base)
-            .ok()
-            .and_then(|b| b.checked_add(delta))
-            .ok_or_else(bad)?;
+        let at = i64::try_from(base).ok().and_then(|b| b.checked_add(delta)).ok_or_else(bad)?;
         let at = usize::try_from(at).map_err(|_| bad())?;
         // One past the end is a legal address, not a legal read: a zero-length
         // array serialized at the end of the file resolves to exactly `len`.

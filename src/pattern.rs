@@ -167,11 +167,7 @@ impl<'a> Element<'a> {
 
     /// The values held against this property, in the order they are stored.
     pub fn values(&self) -> Values<'a> {
-        Values {
-            data: self.data,
-            next: self.head().ok().flatten(),
-            budget: self.budget(),
-        }
+        Values { data: self.data, next: self.head().ok().flatten(), budget: self.budget() }
     }
 
     /// Walk the value chain strictly, reporting the first problem.

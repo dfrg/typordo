@@ -37,11 +37,7 @@ fn reads_directories_in_order_and_deduplicates() {
 #[test]
 fn included_directories_are_read_in_sorted_order() {
     let config = config();
-    let names: Vec<_> = config
-        .files()
-        .iter()
-        .filter_map(|f| f.file_name()?.to_str())
-        .collect();
+    let names: Vec<_> = config.files().iter().filter_map(|f| f.file_name()?.to_str()).collect();
     assert_eq!(names, ["fonts.conf", "10-first.conf", "20-second.conf"]);
 }
 
@@ -111,9 +107,7 @@ fn from_source(name: &str, body: &str) -> Config {
     let path = dir.join(format!("{name}.conf"));
     std::fs::write(
         &path,
-        format!(
-            "<?xml version=\"1.0\"?>\n<fontconfig>\n{body}\n</fontconfig>\n"
-        ),
+        format!("<?xml version=\"1.0\"?>\n<fontconfig>\n{body}\n</fontconfig>\n"),
     )
     .unwrap();
     Config::load_from(&path).unwrap()

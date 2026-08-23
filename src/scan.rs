@@ -11,8 +11,7 @@
 use std::path::Path;
 
 use read_fonts::{
-    tables::cmap::CmapSubtable, tables::head::MacStyle, FileRef, FontRef, ReadError,
-    TableProvider,
+    tables::cmap::CmapSubtable, tables::head::MacStyle, FileRef, FontRef, ReadError, TableProvider,
 };
 
 use crate::casefold;
@@ -97,19 +96,14 @@ fn base_pattern(font: &FontRef<'_>, path: &str, index: i32) -> Query {
     // which is exactly how an OpenType bitmap font (.otb) is built.
     let has_glyf = table_len(font, b"glyf") > 0;
     let has_cff = has_table(font, b"CFF ") || has_table(font, b"CFF2");
-    let has_color = [b"COLR", b"SVG ", b"CBLC", b"sbix"]
-        .iter()
-        .any(|tag| has_table(font, tag));
+    let has_color = [b"COLR", b"SVG ", b"CBLC", b"sbix"].iter().any(|tag| has_table(font, tag));
     let has_outlines = has_glyf || has_cff;
 
     pattern.add(Object::File, path);
     pattern.add(Object::Index, index);
     pattern.add(Object::FontWrapper, "SFNT");
     // A font with CFF outlines reports CFF even when it also has glyf.
-    pattern.add(
-        Object::Fontformat,
-        if has_cff { "CFF" } else { "TrueType" },
-    );
+    pattern.add(Object::Fontformat, if has_cff { "CFF" } else { "TrueType" });
     pattern.add(Object::Outline, has_outlines);
     pattern.add(Object::Color, has_color);
     // A colour font with no outlines is still scalable: it draws at any size.
@@ -356,7 +350,10 @@ impl<'a> EmptyGlyphs<'a> {
 }
 
 /// Call `visit` for every codepoint one subtable maps.
-fn walk_subtable(subtable: &CmapSubtable<'_>, visit: &mut impl FnMut(u32, read_fonts::types::GlyphId)) {
+fn walk_subtable(
+    subtable: &CmapSubtable<'_>,
+    visit: &mut impl FnMut(u32, read_fonts::types::GlyphId),
+) {
     let mut add = |code: u32| {
         if let Some(gid) = subtable.map_codepoint(code) {
             visit(code, gid);
@@ -525,10 +522,7 @@ fn named_instances(font: &FontRef<'_>) -> Option<Vec<Instance>> {
             Some(instance.coordinates.get(index)?.get().to_f64())
         };
         let is_default = axes.iter().enumerate().all(|(i, axis)| {
-            instance
-                .coordinates
-                .get(i)
-                .is_some_and(|c| c.get() == axis.default_value())
+            instance.coordinates.get(i).is_some_and(|c| c.get() == axis.default_value())
         });
         let pinned: Vec<Axis> = axes
             .iter()
@@ -593,10 +587,7 @@ fn synthesized_postscript_name(font: &FontRef<'_>, instance: &Instance) -> Optio
         .collect();
 
     if let Some(subfamily) = name_by_id(font, instance.subfamily) {
-        let suffix: String = subfamily
-            .chars()
-            .filter(char::is_ascii_alphanumeric)
-            .collect();
+        let suffix: String = subfamily.chars().filter(char::is_ascii_alphanumeric).collect();
         return Some(format!("{prefix}-{suffix}"));
     }
 
@@ -654,8 +645,7 @@ fn has_table(font: &FontRef<'_>, tag: &[u8; 4]) -> bool {
 }
 
 fn table_len(font: &FontRef<'_>, tag: &[u8; 4]) -> usize {
-    font.table_data(read_fonts::types::Tag::new(tag))
-        .map_or(0, |data| data.len())
+    font.table_data(read_fonts::types::Tag::new(tag)).map_or(0, |data| data.len())
 }
 
 /// Whether the font carries hinting instructions.
@@ -669,8 +659,7 @@ fn has_hinting(font: &FontRef<'_>) -> bool {
     if has_table(font, b"fpgm") || has_table(font, b"cvt ") {
         return true;
     }
-    font.table_data(read_fonts::types::Tag::new(b"prep"))
-        .is_some_and(|data| data.len() > 7)
+    font.table_data(read_fonts::types::Tag::new(b"prep")).is_some_and(|data| data.len() > 7)
 }
 
 /// The foundry: the `OS/2` vendor tag, else the copyright notice, else
@@ -685,11 +674,7 @@ fn foundry(font: &FontRef<'_>) -> String {
     if let Ok(os2) = font.os2() {
         let bytes = os2.ach_vend_id().to_be_bytes();
         if bytes[0] != 0 {
-            return bytes
-                .iter()
-                .take_while(|b| **b != 0)
-                .map(|b| *b as char)
-                .collect();
+            return bytes.iter().take_while(|b| **b != 0).map(|b| *b as char).collect();
         }
     }
     // No vendor tag: fall back to whoever the notice names.
@@ -710,10 +695,7 @@ fn add_attributes(font: &FontRef<'_>, pattern: &mut Query, instance: Option<&Ins
     let fc_weight = instance
         .and_then(|i| i.weight)
         .map(weight::from_opentype)
-        .or_else(|| {
-            os2.as_ref()
-                .map(|os2| weight::from_opentype(f64::from(os2.us_weight_class())))
-        })
+        .or_else(|| os2.as_ref().map(|os2| weight::from_opentype(f64::from(os2.us_weight_class()))))
         .filter(|w| *w >= 0.0)
         .unwrap_or(100.0); // FC_WEIGHT_MEDIUM, fontconfig's fallback
     pattern.add(Object::Weight, fc_weight);
@@ -725,7 +707,6 @@ fn add_attributes(font: &FontRef<'_>, pattern: &mut Query, instance: Option<&Ins
     pattern.add(Object::Width, fc_width);
 
     pattern.add(Object::Slant, slant(font, pattern));
-
 }
 
 /// How many distinct advance widths a font uses, and so how it spaces.
@@ -805,10 +786,8 @@ fn slant(font: &FontRef<'_>, pattern: &Query) -> i32 {
     // The fallback follows `head.macStyle`, not `OS/2.fsSelection`. Terminus
     // Bold sets the fsSelection italic bit and is not italic; macStyle says
     // bold only, and that is the answer fontconfig gives.
-    let italic = font
-        .head()
-        .map(|head| head.mac_style().contains(MacStyle::ITALIC))
-        .unwrap_or(false);
+    let italic =
+        font.head().map(|head| head.mac_style().contains(MacStyle::ITALIC)).unwrap_or(false);
     if italic {
         100
     } else {
@@ -914,9 +893,9 @@ fn english_value(pattern: &Query, object: Object, lang_object: Object) -> Option
     let at = languages.iter().position(|lang| *lang == "en").unwrap_or(0);
     let element = pattern.get(object)?;
     let mut values = element.values().filter_map(|(v, _)| v.as_value().as_str());
-    let chosen = values.nth(at).or_else(|| {
-        element.values().filter_map(|(v, _)| v.as_value().as_str()).next()
-    })?;
+    let chosen = values
+        .nth(at)
+        .or_else(|| element.values().filter_map(|(v, _)| v.as_value().as_str()).next())?;
     Some(chosen.to_string())
 }
 
@@ -945,12 +924,7 @@ fn collect_names(font: &FontRef<'_>, ids: &[u16]) -> Vec<(String, &'static str)>
                 .filter(|(_, r)| r.name_id().to_u16() == *id && r.platform_id() == platform)
                 .collect();
             matching.sort_by_key(|(index, r)| {
-                (
-                    r.encoding_id(),
-                    !is_english(platform, r.language_id()),
-                    r.language_id(),
-                    *index,
-                )
+                (r.encoding_id(), !is_english(platform, r.language_id()), r.language_id(), *index)
             });
 
             for (_, record) in matching {
@@ -969,9 +943,8 @@ fn collect_names(font: &FontRef<'_>, ids: &[u16]) -> Vec<(String, &'static str)>
                 // two names -- ignoring case and blanks -- so a font that
                 // spells the same style `kursiv` for one language and
                 // `Kursiv` for another contributes it once.
-                let duplicate = out
-                    .iter()
-                    .any(|(existing, _)| casefold::eq_ignoring_blanks(existing, &text));
+                let duplicate =
+                    out.iter().any(|(existing, _)| casefold::eq_ignoring_blanks(existing, &text));
                 if text.is_empty() || duplicate {
                     continue;
                 }
@@ -1084,10 +1057,7 @@ fn scan_type1(data: &[u8], path: &str) -> Result<Vec<Query>, ScanError> {
     let angle = font.italic_angle();
     let slant = if angle == 0 {
         0
-    } else if font
-        .full_name()
-        .is_some_and(|n| n.to_lowercase().contains("italic"))
-    {
+    } else if font.full_name().is_some_and(|n| n.to_lowercase().contains("italic")) {
         100
     } else {
         110
@@ -1130,10 +1100,7 @@ const NOTICE_FOUNDRIES: [(&str, &str); 18] = [
 
 /// The foundry a copyright notice names, if it names one.
 fn notice_to_foundry(notice: &str) -> Option<&'static str> {
-    NOTICE_FOUNDRIES
-        .iter()
-        .find(|(needle, _)| notice.contains(needle))
-        .map(|(_, foundry)| *foundry)
+    NOTICE_FOUNDRIES.iter().find(|(needle, _)| notice.contains(needle)).map(|(_, foundry)| *foundry)
 }
 
 /// The foundry named by a Type 1 font's notice, if it names one.

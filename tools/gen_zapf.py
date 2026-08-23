@@ -60,10 +60,7 @@ tail = '''];
 
 /// The codepoint a ZapfDingbats glyph name stands for.
 pub fn codepoint(name: &str) -> Option<u32> {
-    NAMES
-        .binary_search_by_key(&name, |(n, _)| n)
-        .ok()
-        .map(|index| NAMES[index].1)
+    NAMES.binary_search_by_key(&name, |(n, _)| n).ok().map(|index| NAMES[index].1)
 }
 
 #[cfg(test)]

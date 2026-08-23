@@ -749,10 +749,10 @@ mod tests {
     #[test]
     fn folding_is_not_lowercasing() {
         for (input, folds_to) in [
-            ("stra\u{00df}e", "strasse"),   // U+00DF LATIN SMALL LETTER SHARP S
-            ("STRA\u{1e9e}E", "strasse"),   // U+1E9E LATIN CAPITAL LETTER SHARP S
-            ("\u{fb01}n", "fin"),           // U+FB01 LATIN SMALL LIGATURE FI
-            ("\u{03c2}", "\u{03c3}"),       // final sigma folds with medial sigma
+            ("stra\u{00df}e", "strasse"), // U+00DF LATIN SMALL LETTER SHARP S
+            ("STRA\u{1e9e}E", "strasse"), // U+1E9E LATIN CAPITAL LETTER SHARP S
+            ("\u{fb01}n", "fin"),         // U+FB01 LATIN SMALL LIGATURE FI
+            ("\u{03c2}", "\u{03c3}"),     // final sigma folds with medial sigma
         ] {
             assert_eq!(folded(input), folds_to, "folding {input:?}");
             assert_ne!(

@@ -5,15 +5,13 @@ use std::path::{Path, PathBuf};
 use fontconf::{Cache, Config, Object, Pattern};
 
 fn fixture(name: &str) -> Config {
-    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("tests/fixtures/select")
-        .join(name);
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/select").join(name);
     Config::load_from(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()))
 }
 
 fn cantarell() -> Cache {
-    let path: PathBuf = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("tests/fixtures/cantarell-le64.cache-9");
+    let path: PathBuf =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/cantarell-le64.cache-9");
     Cache::open(&path).expect("fixture cache")
 }
 

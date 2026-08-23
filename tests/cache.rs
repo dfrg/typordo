@@ -8,9 +8,7 @@
 use fontconf::{Cache, Error, Object, Value};
 
 fn fixture(name: &str) -> Cache {
-    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("tests/fixtures")
-        .join(name);
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures").join(name);
     Cache::open(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()))
 }
 
@@ -144,20 +142,14 @@ fn a_cache_built_in_memory_is_rejected() {
     // FC_CACHE_MAGIC_ALLOC: a cache fontconfig built in memory.
     const ALLOC: u32 = 0xFC02_FC05;
     bytes[0..4].copy_from_slice(&ALLOC.to_le_bytes());
-    assert_eq!(
-        Cache::new(bytes.into_boxed_slice()).err(),
-        Some(Error::BadMagic(ALLOC))
-    );
+    assert_eq!(Cache::new(bytes.into_boxed_slice()).err(), Some(Error::BadMagic(ALLOC)));
 }
 
 #[test]
 fn another_format_version_is_rejected_rather_than_guessed_at() {
     let mut bytes = cantarell().as_bytes().to_vec();
     bytes[4..8].copy_from_slice(&12i32.to_le_bytes());
-    assert_eq!(
-        Cache::new(bytes.into_boxed_slice()).err(),
-        Some(Error::UnsupportedVersion(12))
-    );
+    assert_eq!(Cache::new(bytes.into_boxed_slice()).err(), Some(Error::UnsupportedVersion(12)));
 }
 
 /// The header's own length field is what rejects a cache from a build with a
@@ -331,10 +323,8 @@ fn charset_len_matches_the_characters_it_yields() {
     assert_eq!(charset.len(), charset.chars().count());
     assert!(!charset.is_empty());
     // Ranges must partition the same set of characters, in the same order.
-    let from_ranges: usize = charset
-        .ranges()
-        .map(|(a, b)| (b as u32 - a as u32 + 1) as usize)
-        .sum();
+    let from_ranges: usize =
+        charset.ranges().map(|(a, b)| (b as u32 - a as u32 + 1) as usize).sum();
     assert_eq!(from_ranges, charset.len());
 }
 

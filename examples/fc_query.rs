@@ -27,10 +27,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let field = if format == "properties" {
         None
     } else {
-        Some(
-            Object::from_name(&format)
-                .ok_or_else(|| format!("unknown property {format}"))?,
-        )
+        Some(Object::from_name(&format).ok_or_else(|| format!("unknown property {format}"))?)
     };
 
     if batch {

@@ -103,12 +103,12 @@ mod glob;
 pub mod langs;
 mod langset;
 mod layout;
-mod orth;
 mod matching;
 mod md5;
 #[cfg(feature = "scan")]
 mod name_langs;
 mod object;
+mod orth;
 mod pattern;
 mod prepare;
 mod query;
@@ -116,27 +116,25 @@ mod rules;
 #[cfg(feature = "scan")]
 mod scan;
 mod value;
-mod write;
 pub mod weight;
+mod write;
 mod xml;
 mod zapf;
 
+#[cfg(feature = "scan")]
+pub use build::{Builder, Built};
 pub use cache::{Cache, Fonts, Subdirs, VERSION};
+pub use charset::{CharSet, Chars, Coverage};
 pub use config::{Caches, Config, ConfigError, ARCHITECTURE};
 pub use error::{Error, Result};
-pub use charset::{CharSet, Chars, Coverage};
-pub use matching::{
-    best, best_value, score, sort, sorted, BestValue, Priority, Score, PRIORITIES,
-};
+pub use langset::{LangResult, LangSet, Langs, Languages};
+pub use matching::{best, best_value, score, sort, sorted, BestValue, Priority, Score, PRIORITIES};
 pub use object::Object;
-pub use rules::MatchKind;
 pub use pattern::{Bindings, Element, Elements, Pattern, Values};
 pub use prepare::render_prepare;
 pub use query::{default_langs, OwnedValue, Query};
-#[cfg(feature = "scan")]
-pub use build::{Builder, Built};
+pub use rules::MatchKind;
 #[cfg(feature = "scan")]
 pub use scan::{scan_bytes, scan_file, ScanError};
-pub use langset::{LangResult, LangSet, Langs, Languages};
 pub use value::{Binding, Matrix, Range, Value};
 pub use write::CacheWriter;

@@ -124,9 +124,7 @@ tail = '''];
 /// The codepoint ranges language `index` needs, inclusive.
 pub fn orthography(index: usize) -> &'static [(u32, u32)] {
     match SPANS.get(index) {
-        Some((offset, count)) => {
-            &RANGES[*offset as usize..*offset as usize + *count as usize]
-        }
+        Some((offset, count)) => &RANGES[*offset as usize..*offset as usize + *count as usize],
         None => &[],
     }
 }

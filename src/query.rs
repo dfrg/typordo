@@ -7,9 +7,9 @@
 
 use std::fmt;
 
-use crate::object::Object;
 use crate::charset::{Chars, Coverage};
 use crate::langset::{Langs, Languages};
+use crate::object::Object;
 use crate::value::{Binding, Matrix, Range, Value};
 
 /// A value a query can hold.
@@ -228,10 +228,7 @@ impl Query {
         let value = value.into();
         match self.position(object) {
             Ok(at) => self.elements[at].values.push((value, binding)),
-            Err(at) => self.elements.insert(
-                at,
-                Element { object, values: vec![(value, binding)] },
-            ),
+            Err(at) => self.elements.insert(at, Element { object, values: vec![(value, binding)] }),
         }
         self
     }
@@ -328,17 +325,13 @@ impl Query {
     }
 
     /// The value list for `property`, creating it if needed.
-    pub(crate) fn values_mut(
-        &mut self,
-        property: &Property,
-    ) -> &mut Vec<(OwnedValue, Binding)> {
+    pub(crate) fn values_mut(&mut self, property: &Property) -> &mut Vec<(OwnedValue, Binding)> {
         match property {
             Property::Known(object) => {
                 let at = match self.position(*object) {
                     Ok(at) => at,
                     Err(at) => {
-                        self.elements
-                            .insert(at, Element { object: *object, values: Vec::new() });
+                        self.elements.insert(at, Element { object: *object, values: Vec::new() });
                         at
                     }
                 };

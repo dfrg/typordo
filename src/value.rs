@@ -1,7 +1,7 @@
 use crate::bytes::Bytes;
 use crate::charset::{CharSet, Chars};
-use crate::langset::{LangSet, Languages};
 use crate::error::{Error, Result};
+use crate::langset::{LangSet, Languages};
 
 /// A 2x2 transform, fontconfig's `FcMatrix`.
 #[derive(Clone, Copy, Debug, PartialEq)]

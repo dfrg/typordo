@@ -15,8 +15,7 @@ fn fixture_font() -> Option<PathBuf> {
 }
 
 fn cached() -> Cache {
-    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("tests/fixtures/cantarell-le64.cache-9");
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/cantarell-le64.cache-9");
     Cache::open(&path).expect("fixture cache")
 }
 
@@ -46,11 +45,7 @@ fn a_variable_font_scans_to_the_faces_the_cache_recorded() {
     );
 
     for (ours, theirs) in scanned.iter().zip(&recorded) {
-        assert_eq!(
-            string(ours, Object::Style).as_deref(),
-            theirs.string(Object::Style),
-            "style"
-        );
+        assert_eq!(string(ours, Object::Style).as_deref(), theirs.string(Object::Style), "style");
         let ours_index = match ours.value(Object::Index) {
             Some(OwnedValue::Int(i)) => Some(*i),
             _ => None,
@@ -245,10 +240,8 @@ fn localized_names_are_tagged_and_english_leads() {
     assert_eq!(langs, styles.len(), "each name needs its language");
 
     // The same word in two cases is one name, not two.
-    let mut folded: Vec<String> = styles
-        .iter()
-        .map(|s| fontconf::casefold::fold_str(s).collect())
-        .collect();
+    let mut folded: Vec<String> =
+        styles.iter().map(|s| fontconf::casefold::fold_str(s).collect()).collect();
     folded.sort();
     let before = folded.len();
     folded.dedup();

@@ -8,6 +8,7 @@
 //! It is 60 lines and lets the crate keep its empty dependency list.
 
 /// Per-round left-rotation amounts (RFC 1321, section 3.4).
+#[rustfmt::skip]
 const SHIFTS: [u32; 64] = [
     7, 12, 17, 22, 7, 12, 17, 22, 7, 12, 17, 22, 7, 12, 17, 22, //
     5, 9, 14, 20, 5, 9, 14, 20, 5, 9, 14, 20, 5, 9, 14, 20, //
@@ -16,6 +17,7 @@ const SHIFTS: [u32; 64] = [
 ];
 
 /// Round constants: `floor(2^32 * abs(sin(i + 1)))`.
+#[rustfmt::skip]
 const SINES: [u32; 64] = [
     0xd76a_a478, 0xe8c7_b756, 0x2420_70db, 0xc1bd_ceee, //
     0xf57c_0faf, 0x4787_c62a, 0xa830_4613, 0xfd46_9501, //
@@ -91,10 +93,7 @@ fn compress(state: &mut [u32; 4], block: &[u8; 64]) {
             2 => (b ^ c ^ d, (3 * i + 5) % 16),
             _ => (c ^ (b | !d), (7 * i) % 16),
         };
-        let f = mix
-            .wrapping_add(a)
-            .wrapping_add(SINES[i])
-            .wrapping_add(m[g]);
+        let f = mix.wrapping_add(a).wrapping_add(SINES[i]).wrapping_add(m[g]);
         a = d;
         d = c;
         c = b;

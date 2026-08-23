@@ -28,6 +28,7 @@ use std::path::{Path, PathBuf};
 use crate::cache::Cache;
 use crate::casefold;
 use crate::glob;
+use crate::langset::Langs;
 use crate::md5;
 use crate::object::Object;
 use crate::pattern::Pattern;
@@ -35,7 +36,6 @@ use crate::query::{OwnedValue, Property, Query};
 use crate::rules::{
     BinaryOp, Compare, Edit, EditMode, Expr, MatchKind, Qual, Rule, Step, Test, UnaryOp,
 };
-use crate::langset::Langs;
 use crate::value::{Binding, Matrix, Range, Value};
 use crate::xml::{Event, Reader, XmlError};
 
@@ -614,10 +614,7 @@ static CONSTANTS: &[(&str, i32)] = &[
 /// per property to 100 would be the more sensible answer and the wrong one;
 /// `fc-list` rejects nothing for that selector, and so must this.
 fn constant(name: &str) -> Option<i32> {
-    CONSTANTS
-        .iter()
-        .find(|(constant, _)| *constant == name)
-        .map(|(_, value)| *value)
+    CONSTANTS.iter().find(|(constant, _)| *constant == name).map(|(_, value)| *value)
 }
 
 /// Parse an integer the way `FcParseInt` does, with `strtol` base 0.
@@ -654,11 +651,19 @@ struct Selectors {
 
 impl Selectors {
     fn globs_mut(&mut self) -> &mut Vec<String> {
-        if self.accepting { &mut self.accept_globs } else { &mut self.reject_globs }
+        if self.accepting {
+            &mut self.accept_globs
+        } else {
+            &mut self.reject_globs
+        }
     }
 
     fn patterns_mut(&mut self) -> &mut Vec<Selector> {
-        if self.accepting { &mut self.accept_patterns } else { &mut self.reject_patterns }
+        if self.accepting {
+            &mut self.accept_patterns
+        } else {
+            &mut self.reject_patterns
+        }
     }
 
     /// Whether any rule was configured at all.
@@ -694,9 +699,7 @@ impl Selector {
                 return false;
             };
             // Every value the selector names must be found on the font.
-            wanted
-                .iter()
-                .all(|want| element.values().any(|got| want.matches(&got)))
+            wanted.iter().all(|want| element.values().any(|got| want.matches(&got)))
         })
     }
 }
@@ -798,12 +801,7 @@ impl Config {
     /// `pattern` is the original query, which a font-target rule can read
     /// through `target="pattern"` to compare what was asked for against what
     /// was found. It is unused for pattern-target rules.
-    pub fn substitute_kind(
-        &self,
-        query: &mut Query,
-        kind: MatchKind,
-        pattern: Option<&Query>,
-    ) {
+    pub fn substitute_kind(&self, query: &mut Query, kind: MatchKind, pattern: Option<&Query>) {
         for rule in &self.rules {
             if rule.kind == kind {
                 rule.apply(query, pattern);
@@ -838,7 +836,8 @@ impl Config {
                     // prefix. Fontconfig maps the prefix only.
                     Some(map) => {
                         key.push_str(&map.to_string_lossy());
-                        let rest = dir[entry.path.to_string_lossy().len()..].trim_start_matches('/');
+                        let rest =
+                            dir[entry.path.to_string_lossy().len()..].trim_start_matches('/');
                         if !rest.is_empty() {
                             key.push('/');
                             key.push_str(rest);
@@ -917,8 +916,8 @@ impl Config {
             return Ok(());
         }
 
-        let source = std::fs::read_to_string(path)
-            .map_err(|e| ConfigError::Io(path.to_path_buf(), e))?;
+        let source =
+            std::fs::read_to_string(path).map_err(|e| ConfigError::Io(path.to_path_buf(), e))?;
         self.files.push(path.to_path_buf());
 
         // A frame per open element, so nested constructs like
@@ -940,10 +939,7 @@ impl Config {
                         values: Vec::new(),
                         elements: Vec::new(),
                         poisoned: false,
-                        attrs: attrs
-                            .iter()
-                            .map(|(k, v)| (k.to_string(), v.into_owned()))
-                            .collect(),
+                        attrs: attrs.iter().map(|(k, v)| (k.to_string(), v.into_owned())).collect(),
                         exprs: Vec::new(),
                         steps: Vec::new(),
                         sections: HashMap::new(),
@@ -1007,8 +1003,8 @@ impl Config {
             }
             // The value elements, including the four that build themselves
             // out of children.
-            "string" | "int" | "double" | "bool" | "const" | "matrix" | "charset"
-            | "langset" | "range" => {
+            "string" | "int" | "double" | "bool" | "const" | "matrix" | "charset" | "langset"
+            | "range" => {
                 let Some(parent) = stack.last_mut() else { return Ok(()) };
                 match parent.name.as_str() {
                     // A container collects its children: four numbers for a
@@ -1164,11 +1160,9 @@ impl Config {
             }
             "if" => {
                 let expr = match frame.exprs.as_slice() {
-                    [c, t, e] => Expr::If(
-                        Box::new(c.clone()),
-                        Box::new(t.clone()),
-                        Box::new(e.clone()),
-                    ),
+                    [c, t, e] => {
+                        Expr::If(Box::new(c.clone()), Box::new(t.clone()), Box::new(e.clone()))
+                    }
                     _ => Expr::Unknown,
                 };
                 if let Some(parent) = stack.last_mut() {
@@ -1176,8 +1170,7 @@ impl Config {
                 }
             }
             "pattern" if !frame.elements.is_empty() => {
-                let selector =
-                    Selector { elements: frame.elements, usable: !frame.poisoned };
+                let selector = Selector { elements: frame.elements, usable: !frame.poisoned };
                 self.selectors.patterns_mut().push(selector);
             }
             _ => {}
@@ -1394,11 +1387,7 @@ fn xdg_config_home() -> Option<PathBuf> {
 fn xdg_data_dirs() -> Vec<Option<PathBuf>> {
     let value = std::env::var("XDG_DATA_DIRS").unwrap_or_default();
     let value = if value.is_empty() { "/usr/local/share:/usr/share".to_string() } else { value };
-    value
-        .split(':')
-        .filter(|p| !p.is_empty())
-        .map(|p| Some(PathBuf::from(p)))
-        .collect()
+    value.split(':').filter(|p| !p.is_empty()).map(|p| Some(PathBuf::from(p))).collect()
 }
 
 /// Where fontconfig looks for its root configuration file.

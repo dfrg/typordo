@@ -54,13 +54,9 @@ fn default_substitute_fills_what_matching_needs() {
 #[test]
 fn a_weight_request_picks_the_matching_instance() {
     let cache = cantarell();
-    for (weight, expected) in [
-        (80, "Regular"),
-        (0, "Thin"),
-        (50, "Light"),
-        (200, "Bold"),
-        (205, "Extra Bold"),
-    ] {
+    for (weight, expected) in
+        [(80, "Regular"), (0, "Thin"), (50, "Light"), (200, "Bold"), (205, "Extra Bold")]
+    {
         let q = query(|q| {
             q.add(Object::Family, "Cantarell");
             q.add(Object::Weight, weight);
@@ -256,8 +252,8 @@ fn a_score_of_all_zeroes_beats_nothing_and_loses_to_nothing() {
 
 fn plain_config() -> fontconf::Config {
     // A config with no rules at all, so prepare is tested on its own.
-    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("tests/fixtures/config/fonts.conf");
+    let path =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/config/fonts.conf");
     fontconf::Config::load_from(&path).expect("fixture config")
 }
 
@@ -337,11 +333,8 @@ fn a_request_outside_the_axis_clamps_to_it() {
 fn a_static_face_records_no_variations() {
     let cache = cantarell();
     let config = plain_config();
-    let regular = cache
-        .fonts()
-        .unwrap()
-        .find(|f| f.string(Object::Style) == Some("Regular"))
-        .unwrap();
+    let regular =
+        cache.fonts().unwrap().find(|f| f.string(Object::Style) == Some("Regular")).unwrap();
     let q = query(|q| {
         q.add(Object::Family, "Cantarell");
     });
@@ -400,13 +393,7 @@ fn sorting_agrees_with_best_on_the_winner() {
 fn coverage_reports_whether_a_font_contributed() {
     use fontconf::{Coverage, Value};
     let cache = cantarell();
-    let charset = match cache
-        .fonts()
-        .unwrap()
-        .next()
-        .unwrap()
-        .value(Object::Charset)
-    {
+    let charset = match cache.fonts().unwrap().next().unwrap().value(Object::Charset) {
         Some(Value::CharSet(c)) => c,
         other => panic!("expected a charset, got {other:?}"),
     };

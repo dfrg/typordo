@@ -121,21 +121,11 @@ pub fn render_prepare(config: &Config, query: &Query, font: &Pattern<'_>) -> Que
 /// best is moved to the front and made strong, so `%{family}` reports the
 /// caller's preferred localization rather than whichever the font listed
 /// first. Without a language preference the lists are copied unchanged.
-fn copy_localized(
-    query: &Query,
-    font: &Pattern<'_>,
-    name: Object,
-    lang: Object,
-    out: &mut Query,
-) {
-    let names: Vec<OwnedValue> = font
-        .get(name)
-        .map(|e| e.values().map(own).collect())
-        .unwrap_or_default();
-    let langs: Vec<OwnedValue> = font
-        .get(lang)
-        .map(|e| e.values().map(own).collect())
-        .unwrap_or_default();
+fn copy_localized(query: &Query, font: &Pattern<'_>, name: Object, lang: Object, out: &mut Query) {
+    let names: Vec<OwnedValue> =
+        font.get(name).map(|e| e.values().map(own).collect()).unwrap_or_default();
+    let langs: Vec<OwnedValue> =
+        font.get(lang).map(|e| e.values().map(own).collect()).unwrap_or_default();
 
     // The query's own language list decides which entry to promote.
     let promote = query
@@ -155,19 +145,13 @@ fn copy_localized(
     };
 
     for (position, index) in order(&names).into_iter().enumerate() {
-        let binding = if position == 0 && promote.is_some() {
-            Binding::Strong
-        } else {
-            Binding::Weak
-        };
+        let binding =
+            if position == 0 && promote.is_some() { Binding::Strong } else { Binding::Weak };
         out.add_with_binding(name, names[index].clone(), binding);
     }
     for (position, index) in order(&langs).into_iter().enumerate() {
-        let binding = if position == 0 && promote.is_some() {
-            Binding::Strong
-        } else {
-            Binding::Weak
-        };
+        let binding =
+            if position == 0 && promote.is_some() { Binding::Strong } else { Binding::Weak };
         out.add_with_binding(lang, langs[index].clone(), binding);
     }
 }
@@ -188,11 +172,7 @@ fn axis_tag(object: Object) -> Option<&'static str> {
 /// to be converted back to OpenType's 1..1000 before it means anything to a
 /// font.
 fn format_axis(tag: &str, object: Object, value: f64) -> String {
-    let number = if object == Object::Weight {
-        crate::weight::to_opentype(value)
-    } else {
-        value
-    };
+    let number = if object == Object::Weight { crate::weight::to_opentype(value) } else { value };
     format!("{tag}={}", format_number(number))
 }
 

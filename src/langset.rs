@@ -96,11 +96,7 @@ impl<'a> LangSet<'a> {
     /// Scoring asks this for every font in the set with the same tag, and
     /// the search that finds `start` is a binary search over three hundred
     /// names. It depends only on the query, so it is done once there.
-    pub fn has_lang_from(
-        &self,
-        lang: &str,
-        rank: std::result::Result<usize, usize>,
-    ) -> LangResult {
+    pub fn has_lang_from(&self, lang: &str, rank: std::result::Result<usize, usize>) -> LangResult {
         // Ranks, not bit indices: the walk has to go through neighbours in
         // *name* order for the early exits below to be sound.
         let start = match rank {
@@ -237,9 +233,7 @@ fn is_subtag_end(c: Option<char>) -> bool {
 
 fn is_undetermined(lang: &str) -> bool {
     let rest = lang.as_bytes();
-    rest.len() >= 3
-        && rest[..3].eq_ignore_ascii_case(b"und")
-        && is_subtag_end(lang.chars().nth(3))
+    rest.len() >= 3 && rest[..3].eq_ignore_ascii_case(b"und") && is_subtag_end(lang.chars().nth(3))
 }
 
 impl PartialEq for LangSet<'_> {
@@ -490,9 +484,7 @@ impl Langs {
     /// Only the table half: see [`Langs::contains_lang`] for the question
     /// that also consults the names the table cannot hold.
     pub fn contains_index(&self, index: usize) -> bool {
-        self.bits
-            .get(index / 32)
-            .is_some_and(|word| word & (1 << (index % 32)) != 0)
+        self.bits.get(index / 32).is_some_and(|word| word & (1 << (index % 32)) != 0)
     }
 
     /// Every language in the set: the table half in bit order, then any
@@ -653,11 +645,7 @@ impl<'a> Languages<'a> {
     }
 
     /// The same, for a caller that already knows where `lang` sorts.
-    pub fn has_lang_from(
-        &self,
-        lang: &str,
-        rank: std::result::Result<usize, usize>,
-    ) -> LangResult {
+    pub fn has_lang_from(&self, lang: &str, rank: std::result::Result<usize, usize>) -> LangResult {
         // Ranks, not bit indices: the walk goes through neighbours in name
         // order for the early exits to be sound.
         let start = match rank {

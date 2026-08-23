@@ -48,10 +48,8 @@ fn main() -> Result<(), Box<dyn Error>> {
     // Each character is charged once, so what is printed under a font is the
     // set of distinct characters it claimed -- "Hello" shows as "Helo".
     let mut seen = std::collections::HashSet::new();
-    let mut remaining: Vec<char> = text
-        .chars()
-        .filter(|c| !c.is_whitespace() && seen.insert(*c))
-        .collect();
+    let mut remaining: Vec<char> =
+        text.chars().filter(|c| !c.is_whitespace() && seen.insert(*c)).collect();
 
     for (font, _) in &ranked {
         if remaining.is_empty() {

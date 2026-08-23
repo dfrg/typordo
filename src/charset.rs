@@ -98,8 +98,7 @@ impl<'a> CharSet<'a> {
         (0..set.pages()).flat_map(move |index| {
             let base = u32::from(set.page_number(index).unwrap_or(0)) * PAGE;
             let leaf = set.leaf(index).unwrap_or([0; LEAF_WORDS]);
-            (0..LEAF_WORDS)
-                .flat_map(move |word| set_bits(leaf[word], base + word as u32 * 32))
+            (0..LEAF_WORDS).flat_map(move |word| set_bits(leaf[word], base + word as u32 * 32))
         })
     }
 
@@ -528,9 +527,9 @@ impl Coverage {
     pub fn chars(&self) -> impl Iterator<Item = char> + '_ {
         self.pages.iter().flat_map(move |(page, leaf)| {
             let base = u32::from(*page) * PAGE;
-            leaf.iter().enumerate().flat_map(move |(word, bits)| {
-                set_bits(*bits, base + word as u32 * 32)
-            })
+            leaf.iter()
+                .enumerate()
+                .flat_map(move |(word, bits)| set_bits(*bits, base + word as u32 * 32))
         })
     }
 
@@ -538,9 +537,9 @@ impl Coverage {
     ///
     /// This is the question a language orthography asks.
     pub fn covers_ranges(&self, ranges: &[(u32, u32)]) -> bool {
-        ranges.iter().all(|(lo, hi)| {
-            (*lo..=*hi).all(|c| char::from_u32(c).is_none_or(|c| self.contains(c)))
-        })
+        ranges
+            .iter()
+            .all(|(lo, hi)| (*lo..=*hi).all(|c| char::from_u32(c).is_none_or(|c| self.contains(c))))
     }
 }
 

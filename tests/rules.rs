@@ -41,10 +41,7 @@ fn an_alias_prefers_before_and_defaults_after() {
         .into_iter()
         .map(|(name, _)| name)
         .collect();
-    assert_eq!(
-        names,
-        ["Preferred Sans", "Second Sans", "sans-serif", "Last Resort Sans"]
-    );
+    assert_eq!(names, ["Preferred Sans", "Second Sans", "sans-serif", "Last Resort Sans"]);
 }
 
 /// `binding="same"` inherits from the value a test marked -- but only where
@@ -109,10 +106,8 @@ fn one_failing_test_abandons_the_rule() {
     let config = config();
     let mut query = with_family("NeverMatches");
     query.add(Object::Weight, 80);
-    let names: Vec<String> = families(&config, &mut query)
-        .into_iter()
-        .map(|(name, _)| name)
-        .collect();
+    let names: Vec<String> =
+        families(&config, &mut query).into_iter().map(|(name, _)| name).collect();
     assert_eq!(names, ["NeverMatches"]);
 }
 
@@ -176,10 +171,13 @@ fn substitution_injects_the_locale_languages() {
         assert_eq!(*binding, Binding::Weak, "injected languages must be weak");
     }
     assert_eq!(
-        values.iter().filter_map(|(v, _)| match v {
-            OwnedValue::String(s) => Some(s.as_str()),
-            _ => None,
-        }).collect::<Vec<_>>(),
+        values
+            .iter()
+            .filter_map(|(v, _)| match v {
+                OwnedValue::String(s) => Some(s.as_str()),
+                _ => None,
+            })
+            .collect::<Vec<_>>(),
         fontconf::default_langs().iter().map(String::as_str).collect::<Vec<_>>()
     );
 }
