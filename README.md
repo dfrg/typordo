@@ -56,8 +56,21 @@ the source, which does not tell you what a real font set does to it: against
 `fc-list`, `fc-match`, `fc-query` and `fc-cache` running on the same machine
 over the same fonts.
 
-`scripts/` holds those harnesses, one per surface. They are the reason the
-parity numbers below are numbers rather than adjectives.
+`scripts/` holds those harnesses, one per surface:
+
+| harness | compares | result |
+| --- | --- | --- |
+| `scan_parity` | every property of every font, against `fc-query` | 64371 / 64395 |
+| `prepare_parity` | a query after substitution, field by field | 7060 / 7060 |
+| `match_parity` | which font `fc-match` returns | 3455 / 3455, no ties |
+| `sort_parity` | the whole ordering, trimmed and not | 29 / 29 |
+| `charset_parity` | coverage, per font | 2385 / 2385 |
+| `select_parity` | `<selectfont>` accept and reject rules | 22 / 22 |
+| `lang_parity` | every langset in every cache | identical |
+| `write_parity` | fontconfig reading caches we wrote | 2999 patterns, both rounds |
+| `name_parity` | the cache file name for a directory | 11 / 11 |
+
+The one shortfall is `scan_parity`, and it is deliberate: see Status below.
 
 The corpus is Fedora 44 under WSL: 2385 font files producing 2999 patterns
 across 336 primary family names and 281 languages, with 378 configuration
