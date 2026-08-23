@@ -88,12 +88,24 @@ impl<'a> LangSet<'a> {
     /// best result among the languages it actually has, and stops as soon as
     /// the neighbours stop being related at all.
     pub fn has_lang(&self, lang: &str) -> LangResult {
+        self.has_lang_from(lang, langs::rank_of(lang))
+    }
+
+    /// The same, for a caller that already knows where `lang` sorts.
+    ///
+    /// Scoring asks this for every font in the set with the same tag, and
+    /// the search that finds `start` is a binary search over three hundred
+    /// names. It depends only on the query, so it is done once there.
+    pub fn has_lang_from(
+        &self,
+        lang: &str,
+        rank: std::result::Result<usize, usize>,
+    ) -> LangResult {
         // Ranks, not bit indices: the walk has to go through neighbours in
         // *name* order for the early exits below to be sound.
-        let start = match langs::rank_of(lang) {
+        let start = match rank {
             Ok(rank) if self.contains_rank(rank) => return LangResult::Equal,
             Ok(rank) => rank,
-            // Not in the table: start from where it would have been.
             Err(insertion) => insertion,
         };
 
@@ -637,9 +649,18 @@ impl<'a> Languages<'a> {
 
     /// How well this set answers a request for `lang`.
     pub fn has_lang(&self, lang: &str) -> LangResult {
+        self.has_lang_from(lang, langs::rank_of(lang))
+    }
+
+    /// The same, for a caller that already knows where `lang` sorts.
+    pub fn has_lang_from(
+        &self,
+        lang: &str,
+        rank: std::result::Result<usize, usize>,
+    ) -> LangResult {
         // Ranks, not bit indices: the walk goes through neighbours in name
         // order for the early exits to be sound.
-        let start = match langs::rank_of(lang) {
+        let start = match rank {
             Ok(rank) if self.contains_rank(rank) => return LangResult::Equal,
             Ok(rank) => rank,
             Err(insertion) => insertion,

@@ -21,7 +21,25 @@
 
 use std::time::Instant;
 
-use fontconf::{best, sort as sort_fonts, Config, Object, Pattern, Query};
+use fontconf::{best, sort as sort_fonts, Config, Object, OwnedValue, Pattern, Query};
+
+/// A script, as a language tag and eight characters sampled from it.
+///
+/// This is the shape of query a fallback picker actually asks: it has some
+/// text it cannot render, so it names the characters and the language, and
+/// wants the font that covers them. No family at all.
+const SCRIPTS: [(&str, [u32; 8]); 10] = [
+    ("en", [0x41, 0x61, 0x7a, 0xe9, 0xf1, 0xfc, 0xdf, 0x152]),
+    ("el", [0x3b1, 0x3b2, 0x3b3, 0x3b4, 0x3b5, 0x3b6, 0x3b7, 0x3b8]),
+    ("ru", [0x430, 0x431, 0x432, 0x433, 0x434, 0x435, 0x436, 0x437]),
+    ("he", [0x5d0, 0x5d1, 0x5d2, 0x5d3, 0x5d4, 0x5d5, 0x5d6, 0x5d7]),
+    ("ar", [0x627, 0x628, 0x629, 0x62a, 0x62b, 0x62c, 0x62d, 0x62e]),
+    ("hi", [0x905, 0x906, 0x907, 0x908, 0x909, 0x90a, 0x90b, 0x90c]),
+    ("zh-cn", [0x4e00, 0x4e01, 0x4e02, 0x4e03, 0x4e04, 0x4e05, 0x4e06, 0x4e07]),
+    ("ja", [0x3042, 0x3044, 0x3046, 0x3048, 0x304a, 0x304b, 0x304d, 0x304f]),
+    ("ko", [0xac00, 0xac01, 0xac02, 0xac03, 0xac04, 0xac05, 0xac06, 0xac07]),
+    ("th", [0xe01, 0xe02, 0xe03, 0xe04, 0xe05, 0xe06, 0xe07, 0xe08]),
+];
 
 /// The queries the match and sort benchmarks run, cycled through.
 ///
@@ -132,6 +150,34 @@ fn run(op: &str, iterations: u32) -> Result<u64, Box<dyn std::error::Error>> {
             for i in 0..iterations {
                 let query = prepared(&config, QUERIES[i as usize % QUERIES.len()]);
                 n += sort_fonts(&query, fonts.iter().copied(), true).len() as u64;
+            }
+            Ok(n)
+        }
+
+        // What a fallback picker asks: a charset of a few characters and a
+        // language, and no family at all. Every font in the set has to have
+        // its coverage consulted, which none of the other queries do.
+        "charmatch" | "charsort" => {
+            let (config, caches) = loaded()?;
+            let fonts = fonts(&config, &caches)?;
+            let mut n = 0u64;
+            for i in 0..iterations {
+                let (lang, chars) = &SCRIPTS[i as usize % SCRIPTS.len()];
+                let mut query = Query::new();
+                let mut coverage = fontconf::Coverage::new();
+                for c in chars.iter().filter_map(|c| char::from_u32(*c)) {
+                    coverage.insert(c);
+                }
+                query.add(Object::Charset, OwnedValue::CharSet(coverage));
+                query.add(Object::Lang, *lang);
+                config.substitute(&mut query);
+                query.default_substitute();
+
+                if op == "charsort" {
+                    n += sort_fonts(&query, fonts.iter().copied(), true).len() as u64;
+                } else if let Some((font, _)) = best(&query, fonts.iter().copied()) {
+                    n += font.string(Object::File).map_or(0, |s| s.len()) as u64;
+                }
             }
             Ok(n)
         }

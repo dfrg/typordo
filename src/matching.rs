@@ -331,7 +331,12 @@ fn compare_charset(a: &Value<'_>, b: &Value<'_>) -> Option<f64> {
 }
 
 fn subtract_count(want: &Chars<'_>, got: &Chars<'_>) -> usize {
-    want.chars().filter(|c| !got.contains(*c)).count()
+    match got {
+        // The font's coverage is the side worth resolving once: it is read
+        // out of a cache, and the query names only a few characters.
+        Chars::Cached(set) => set.missing_count(want.chars()),
+        Chars::Owned(set) => want.chars().filter(|c| !set.contains(*c)).count(),
+    }
 }
 
 /// A language request scores by how close the font gets: the same language
@@ -510,6 +515,44 @@ impl<'q> Families<'q> {
     }
 }
 
+/// Language, scored against ranks worked out once for the query.
+///
+/// The same shape as [`score_values`] for a matcher whose two priorities are
+/// the same -- language has no strong and weak halves -- with the table
+/// search lifted out. The arms that are not a tag against a set fall back to
+/// the general comparison, which is what a query carrying a language *set*
+/// takes.
+fn score_langs(
+    ranks: &[LangRank],
+    query: &Element,
+    font: &Values<'_>,
+    score: &mut Score,
+) -> bool {
+    let mut best = NO_MATCH;
+    'outer: for (j, (want, _binding)) in query.values().enumerate() {
+        let want = want.as_value();
+        for got in font.clone() {
+            let result = match (&want, &got, ranks.get(j)) {
+                (Value::String(tag), Value::LangSet(set), Some(rank)) => {
+                    set.has_lang_from(tag, *rank) as u8 as f64
+                }
+                _ => match compare_lang(&want, &got) {
+                    Some(distance) => distance,
+                    None => return false,
+                },
+            };
+            // A language set never scores by position within the font, so
+            // there is no `k` term here: see [`score_values`].
+            best = best.min(result * 1000.0 + j as f64 * 100.0);
+            if best < 1000.0 {
+                break 'outer;
+            }
+        }
+    }
+    score.0[Priority::Lang as usize] += best;
+    true
+}
+
 /// Family is scored by *position*, not by distance.
 ///
 /// The score is the index of the earliest query family the font also has --
@@ -547,7 +590,15 @@ pub fn score(query: &Query, font: &Pattern<'_>) -> Option<Score> {
 struct Prepared<'q> {
     families: Families<'q>,
     elements: Vec<Prepped<'q>>,
+    /// Where each language the query names sits in the table, in value
+    /// order. Finding that is a binary search over three hundred names, and
+    /// it was being repeated for every font in the set.
+    langs: Vec<LangRank>,
 }
+
+/// The rank of one language the query asked for: its place in the table, or
+/// where it would go.
+type LangRank = std::result::Result<usize, usize>;
 
 /// One property of the query, ready to score against.
 struct Prepped<'q> {
@@ -558,6 +609,8 @@ struct Prepped<'q> {
     matcher: Option<Matcher>,
     /// Family is scored against the index instead.
     is_family: bool,
+    /// Language is scored against the precomputed ranks instead.
+    is_lang: bool,
 }
 
 impl<'q> Prepared<'q> {
@@ -571,10 +624,25 @@ impl<'q> Prepared<'q> {
                     element,
                     matcher: matcher(object),
                     is_family: object == Object::Family,
+                    is_lang: object == Object::Lang,
                 }
             })
             .collect();
-        Self { families: Families::new(query), elements }
+        let langs = query
+            .get(Object::Lang)
+            .map(|element| {
+                element
+                    .values()
+                    .map(|(value, _)| match value {
+                        OwnedValue::String(name) => crate::langs::rank_of(name),
+                        // Not a tag, so nothing to look up; the comparison
+                        // takes its other arm.
+                        _ => Err(0),
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        Self { families: Families::new(query), elements, langs }
     }
 }
 
@@ -611,6 +679,12 @@ fn score_prepared(query: &Prepared<'_>, font: &Pattern<'_>) -> Option<Score> {
 
         if prepped.is_family {
             score_families(&query.families, &got, &mut score);
+            continue;
+        }
+        if prepped.is_lang {
+            if !score_langs(&query.langs, prepped.element, &got, &mut score) {
+                return None;
+            }
             continue;
         }
         let Some(matcher) = &prepped.matcher else { continue };

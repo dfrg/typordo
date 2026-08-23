@@ -36,6 +36,13 @@ do not cover, so that they are read for what they are.
   the 32-bit layouts, the `statfs` filesystem check, the Windows listing
   checksum -- rests on reading the source rather than on measurement.
 
+  This is not hypothetical. Optimising the charset merge introduced a read of
+  a serialized offset as a fixed eight bytes rather than a pointer-sized one:
+  correct on this machine, wrong on any 32-bit target, and invisible to every
+  check in the repo. `scripts/cross_check.sh` compiled it happily, because
+  compiling is all it can do. It was found by reading, which is not a process
+  anyone should rely on.
+
 ### Configuration
 
 - **`<name>` targets beyond the pattern and the font.** Everything the

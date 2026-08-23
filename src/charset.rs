@@ -10,6 +10,27 @@ use crate::error::{Error, Result};
 
 use crate::layout::{self, NATIVE as L};
 
+/// The characters one leaf word stands for, from the lowest.
+///
+/// Walks the bits that are *set* rather than testing all thirty-two. A leaf
+/// holds 256 codepoints and a query naming a handful of them was testing
+/// every one of those bits to find them, for every font in the set.
+fn set_bits(mut bits: u32, base: u32) -> impl Iterator<Item = char> {
+    std::iter::from_fn(move || loop {
+        if bits == 0 {
+            return None;
+        }
+        let bit = bits.trailing_zeros();
+        // Clear the lowest set bit and move on.
+        bits &= bits - 1;
+        // A surrogate is not a character. Nothing should have one, but a
+        // corrupt cache can, and it must not end the walk early.
+        if let Some(c) = char::from_u32(base + bit) {
+            return Some(c);
+        }
+    })
+}
+
 /// A leaf covers 256 codepoints as eight 32-bit words.
 pub(crate) const LEAF_WORDS: usize = 8;
 const LEAF_BYTES: usize = LEAF_WORDS * 4;
@@ -76,12 +97,9 @@ impl<'a> CharSet<'a> {
         let set = *self;
         (0..set.pages()).flat_map(move |index| {
             let base = u32::from(set.page_number(index).unwrap_or(0)) * PAGE;
-            (0..LEAF_WORDS).flat_map(move |word| {
-                let bits = set.leaf_word(index, word).unwrap_or(0);
-                (0..32u32)
-                    .filter(move |bit| bits & (1 << bit) != 0)
-                    .filter_map(move |bit| char::from_u32(base + word as u32 * 32 + bit))
-            })
+            let leaf = set.leaf(index).unwrap_or([0; LEAF_WORDS]);
+            (0..LEAF_WORDS)
+                .flat_map(move |word| set_bits(leaf[word], base + word as u32 * 32))
         })
     }
 
@@ -150,6 +168,54 @@ impl<'a> CharSet<'a> {
         self.data.u16(at)
     }
 
+    /// How many of `chars` this set does not cover.
+    ///
+    /// This is the whole of `FcCharSetSubtractCount` for the shape that
+    /// matters: a fallback picker names a handful of characters it needs and
+    /// asks every font in the set whether it has them. Scoring therefore
+    /// calls this once per font, and [`CharSet::contains`] would re-resolve
+    /// the two page arrays for every character of every one of them.
+    /// Resolved once here instead.
+    pub(crate) fn missing_count(&self, chars: impl Iterator<Item = char>) -> usize {
+        let (Ok(pages), Ok(numbers), Ok(leaves)) =
+            (self.checked_pages(), self.numbers_base(), self.leaves_base())
+        else {
+            // A set that cannot be read covers nothing, so everything asked
+            // for is missing.
+            return chars.count();
+        };
+        chars.filter(|c| !self.covers(pages, numbers, leaves, *c)).count()
+    }
+
+    /// Whether `c` is covered, with the page arrays already resolved.
+    fn covers(&self, pages: usize, numbers: usize, leaves: usize, c: char) -> bool {
+        let Ok(page) = u16::try_from(c as u32 / PAGE) else { return false };
+        let (mut low, mut high) = (0usize, pages);
+        while low < high {
+            let mid = (low + high) / 2;
+            let Ok(at) = self.data.u16(numbers + mid * 2) else { return false };
+            match at.cmp(&page) {
+                std::cmp::Ordering::Less => low = mid + 1,
+                std::cmp::Ordering::Greater => high = mid,
+                std::cmp::Ordering::Equal => {
+                    let Ok(delta) = self.data.offset(leaves + mid * layout::PTR) else {
+                        return false;
+                    };
+                    let Ok(leaf) = self.data.resolve(leaves, delta) else { return false };
+                    let word = ((c as u32 % PAGE) / 32) as usize;
+                    let Ok(bits) = self.data.u32(leaf + word * 4) else { return false };
+                    return bits & (1 << (c as u32 % 32)) != 0;
+                }
+            }
+        }
+        false
+    }
+
+    /// A whole leaf.
+    pub(crate) fn leaf(&self, index: usize) -> Result<[u32; LEAF_WORDS]> {
+        self.leaf_at(self.leaves_base()?, index)
+    }
+
     /// A whole leaf, given an already-resolved leaf array base.
     ///
     /// The base is a parameter because the caller that matters resolves it
@@ -157,7 +223,7 @@ impl<'a> CharSet<'a> {
     /// word it reads, which is eight times per page, for every page of every
     /// candidate a fallback list considers.
     pub(crate) fn leaf_at(&self, leaves: usize, index: usize) -> Result<[u32; LEAF_WORDS]> {
-        let delta = self.data.i64(leaves + index * crate::layout::PTR)?;
+        let delta = self.data.offset(leaves + index * layout::PTR)?;
         let leaf = self.data.resolve(leaves, delta)?;
         let mut out = [0u32; LEAF_WORDS];
         for (word, slot) in out.iter_mut().enumerate() {
@@ -461,13 +527,9 @@ impl Coverage {
     /// The covered characters, ascending.
     pub fn chars(&self) -> impl Iterator<Item = char> + '_ {
         self.pages.iter().flat_map(move |(page, leaf)| {
-            let leaf = *leaf;
             let base = u32::from(*page) * PAGE;
-            (0..LEAF_WORDS).flat_map(move |word| {
-                let bits = leaf[word];
-                (0..32u32)
-                    .filter(move |bit| bits & (1 << bit) != 0)
-                    .filter_map(move |bit| char::from_u32(base + word as u32 * 32 + bit))
+            leaf.iter().enumerate().flat_map(move |(word, bits)| {
+                set_bits(*bits, base + word as u32 * 32)
             })
         })
     }

@@ -39,6 +39,47 @@ static const char *QUERIES[] = {
 };
 static const int NQUERIES = sizeof (QUERIES) / sizeof (QUERIES[0]);
 
+/* A script, as a language tag and eight characters sampled from it: the
+ * shape of query a fallback picker asks. See examples/bench.rs, which has
+ * the same table. */
+struct Script {
+	const char *lang;
+	FcChar32    chars[8];
+};
+static const struct Script SCRIPTS[] = {
+	{ "en",	{ 0x41, 0x61, 0x7a, 0xe9, 0xf1, 0xfc, 0xdf, 0x152 } },
+	{ "el",	{ 0x3b1, 0x3b2, 0x3b3, 0x3b4, 0x3b5, 0x3b6, 0x3b7, 0x3b8 } },
+	{ "ru",	{ 0x430, 0x431, 0x432, 0x433, 0x434, 0x435, 0x436, 0x437 } },
+	{ "he",	{ 0x5d0, 0x5d1, 0x5d2, 0x5d3, 0x5d4, 0x5d5, 0x5d6, 0x5d7 } },
+	{ "ar",	{ 0x627, 0x628, 0x629, 0x62a, 0x62b, 0x62c, 0x62d, 0x62e } },
+	{ "hi",	{ 0x905, 0x906, 0x907, 0x908, 0x909, 0x90a, 0x90b, 0x90c } },
+	{ "zh-cn", { 0x4e00, 0x4e01, 0x4e02, 0x4e03, 0x4e04, 0x4e05, 0x4e06, 0x4e07 } },
+	{ "ja",	{ 0x3042, 0x3044, 0x3046, 0x3048, 0x304a, 0x304b, 0x304d, 0x304f } },
+	{ "ko",	{ 0xac00, 0xac01, 0xac02, 0xac03, 0xac04, 0xac05, 0xac06, 0xac07 } },
+	{ "th",	{ 0xe01, 0xe02, 0xe03, 0xe04, 0xe05, 0xe06, 0xe07, 0xe08 } },
+};
+static const int NSCRIPTS = sizeof (SCRIPTS) / sizeof (SCRIPTS[0]);
+
+/* The fallback query: a charset and a language, built rather than parsed so
+ * that both sides are certainly asking the same thing. */
+static FcPattern *
+fallback (FcConfig *config, const struct Script *script)
+{
+	FcPattern *p = FcPatternCreate ();
+	FcCharSet *cs = FcCharSetCreate ();
+	int        i;
+
+	for (i = 0; i < 8; i++)
+		FcCharSetAddChar (cs, script->chars[i]);
+	FcPatternAddCharSet (p, FC_CHARSET, cs);
+	FcCharSetDestroy (cs);
+	FcPatternAddString (p, FC_LANG, (const FcChar8 *)script->lang);
+
+	FcConfigSubstitute (config, p, FcMatchPattern);
+	FcDefaultSubstitute (p);
+	return p;
+}
+
 static unsigned long long
 now_ns (void)
 {
@@ -131,7 +172,29 @@ main (int argc, char **argv)
 		return 1;
 	}
 
-	if (!strcmp (op, "prepare")) {
+	if (!strcmp (op, "charmatch") || !strcmp (op, "charsort")) {
+		int sorting = !strcmp (op, "charsort");
+		start = now_ns ();
+		for (long i = 0; i < iterations; i++) {
+			FcPattern *p = fallback (config, &SCRIPTS[i % NSCRIPTS]);
+			FcResult   result;
+			if (sorting) {
+				FcFontSet *fs = FcFontSort (config, p, FcTrue, NULL, &result);
+				if (fs) {
+					checksum += (unsigned long long)fs->nfont;
+					FcFontSetSortDestroy (fs);
+				}
+			} else {
+				FcPattern *found = FcFontMatch (config, p, &result);
+				if (found) {
+					checksum += string_len (found, FC_FILE);
+					FcPatternDestroy (found);
+				}
+			}
+			FcPatternDestroy (p);
+		}
+		elapsed = now_ns () - start;
+	} else if (!strcmp (op, "prepare")) {
 		/* Parsing, substitution and defaults: what both libraries do
 		 * before a match can start. */
 		start = now_ns ();
