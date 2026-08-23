@@ -60,10 +60,16 @@ static const struct Script SCRIPTS[] = {
 };
 static const int NSCRIPTS = sizeof (SCRIPTS) / sizeof (SCRIPTS[0]);
 
+/* The family a caller was already using. See examples/bench.rs. */
+static const char *HINTS[] = {
+	"DejaVu Sans", "Liberation Serif", "Noto Sans", "Cantarell",
+};
+static const int NHINTS = sizeof (HINTS) / sizeof (HINTS[0]);
+
 /* The fallback query: a charset and a language, built rather than parsed so
  * that both sides are certainly asking the same thing. */
 static FcPattern *
-fallback (FcConfig *config, const struct Script *script)
+fallback (FcConfig *config, const struct Script *script, const char *hint)
 {
 	FcPattern *p = FcPatternCreate ();
 	FcCharSet *cs = FcCharSetCreate ();
@@ -74,6 +80,8 @@ fallback (FcConfig *config, const struct Script *script)
 	FcPatternAddCharSet (p, FC_CHARSET, cs);
 	FcCharSetDestroy (cs);
 	FcPatternAddString (p, FC_LANG, (const FcChar8 *)script->lang);
+	if (hint)
+		FcPatternAddString (p, FC_FAMILY, (const FcChar8 *)hint);
 
 	FcConfigSubstitute (config, p, FcMatchPattern);
 	FcDefaultSubstitute (p);
@@ -172,11 +180,14 @@ main (int argc, char **argv)
 		return 1;
 	}
 
-	if (!strcmp (op, "charmatch") || !strcmp (op, "charsort")) {
-		int sorting = !strcmp (op, "charsort");
+	if (!strcmp (op, "charmatch") || !strcmp (op, "charsort") ||
+	    !strcmp (op, "hintmatch") || !strcmp (op, "hintsort")) {
+		int sorting = strstr (op, "sort") != NULL;
+		int hinted = strncmp (op, "hint", 4) == 0;
 		start = now_ns ();
 		for (long i = 0; i < iterations; i++) {
-			FcPattern *p = fallback (config, &SCRIPTS[i % NSCRIPTS]);
+			FcPattern *p = fallback (config, &SCRIPTS[i % NSCRIPTS],
+			                         hinted ? HINTS[i % NHINTS] : NULL);
 			FcResult   result;
 			if (sorting) {
 				FcFontSet *fs = FcFontSort (config, p, FcTrue, NULL, &result);

@@ -515,6 +515,33 @@ impl<'q> Families<'q> {
     }
 }
 
+/// Coverage, scored against characters extracted once for the query.
+///
+/// The same shape as [`score_values`] for a matcher with one priority. What
+/// is lifted out is the query's own character list: it lives in a page
+/// bitmap, and walking it back out for every font in the set was most of
+/// what a fallback query cost.
+fn score_charsets(chars: &[Vec<char>], font: &Values<'_>, score: &mut Score) -> bool {
+    let mut best = NO_MATCH;
+    'outer: for (j, want) in chars.iter().enumerate() {
+        for got in font.clone() {
+            let Value::CharSet(got) = got else { return false };
+            let missing = match got {
+                Chars::Cached(set) => set.missing_count(want.iter().copied()),
+                Chars::Owned(set) => want.iter().filter(|c| !set.contains(**c)).count(),
+            };
+            // A charset never scores by position within the font, so there
+            // is no `k` term here: see [`score_values`].
+            best = best.min(missing as f64 * 1000.0 + j as f64 * 100.0);
+            if best < 1000.0 {
+                break 'outer;
+            }
+        }
+    }
+    score.0[Priority::CharSet as usize] += best;
+    true
+}
+
 /// Language, scored against ranks worked out once for the query.
 ///
 /// The same shape as [`score_values`] for a matcher whose two priorities are
@@ -605,12 +632,26 @@ struct Prepped<'q> {
     /// The object id, so the merge join compares integers.
     id: i32,
     element: &'q Element,
-    /// How to compare it, or `None` for a property that takes no part.
-    matcher: Option<Matcher>,
-    /// Family is scored against the index instead.
-    is_family: bool,
-    /// Language is scored against the precomputed ranks instead.
-    is_lang: bool,
+    how: How,
+}
+
+/// How one property is scored.
+///
+/// Three properties are worth working out in advance, and each was a
+/// separate flag on the way here. They have the same shape -- something
+/// derived from the query alone, which the general path would recompute for
+/// every font -- so they are one choice rather than three tests.
+enum How {
+    /// Against the family index.
+    Families,
+    /// Against the language ranks.
+    Langs,
+    /// Against the query characters, already extracted, one list per value.
+    CharSets(Vec<Vec<char>>),
+    /// The general path, through the matcher.
+    Values(Matcher),
+    /// A property that takes no part in scoring at all.
+    Skip,
 }
 
 impl<'q> Prepared<'q> {
@@ -619,13 +660,24 @@ impl<'q> Prepared<'q> {
             .elements()
             .map(|element| {
                 let object = element.object();
-                Prepped {
-                    id: object.id(),
-                    element,
-                    matcher: matcher(object),
-                    is_family: object == Object::Family,
-                    is_lang: object == Object::Lang,
-                }
+                let how = match object {
+                    Object::Family => How::Families,
+                    Object::Lang => How::Langs,
+                    Object::Charset => How::CharSets(
+                        element
+                            .values()
+                            .map(|(value, _)| match value {
+                                OwnedValue::CharSet(set) => set.chars().collect(),
+                                _ => Vec::new(),
+                            })
+                            .collect(),
+                    ),
+                    other => match matcher(other) {
+                        Some(matcher) => How::Values(matcher),
+                        None => How::Skip,
+                    },
+                };
+                Prepped { id: object.id(), element, how }
             })
             .collect();
         let langs = query
@@ -677,18 +729,19 @@ fn score_prepared(query: &Prepared<'_>, font: &Pattern<'_>) -> Option<Score> {
         let got = font.element_values(at);
         at += 1;
 
-        if prepped.is_family {
-            score_families(&query.families, &got, &mut score);
-            continue;
-        }
-        if prepped.is_lang {
-            if !score_langs(&query.langs, prepped.element, &got, &mut score) {
-                return None;
+        let scored = match &prepped.how {
+            How::Families => {
+                score_families(&query.families, &got, &mut score);
+                true
             }
-            continue;
-        }
-        let Some(matcher) = &prepped.matcher else { continue };
-        if !score_values(matcher, prepped.element, &got, &mut score) {
+            How::Langs => score_langs(&query.langs, prepped.element, &got, &mut score),
+            How::CharSets(chars) => score_charsets(chars, &got, &mut score),
+            How::Values(matcher) => {
+                score_values(matcher, prepped.element, &got, &mut score)
+            }
+            How::Skip => true,
+        };
+        if !scored {
             return None;
         }
     }

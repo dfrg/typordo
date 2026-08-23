@@ -23,6 +23,13 @@ use std::time::Instant;
 
 use fontconf::{best, sort as sort_fonts, Config, Object, OwnedValue, Pattern, Query};
 
+/// The family a caller was already using when it ran out of coverage.
+///
+/// A fallback picker usually has one: the text was being set in something,
+/// and the replacement should look like it where it can. Rotated so the
+/// family half of scoring is exercised with names that exist here.
+const HINTS: [&str; 4] = ["DejaVu Sans", "Liberation Serif", "Noto Sans", "Cantarell"];
+
 /// A script, as a language tag and eight characters sampled from it.
 ///
 /// This is the shape of query a fallback picker actually asks: it has some
@@ -157,7 +164,7 @@ fn run(op: &str, iterations: u32) -> Result<u64, Box<dyn std::error::Error>> {
         // What a fallback picker asks: a charset of a few characters and a
         // language, and no family at all. Every font in the set has to have
         // its coverage consulted, which none of the other queries do.
-        "charmatch" | "charsort" => {
+        "charmatch" | "charsort" | "hintmatch" | "hintsort" => {
             let (config, caches) = loaded()?;
             let fonts = fonts(&config, &caches)?;
             let mut n = 0u64;
@@ -170,10 +177,13 @@ fn run(op: &str, iterations: u32) -> Result<u64, Box<dyn std::error::Error>> {
                 }
                 query.add(Object::Charset, OwnedValue::CharSet(coverage));
                 query.add(Object::Lang, *lang);
+                if op.starts_with("hint") {
+                    query.add(Object::Family, HINTS[i as usize % HINTS.len()]);
+                }
                 config.substitute(&mut query);
                 query.default_substitute();
 
-                if op == "charsort" {
+                if op.ends_with("sort") {
                     n += sort_fonts(&query, fonts.iter().copied(), true).len() as u64;
                 } else if let Some((font, _)) = best(&query, fonts.iter().copied()) {
                     n += font.string(Object::File).map_or(0, |s| s.len()) as u64;

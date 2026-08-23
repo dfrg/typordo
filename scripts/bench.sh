@@ -107,9 +107,14 @@ row charmatch 300
 row charsort 200
 
 echo
+echo "the same, with the family the caller was already using"
+row hintmatch 300
+row hintsort 200
+
+echo
 echo "the last column is fontconfig's time divided by ours: above 1.00 is us"
 echo "being faster. Checksums, to show both sides did the same work:"
-for op in list match sort charmatch charsort; do
+for op in list match sort charmatch charsort hintmatch hintsort; do
   printf '  %-6s ours %-14s fontconfig %s\n' "$op" \
     "$("$BIN" "$op" 5 | cut -d' ' -f4)" "$("$FC" "$op" 5 | cut -d' ' -f4)"
 done
