@@ -5,7 +5,12 @@
 //! whole rule, including any edits already applied by it. An `<alias>` is
 //! sugar for the same thing -- see [`Rule::from_alias`].
 
+use std::collections::hash_map::Entry;
+use std::collections::HashMap;
+
 use crate::casefold;
+use crate::fnv::BuildPassthrough;
+use crate::object::Object;
 use crate::query::{OwnedValue, Property, Query};
 use crate::value::{Binding, Matrix};
 
@@ -264,6 +269,68 @@ pub struct Rule {
     pub steps: Vec<Step>,
 }
 
+/// The family names a query currently carries, as hashes.
+///
+/// Fontconfig calls this a `FamilyTable`, and its comment gives the reason
+/// plainly: the bulk of substitution is spent walking lists of family names.
+/// A desktop configuration is mostly rules naming families the query does not
+/// have -- one per font that wants special treatment -- and each of those
+/// would otherwise scan a list that substitution itself has grown to a
+/// hundred entries.
+///
+/// Only hashes are kept, never the strings. A collision costs one linear scan
+/// that finds nothing, which is exactly what would have happened without the
+/// index; what it must never do is report a family absent when it is present,
+/// and a set built by hashing those same values cannot.
+///
+/// Counted, not just present, because the same family can be added twice and
+/// removed once. Fontconfig keeps the same count for the same reason.
+#[derive(Default)]
+pub(crate) struct FamilyIndex {
+    counts: HashMap<u64, u32, BuildPassthrough>,
+}
+
+impl FamilyIndex {
+    /// Index the families `query` starts with.
+    pub(crate) fn new(query: &Query) -> Self {
+        let mut index = Self::default();
+        if let Some(values) = query.values_of(&Property::Known(Object::Family)) {
+            for (value, _) in values {
+                index.learn(value);
+            }
+        }
+        index
+    }
+
+    /// Whether `name` could match any family the query holds.
+    ///
+    /// False is conclusive; true means the scan still has to run.
+    fn might_hold(&self, name: &str) -> bool {
+        self.counts.contains_key(&casefold::hash_ignoring_blanks(name))
+    }
+
+    /// Record a family the query has gained.
+    fn learn(&mut self, value: &OwnedValue) {
+        if let OwnedValue::String(name) = value {
+            *self.counts.entry(casefold::hash_ignoring_blanks(name)).or_insert(0) += 1;
+        }
+    }
+
+    /// Record a family the query has lost.
+    fn forget(&mut self, value: &OwnedValue) {
+        if let OwnedValue::String(name) = value {
+            if let Entry::Occupied(mut entry) =
+                self.counts.entry(casefold::hash_ignoring_blanks(name))
+            {
+                *entry.get_mut() -= 1;
+                if *entry.get() == 0 {
+                    entry.remove();
+                }
+            }
+        }
+    }
+}
+
 impl Rule {
     /// Desugar an `<alias>` into the `<match>` it stands for.
     ///
@@ -312,7 +379,12 @@ impl Rule {
     /// reached, so a later test sees what an earlier edit did -- and a test
     /// failing halfway leaves those edits in place, which is what fontconfig
     /// does too.
-    pub fn apply(&self, query: &mut Query, pattern: Option<&Query>) -> bool {
+    pub fn apply(
+        &self,
+        query: &mut Query,
+        pattern: Option<&Query>,
+        families: &mut FamilyIndex,
+    ) -> bool {
         // Where a test matched, per property, so a following edit knows which
         // value to replace or insert beside.
         let mut marks: Vec<(Property, Option<usize>)> = Vec::new();
@@ -320,7 +392,7 @@ impl Rule {
 
         for step in &self.steps {
             match step {
-                Step::Test(test) => match test.evaluate(query, pattern) {
+                Step::Test(test) => match test.evaluate(query, pattern, families) {
                     Some(position) => {
                         if !marks.iter().any(|(o, _)| *o == test.object) {
                             marks.push((test.object.clone(), position));
@@ -331,7 +403,7 @@ impl Rule {
                 Step::Edit(edit) => {
                     let mark =
                         marks.iter().find(|(o, _)| *o == edit.object).and_then(|(_, at)| *at);
-                    edit.apply(query, pattern, mark);
+                    edit.apply(query, pattern, mark, families);
                     edited = true;
                     // A replaced value invalidates the position we recorded.
                     if matches!(
@@ -356,7 +428,12 @@ impl Test {
     /// A `target="pattern"` test inside a font-target rule reads the original
     /// query instead, which is how a font rule compares what the caller asked
     /// for against what it got.
-    fn evaluate(&self, query: &Query, pattern: Option<&Query>) -> Option<Option<usize>> {
+    fn evaluate(
+        &self,
+        query: &Query,
+        pattern: Option<&Query>,
+        families: &mut FamilyIndex,
+    ) -> Option<Option<usize>> {
         let source = match (self.kind, pattern) {
             (MatchKind::Pattern, Some(pattern)) => pattern,
             _ => query,
@@ -364,6 +441,25 @@ impl Test {
         let wanted = self.expr.values(query, pattern);
         if wanted.is_empty() {
             return None;
+        }
+
+        // A family the query does not carry cannot match any of its values,
+        // and most rules on a desktop test for exactly that. Only equality
+        // can be answered this way -- `contains` is a substring test, which
+        // no hash of the whole string can decide -- and only against the
+        // query itself, since the index tracks that and not `pattern`.
+        if self.compare == Compare::Eq
+            && std::ptr::eq(source, query)
+            && self.object == Property::Known(Object::Family)
+        {
+            let decidable = wanted.iter().all(|w| matches!(w, OwnedValue::String(_)));
+            let possible = wanted.iter().any(|w| match w {
+                OwnedValue::String(name) => families.might_hold(name),
+                _ => false,
+            });
+            if decidable && !possible {
+                return None;
+            }
         }
         let Some(values) = source.values_of(&self.object) else {
             // A property the pattern does not have: `all` passes vacuously,
@@ -374,27 +470,39 @@ impl Test {
             };
         };
 
-        let matches: Vec<usize> = values
-            .iter()
-            .enumerate()
-            .filter(|(_, (got, _))| wanted.iter().any(|want| compare(got, self.compare, want)))
-            .map(|(i, _)| i)
-            .collect();
+        let hit = |(got, _): &(OwnedValue, Binding)| {
+            wanted.iter().any(|want| compare(got, self.compare, want))
+        };
 
+        // Each qualifier stops as soon as its answer is known. That matters
+        // more than it looks: rules append to the family list as they go, so
+        // a query carries a hundred families by the end of a substitution
+        // pass, and a test that scanned all of them to report the first match
+        // was doing ninety-nine comparisons it could not use.
         match self.qual {
-            Qual::Any => matches.first().copied().map(Some),
-            Qual::All if matches.len() == values.len() => Some(matches.first().copied()),
-            Qual::All => None,
-            Qual::First if matches.first() == Some(&0) => Some(Some(0)),
+            Qual::Any => values.iter().position(hit).map(Some),
+            // Only the first value is consulted, however many there are.
+            Qual::First if values.first().is_some_and(hit) => Some(Some(0)),
             Qual::First => None,
-            Qual::NotFirst => matches.iter().find(|i| **i != 0).copied().map(Some),
+            Qual::NotFirst => values.iter().skip(1).position(hit).map(|i| Some(i + 1)),
+            // The only qualifier that has to see everything -- but it can
+            // still stop at the first value that fails.
+            Qual::All if values.iter().all(hit) => Some((!values.is_empty()).then_some(0)),
+            Qual::All => None,
         }
     }
 }
 
 impl Edit {
     /// Apply this edit, inserting relative to `mark` when a test set one.
-    fn apply(&self, query: &mut Query, pattern: Option<&Query>, mark: Option<usize>) {
+    fn apply(
+        &self,
+        query: &mut Query,
+        pattern: Option<&Query>,
+        mark: Option<usize>,
+        families: &mut FamilyIndex,
+    ) {
+        let tracked = self.object == Property::Known(Object::Family);
         let values = self.expr.values(query, pattern);
         // Only the modes that insert *relative to* the mark pass a position to
         // fontconfig's FcConfigAdd, and only a position gives binding="same"
@@ -407,19 +515,43 @@ impl Edit {
         let binding = self.resolve_binding(query, positional);
         let tagged: Vec<(OwnedValue, Binding)> = values.into_iter().map(|v| (v, binding)).collect();
 
+        // What the index gains is known before the move; what it loses is
+        // known only at the point each mode drops it.
+        if tracked {
+            for (value, _) in &tagged {
+                families.learn(value);
+            }
+        }
+
         {
             let slot = query.values_mut(&self.object);
+            let forget_all = |families: &mut FamilyIndex, slot: &Vec<(OwnedValue, Binding)>| {
+                if tracked {
+                    for (value, _) in slot {
+                        families.forget(value);
+                    }
+                }
+            };
             match self.mode {
                 EditMode::Assign => match mark {
                     Some(at) if at < slot.len() => {
+                        if tracked {
+                            families.forget(&slot[at].0);
+                        }
                         let tail = slot.split_off(at + 1);
                         slot.pop();
                         slot.extend(tagged);
                         slot.extend(tail);
                     }
-                    _ => *slot = tagged,
+                    _ => {
+                        forget_all(families, slot);
+                        *slot = tagged;
+                    }
                 },
-                EditMode::AssignReplace => *slot = tagged,
+                EditMode::AssignReplace => {
+                    forget_all(families, slot);
+                    *slot = tagged;
+                }
                 EditMode::Prepend => {
                     let at = mark.unwrap_or(0).min(slot.len());
                     let tail = slot.split_off(at);
@@ -440,11 +572,20 @@ impl Edit {
                 EditMode::AppendLast => slot.extend(tagged),
                 EditMode::Delete => match mark {
                     Some(at) if at < slot.len() => {
+                        if tracked {
+                            families.forget(&slot[at].0);
+                        }
                         slot.remove(at);
                     }
-                    _ => slot.clear(),
+                    _ => {
+                        forget_all(families, slot);
+                        slot.clear();
+                    }
                 },
-                EditMode::DeleteAll => slot.clear(),
+                EditMode::DeleteAll => {
+                    forget_all(families, slot);
+                    slot.clear();
+                }
             }
         }
         // Fontconfig runs FcConfigPatternCanon after every edit, which drops a

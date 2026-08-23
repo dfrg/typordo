@@ -14,7 +14,7 @@ actually wrong stays readable.
 The corpus everything is measured against: Fedora 44 under WSL, 2385 font
 files producing 2999 patterns across 336 primary family names (1931
 including localized aliases) and 281 languages,
-`/etc/fonts` with 51 configuration files. Broad -- CJK collections, Type 1,
+`/etc/fonts` with 378 configuration files. Broad -- CJK collections, Type 1,
 variable fonts, OpenType bitmaps, colour emoji, a Dingbats clone, and a Noto
 face for nearly every script there is -- but one machine.
 

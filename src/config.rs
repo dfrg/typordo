@@ -802,9 +802,13 @@ impl Config {
     /// through `target="pattern"` to compare what was asked for against what
     /// was found. It is unused for pattern-target rules.
     pub fn substitute_kind(&self, query: &mut Query, kind: MatchKind, pattern: Option<&Query>) {
+        // Indexed once for the whole pass, not once per rule: the rules see
+        // each other's edits, so the index has to follow the query through
+        // all of them.
+        let mut families = crate::rules::FamilyIndex::new(query);
         for rule in &self.rules {
             if rule.kind == kind {
-                rule.apply(query, pattern);
+                rule.apply(query, pattern, &mut families);
             }
         }
     }
