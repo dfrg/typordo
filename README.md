@@ -101,18 +101,23 @@ and `scripts/bench_fc.c` are the two drivers.
 | open a config | 7.71 ms | 15.05 ms | **1.95x** |
 | load every cache | 11.30 ms | 17.88 ms | **1.58x** |
 | list every font | 1.45 ms | 2.21 ms | **1.52x** |
-| prepare a query | 268 us | 443 us | **1.65x** |
-| match | 1.30 ms | 1.26 ms | 0.97x |
-| sort | 3.22 ms | 3.10 ms | 0.96x |
-| match on coverage + language | 1.56 ms | 1.42 ms | 0.91x |
+| prepare a query | 250 us | 429 us | **1.71x** |
+| match | 1.25 ms | 1.24 ms | 0.99x |
+| sort | 3.00 ms | 2.93 ms | 0.98x |
+| match on coverage + language | 1.50 ms | 1.35 ms | 0.90x |
 
 Ahead on everything that touches a cache, and level on matching. `prepare`
 is the interesting column: it is configuration rules alone, no fonts
 involved, and it was 0.39x until the profile was read rather than guessed at.
 Substitution grows the family list it scans, so a test late in a pass walked
 a hundred names; fontconfig hashes them, its own comment saying that is where
-the time goes. Doing the same took it to 1.65x, and carried `match` and
-`sort` -- which run `prepare` first -- most of the way with it.
+the time goes. Doing the same, and stopping each qualifier as soon as its
+answer is known, took it to 1.71x and carried `match` and `sort` -- which run
+`prepare` first -- to level with it.
+
+What is left on those paths is arithmetic rather than waste: scoring is a
+merge join over two sorted element lists that allocates nothing, and the
+profile is `eq_ignoring_blanks` doing comparisons that have to happen.
 
 ## Design
 
