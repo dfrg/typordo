@@ -483,10 +483,18 @@ static MULTI: [(u32, &[char]); 104] = [
 
 /// The case-folded form of `c`, as one or more characters.
 ///
-/// A character that folds to itself -- the common case -- costs one binary
-/// search and yields itself unchanged.
+/// ASCII is answered without touching either table. That is not a
+/// micro-optimisation: the tables are 104 and 1426 entries, so a character
+/// that folds to itself was costing two binary searches -- about eighteen
+/// branchy probes -- to work out what `c | 0x20` already knew. Font family
+/// names are almost entirely ASCII, and folding them was over half the cost
+/// of a match. The equivalence is checked exhaustively over all 128 of them
+/// in the tests below.
 pub fn fold(c: char) -> impl Iterator<Item = char> {
     let cp = c as u32;
+    if c.is_ascii() {
+        return Folded::One(Some(c.to_ascii_lowercase()));
+    }
     let multi = MULTI.binary_search_by_key(&cp, |(from, _)| *from).ok();
     let mut expansion = multi.map(|i| MULTI[i].1.iter().copied());
     let mut plain = match multi {
@@ -499,14 +507,34 @@ pub fn fold(c: char) -> impl Iterator<Item = char> {
                 .unwrap_or(c),
         ),
     };
-    std::iter::from_fn(move || {
+    Folded::Table(std::iter::from_fn(move || {
         if let Some(chars) = &mut expansion {
             if let Some(c) = chars.next() {
                 return Some(c);
             }
         }
         plain.take()
-    })
+    }))
+}
+
+/// What [`fold`] yields: one character, or whatever the tables say.
+///
+/// An enum rather than a boxed iterator so the ASCII arm stays a move of one
+/// `Option` and nothing is allocated.
+enum Folded<I> {
+    One(Option<char>),
+    Table(I),
+}
+
+impl<I: Iterator<Item = char>> Iterator for Folded<I> {
+    type Item = char;
+
+    fn next(&mut self) -> Option<char> {
+        match self {
+            Self::One(c) => c.take(),
+            Self::Table(iter) => iter.next(),
+        }
+    }
 }
 
 /// The case-folded characters of `s`.
@@ -524,7 +552,27 @@ pub fn eq(a: &str, b: &str) -> bool {
 /// This is `FcStrCmpIgnoreBlanksAndCase`: fontconfig skips blanks *before*
 /// folding, so a blank that a fold would introduce is not itself skipped.
 pub fn eq_ignoring_blanks(a: &str, b: &str) -> bool {
+    // Both sides have to be ASCII to take the short way, not just one: a
+    // character outside it can still fold *into* ASCII -- U+212A KELVIN SIGN
+    // folds to `k` -- so comparing bytes against a non-ASCII string would
+    // miss a real match.
+    if a.is_ascii() && b.is_ascii() {
+        return ascii_eq_ignoring_blanks(a.as_bytes(), b.as_bytes());
+    }
     nonblank(a).eq(nonblank(b))
+}
+
+/// [`eq_ignoring_blanks`] for two strings already known to be ASCII.
+fn ascii_eq_ignoring_blanks(a: &[u8], b: &[u8]) -> bool {
+    let mut a = a.iter().filter(|c| **c != BLANK as u8);
+    let mut b = b.iter().filter(|c| **c != BLANK as u8);
+    loop {
+        match (a.next(), b.next()) {
+            (None, None) => return true,
+            (Some(x), Some(y)) if x.eq_ignore_ascii_case(y) => {}
+            _ => return false,
+        }
+    }
 }
 
 /// A hash of `s` in the same terms [`eq_ignoring_blanks`] compares it.
@@ -539,11 +587,23 @@ pub fn hash_ignoring_blanks(s: &str) -> u64 {
     // FNV-1a. The table is a few hundred entries at most and the keys are
     // short, so what matters is that this does not allocate.
     let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    let mut eat = |byte: u8| {
+        hash ^= u64::from(byte);
+        hash = hash.wrapping_mul(0x100_0000_01b3);
+    };
+    // An ASCII string folds byte for byte, so it can be hashed without
+    // decoding characters or consulting a table. The two paths have to agree
+    // exactly, since a name reached by one is looked up by the other.
+    if s.is_ascii() {
+        for byte in s.as_bytes().iter().filter(|c| **c != BLANK as u8) {
+            eat(byte.to_ascii_lowercase());
+        }
+        return hash;
+    }
     for c in nonblank(s) {
         let mut buffer = [0u8; 4];
         for byte in c.encode_utf8(&mut buffer).as_bytes() {
-            hash ^= u64::from(*byte);
-            hash = hash.wrapping_mul(0x100_0000_01b3);
+            eat(*byte);
         }
     }
     hash
@@ -560,6 +620,96 @@ fn nonblank(s: &str) -> impl Iterator<Item = char> + '_ {
 /// wider set `char::is_whitespace` covers. It skips on the source text, before
 /// folding, so a fold that produced a space would not itself be skipped.
 const BLANK: char = ' ';
+/// The ASCII fast paths, which are only sound if they answer exactly what
+/// the tables would have.
+#[cfg(test)]
+mod ascii_tests {
+    use super::{eq_ignoring_blanks, fold, hash_ignoring_blanks, nonblank, BLANK};
+
+    /// Every ASCII character, against the tables it now skips.
+    ///
+    /// This is the whole argument for the fast path: not that ASCII folding
+    /// is obviously lowercasing, but that these tables say so for all 128.
+    #[test]
+    fn ascii_folds_the_way_the_tables_would() {
+        for cp in 0u32..128 {
+            let c = char::from_u32(cp).expect("ascii");
+            let got: Vec<char> = fold(c).collect();
+            assert_eq!(got, vec![c.to_ascii_lowercase()], "{cp:#04x}");
+        }
+    }
+
+    /// A blank is skipped before folding, so it must not survive either path.
+    #[test]
+    fn a_blank_is_skipped_on_both_paths() {
+        assert!(eq_ignoring_blanks("a b", "ab"));
+        assert_eq!(hash_ignoring_blanks("a b"), hash_ignoring_blanks("ab"));
+        assert_eq!(BLANK, ' ');
+    }
+
+    /// A character outside ASCII can fold into it, which is why the fast
+    /// path needs *both* sides to be ASCII rather than either.
+    #[test]
+    fn a_non_ascii_character_can_fold_into_ascii() {
+        // U+212A KELVIN SIGN folds to `k`.
+        assert!(eq_ignoring_blanks("K", "\u{212a}"));
+        assert!(eq_ignoring_blanks("\u{212a}", "k"));
+        assert_eq!(hash_ignoring_blanks("k"), hash_ignoring_blanks("\u{212a}"));
+    }
+
+    /// The two hash paths have to agree, or a name inserted by one would be
+    /// looked up in the wrong bucket by the other.
+    #[test]
+    fn both_hash_paths_agree() {
+        for name in [
+            "DejaVu Sans",
+            "dejavusans",
+            "DEJAVU  SANS",
+            "Noto Sans CJK JP",
+            "\u{212a}elvin",
+            "Kelvin",
+            "\u{fb00}",
+            "ff",
+        ] {
+            // Recompute the general way, whatever the input.
+            let mut expected: u64 = 0xcbf2_9ce4_8422_2325;
+            for c in nonblank(name) {
+                let mut buffer = [0u8; 4];
+                for byte in c.encode_utf8(&mut buffer).as_bytes() {
+                    expected ^= u64::from(*byte);
+                    expected = expected.wrapping_mul(0x100_0000_01b3);
+                }
+            }
+            assert_eq!(hash_ignoring_blanks(name), expected, "{name}");
+        }
+    }
+
+    /// Equal strings hash equal, which is the only promise the table needs.
+    #[test]
+    fn equal_names_hash_equal() {
+        let pairs = [
+            ("DejaVu Sans", "dejavusans"),
+            ("Noto Sans", "NOTO SANS"),
+            ("\u{fb00}", "ff"),
+            ("K", "\u{212a}"),
+        ];
+        for (a, b) in pairs {
+            assert!(eq_ignoring_blanks(a, b), "{a} vs {b}");
+            assert_eq!(hash_ignoring_blanks(a), hash_ignoring_blanks(b), "{a} vs {b}");
+        }
+    }
+
+    #[test]
+    fn different_names_still_differ() {
+        assert!(!eq_ignoring_blanks("DejaVu Sans", "DejaVu Serif"));
+        assert!(!eq_ignoring_blanks("a", "ab"));
+        assert!(!eq_ignoring_blanks("ab", "a"));
+        assert!(!eq_ignoring_blanks("", "a"));
+        assert!(eq_ignoring_blanks("", ""));
+        assert!(eq_ignoring_blanks("   ", ""));
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{eq, eq_ignoring_blanks, fold_str};

@@ -150,6 +150,22 @@ impl<'a> CharSet<'a> {
         self.data.u16(at)
     }
 
+    /// A whole leaf, resolving the array bases once.
+    ///
+    /// [`CharSet::leaf_word`] re-resolves them for every word it reads, which
+    /// is eight times per page; merging a font into a coverage set does that
+    /// for every page of every candidate.
+    pub(crate) fn leaf(&self, index: usize) -> Result<[u32; LEAF_WORDS]> {
+        let leaves = self.leaves_base()?;
+        let delta = self.data.i64(leaves + index * crate::layout::PTR)?;
+        let leaf = self.data.resolve(leaves, delta)?;
+        let mut out = [0u32; LEAF_WORDS];
+        for (word, slot) in out.iter_mut().enumerate() {
+            *slot = self.data.u32(leaf + word * 4)?;
+        }
+        Ok(out)
+    }
+
     /// One 32-bit word of leaf `index`.
     ///
     /// Leaf offsets are relative to the start of the leaf array, the same
@@ -219,15 +235,79 @@ impl std::fmt::Display for CharSet<'_> {
 /// The layout mirrors [`CharSet`]'s -- 256-codepoint pages of eight words --
 /// so merging a font is a handful of word-ORs per page rather than a pass over
 /// its characters.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Default)]
 pub struct Coverage {
-    pages: std::collections::HashMap<u16, [u32; LEAF_WORDS]>,
+    /// Pages in ascending order, which is how a cache stores them and how
+    /// every reader of this wants them.
+    ///
+    /// A hash map was the obvious choice and the wrong one. Sorting is what
+    /// the serialized form needs, what `chars` needs, and what lets `merge`
+    /// walk two sets in step instead of hashing every page of one of them --
+    /// and hashing a `u16` with SipHash was a sixth of the cost of building a
+    /// fallback list. Fontconfig keeps a sorted array for the same reasons.
+    pages: Vec<(u16, Leaf)>,
+    /// Where the last insert landed, since characters arrive in runs.
+    ///
+    /// A font's cmap walks upwards, so the next character is almost always on
+    /// the page the last one was, and that turns a binary search into a
+    /// comparison.
+    recent: std::cell::Cell<usize>,
+}
+
+/// One page of coverage: 256 codepoints as eight words.
+type Leaf = [u32; LEAF_WORDS];
+
+/// Only the coverage counts. `recent` is a memo of where the last lookup
+/// landed, so two sets covering the same characters are the same set whatever
+/// each was last asked about.
+impl PartialEq for Coverage {
+    fn eq(&self, other: &Self) -> bool {
+        self.pages == other.pages
+    }
+}
+
+impl Eq for Coverage {}
+
+impl std::fmt::Debug for Coverage {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Coverage({} chars in {} pages)", self.len(), self.pages.len())
+    }
 }
 
 impl Coverage {
     /// An empty set.
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Where `page` is, or where it would be inserted.
+    fn find(&self, page: u16) -> std::result::Result<usize, usize> {
+        // The run cache first: a scan inserts thousands of characters in
+        // ascending order, and they share a page 255 times out of 256.
+        let recent = self.recent.get();
+        if let Some((at, _)) = self.pages.get(recent) {
+            if *at == page {
+                return Ok(recent);
+            }
+        }
+        let found = self.pages.binary_search_by_key(&page, |(at, _)| *at);
+        if let Ok(index) = found {
+            self.recent.set(index);
+        }
+        found
+    }
+
+    /// The leaf for `page`, creating an empty one if there is none.
+    fn leaf_mut(&mut self, page: u16) -> &mut Leaf {
+        let index = match self.find(page) {
+            Ok(index) => index,
+            Err(index) => {
+                self.pages.insert(index, (page, [0; LEAF_WORDS]));
+                self.recent.set(index);
+                index
+            }
+        };
+        &mut self.pages[index].1
     }
 
     /// Add everything in a set of characters, however it is stored.
@@ -255,18 +335,50 @@ impl Coverage {
     /// The bool is the whole point: it is what decides that a font earns its
     /// place in a fallback list.
     pub fn merge(&mut self, other: &CharSet<'_>) -> bool {
+        // Building a fallback list merges every candidate font into a set
+        // that only grows, so this runs hundreds of times against something
+        // thousands of pages long. Rebuilding that list each time -- even as
+        // a clean linear merge -- copies far more than it changes.
+        //
+        // So: pages already here are updated in place, and the few that are
+        // new are collected and spliced once. Trimming keeps a font only if
+        // it adds something, which means the second phase is usually empty by
+        // the time it matters.
         let mut added = false;
+        let mut cursor = 0usize;
+        let mut fresh: Vec<(u16, Leaf)> = Vec::new();
+
         for index in 0..other.pages() {
             let Ok(page) = other.page_number(index) else { continue };
-            let leaf = self.pages.entry(page).or_insert([0; LEAF_WORDS]);
-            for (word, slot) in leaf.iter_mut().enumerate() {
-                let Ok(bits) = other.leaf_word(index, word) else { continue };
-                // Anything set there that was not set here is new.
-                if bits & !*slot != 0 {
-                    added = true;
-                }
-                *slot |= bits;
+            let Ok(theirs) = other.leaf(index) else { continue };
+
+            // Both sides ascend, so the cursor only ever moves forwards.
+            while self.pages.get(cursor).is_some_and(|(at, _)| *at < page) {
+                cursor += 1;
             }
+            match self.pages.get_mut(cursor) {
+                Some((at, leaf)) if *at == page => {
+                    for (slot, bits) in leaf.iter_mut().zip(theirs.iter()) {
+                        // Anything set there that was not set here is new.
+                        if bits & !*slot != 0 {
+                            added = true;
+                        }
+                        *slot |= bits;
+                    }
+                }
+                _ => {
+                    if theirs.iter().any(|word| *word != 0) {
+                        added = true;
+                    }
+                    fresh.push((page, theirs));
+                }
+            }
+        }
+
+        if !fresh.is_empty() {
+            self.pages.extend(fresh);
+            self.pages.sort_unstable_by_key(|(page, _)| *page);
+            self.recent.set(0);
         }
         added
     }
@@ -274,16 +386,16 @@ impl Coverage {
     /// Whether `c` is covered.
     pub fn contains(&self, c: char) -> bool {
         let page = (c as u32 / PAGE) as u16;
-        self.pages.get(&page).is_some_and(|leaf| {
-            leaf[((c as u32 % PAGE) / 32) as usize] & (1 << (c as u32 % 32)) != 0
-        })
+        let Ok(index) = self.find(page) else { return false };
+        let leaf = &self.pages[index].1;
+        leaf[((c as u32 % PAGE) / 32) as usize] & (1 << (c as u32 % 32)) != 0
     }
 
     /// How many characters the union holds.
     pub fn len(&self) -> usize {
         self.pages
-            .values()
-            .map(|leaf| leaf.iter().map(|w| w.count_ones() as usize).sum::<usize>())
+            .iter()
+            .map(|(_, leaf)| leaf.iter().map(|w| w.count_ones() as usize).sum::<usize>())
             .sum()
     }
 
@@ -296,7 +408,7 @@ impl Coverage {
     pub fn union(&self, other: &Self) -> Self {
         let mut out = self.clone();
         for (page, leaf) in &other.pages {
-            let slot = out.pages.entry(*page).or_insert([0; LEAF_WORDS]);
+            let slot = out.leaf_mut(*page);
             for (word, bits) in slot.iter_mut().zip(leaf.iter()) {
                 *word |= bits;
             }
@@ -313,45 +425,36 @@ impl Coverage {
         let mut out = Self::new();
         for (page, leaf) in &self.pages {
             let mut result = *leaf;
-            if let Some(mask) = other.pages.get(page) {
-                for (word, bits) in result.iter_mut().zip(mask.iter()) {
+            if let Ok(index) = other.find(*page) {
+                for (word, bits) in result.iter_mut().zip(other.pages[index].1.iter()) {
                     *word &= !bits;
                 }
             }
             if result.iter().any(|word| *word != 0) {
-                out.pages.insert(*page, result);
+                // Both sides ascend, so this only ever appends.
+                out.pages.push((*page, result));
             }
         }
         out
     }
 
     /// The pages of coverage in the order a cache stores them, ascending.
-    ///
-    /// Pages live in a hash map while a set is being built, because scanning
-    /// touches them in whatever order the font's cmap runs; the cache wants
-    /// them sorted, and the binary search in [`CharSet::contains`] depends on
-    /// it.
-    pub(crate) fn leaves(&self) -> Vec<(u16, [u32; LEAF_WORDS])> {
-        let mut leaves: Vec<(u16, [u32; LEAF_WORDS])> =
-            self.pages.iter().map(|(page, leaf)| (*page, *leaf)).collect();
-        leaves.sort_unstable_by_key(|(page, _)| *page);
-        leaves
+    pub(crate) fn leaves(&self) -> &[(u16, Leaf)] {
+        &self.pages
     }
 
     /// Add one character.
     pub fn insert(&mut self, c: char) {
         let page = (c as u32 / PAGE) as u16;
-        let leaf = self.pages.entry(page).or_insert([0; LEAF_WORDS]);
+        let leaf = self.leaf_mut(page);
         leaf[((c as u32 % PAGE) / 32) as usize] |= 1 << (c as u32 % 32);
     }
 
     /// The covered characters, ascending.
     pub fn chars(&self) -> impl Iterator<Item = char> + '_ {
-        let mut pages: Vec<u16> = self.pages.keys().copied().collect();
-        pages.sort_unstable();
-        pages.into_iter().flat_map(move |page| {
-            let leaf = self.pages[&page];
-            let base = u32::from(page) * PAGE;
+        self.pages.iter().flat_map(move |(page, leaf)| {
+            let leaf = *leaf;
+            let base = u32::from(*page) * PAGE;
             (0..LEAF_WORDS).flat_map(move |word| {
                 let bits = leaf[word];
                 (0..32u32)
@@ -537,5 +640,81 @@ mod set_tests {
         a.subtract(&b);
         assert_eq!(a.chars().collect::<String>(), "abc");
         assert_eq!(b.chars().collect::<String>(), "bcd");
+    }
+}
+
+/// Tests for the sorted page list, which replaced a hash map and has to
+/// behave identically however the pages arrive.
+#[cfg(test)]
+mod page_tests {
+    use super::Coverage;
+
+    fn coverage(chars: &[char]) -> Coverage {
+        let mut set = Coverage::new();
+        for c in chars {
+            set.insert(*c);
+        }
+        set
+    }
+
+    /// The pages have to come out ascending whatever order they went in,
+    /// because the serialized form and the binary search both depend on it.
+    #[test]
+    fn pages_stay_sorted_however_they_arrive() {
+        let ascending = coverage(&['a', '\u{4e00}', '\u{10000}']);
+        let descending = coverage(&['\u{10000}', '\u{4e00}', 'a']);
+        let jumbled = coverage(&['\u{4e00}', 'a', '\u{10000}']);
+
+        let pages: Vec<u16> = ascending.leaves().iter().map(|(p, _)| *p).collect();
+        assert_eq!(pages, [0, 78, 256]);
+        assert_eq!(ascending, descending);
+        assert_eq!(ascending, jumbled);
+    }
+
+    /// The run cache remembers where the last lookup landed. A lookup that
+    /// jumps away from it must not be answered from it.
+    #[test]
+    fn the_run_cache_does_not_answer_the_wrong_page() {
+        let set = coverage(&['a', '\u{4e00}']);
+        for _ in 0..3 {
+            assert!(set.contains('a'));
+            assert!(set.contains('\u{4e00}'));
+            assert!(!set.contains('\u{10000}'));
+            assert!(!set.contains('\u{500}'));
+        }
+    }
+
+    /// Inserting into a page that already exists must not add another.
+    #[test]
+    fn a_second_character_on_a_page_reuses_it() {
+        let set = coverage(&['a', 'b', 'c']);
+        assert_eq!(set.leaves().len(), 1);
+        assert_eq!(set.len(), 3);
+    }
+
+    /// Two sets covering the same characters are equal whatever each was
+    /// last asked about: the run cache is a memo, not part of the value.
+    #[test]
+    fn the_run_cache_is_not_part_of_equality() {
+        let a = coverage(&['a', '\u{4e00}']);
+        let b = coverage(&['a', '\u{4e00}']);
+        a.contains('\u{4e00}');
+        b.contains('a');
+        assert_eq!(a, b);
+    }
+
+    /// Merging is in place for pages that exist and splices the rest, so
+    /// both halves need checking -- including that `added` stays right.
+    #[test]
+    fn merging_reports_what_it_added() {
+        let mut base = Coverage::new();
+        let latin = coverage(&['a', 'b']);
+        let han = coverage(&['\u{4e00}']);
+
+        assert!(base.merge_chars(&crate::Chars::Owned(&latin)), "an empty set gains");
+        assert!(!base.merge_chars(&crate::Chars::Owned(&latin)), "the same set adds nothing");
+        assert!(base.merge_chars(&crate::Chars::Owned(&han)), "a new page is new");
+        assert_eq!(base.leaves().len(), 2);
+        assert!(base.contains('a') && base.contains('\u{4e00}'));
     }
 }

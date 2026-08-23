@@ -253,7 +253,7 @@ fn write_range(buf: &mut Buffer, range: &Range) -> usize {
 fn write_charset(buf: &mut Buffer, coverage: &Coverage, charsets: &mut CharSets) -> usize {
     let leaves = coverage.leaves();
     let mut key = Vec::with_capacity(leaves.len() * (2 + LEAF));
-    for (page, leaf) in &leaves {
+    for (page, leaf) in leaves {
         key.extend_from_slice(&page.to_le_bytes());
         for word in leaf {
             key.extend_from_slice(&word.to_le_bytes());
