@@ -11,7 +11,7 @@
 
 use std::path::PathBuf;
 
-use fontconf::{render_prepare, Config, Object, OwnedValue, Pattern, Query, Score};
+use fontconf::{render_prepare, CachePolicy, Config, Object, OwnedValue, Pattern, Query, Score};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut config_path: Option<PathBuf> = None;
@@ -44,7 +44,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         None => Config::load()?,
     };
 
-    let caches: Vec<_> = config.caches().collect();
+    let caches: Vec<_> = config.caches(CachePolicy::read_only()).collect();
     let fonts: Vec<Pattern<'_>> = caches
         .iter()
         .filter_map(|(_, cache)| cache.fonts().ok())

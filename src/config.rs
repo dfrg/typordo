@@ -896,12 +896,29 @@ impl Config {
     /// Subdirectories come from the caches themselves, so a directory whose
     /// cache is missing also hides whatever is beneath it — the same blind
     /// spot fontconfig has when it is not allowed to scan.
-    pub fn caches(&self) -> Caches<'_> {
+    pub fn caches(&self, policy: CachePolicy) -> Caches<'_> {
         Caches {
             config: self,
+            policy,
             pending: self.font_dirs().filter_map(path_to_string).collect(),
             seen: HashSet::default(),
+            skipped: Vec::new(),
         }
+    }
+
+    /// Every font this configuration reaches, scanning whatever is not
+    /// already cached.
+    ///
+    /// `FcConfigBuildFonts` by another name, and the same bargain: any
+    /// directory without a current cache is scanned and a cache written for
+    /// it, which is why the first application to start after a font is
+    /// installed pays for the scan. Fontconfig does this on every startup
+    /// without being asked; here it is a call you make.
+    ///
+    /// Shorthand for [`Config::caches`] with [`CachePolicy::rebuild`].
+    #[cfg(feature = "scan")]
+    pub fn build_fonts(&self) -> Caches<'_> {
+        self.caches(CachePolicy::rebuild())
     }
 
     fn read_file(
@@ -1260,6 +1277,104 @@ impl Config {
     }
 }
 
+/// What to do about a directory whose cache is missing.
+///
+/// There is no "use it anyway": a missing cache means the directory's fonts
+/// are simply not there, along with everything below it, since the walk
+/// descends through the subdirectory list each cache carries.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum IfMissing {
+    /// Pass the directory over. Its fonts do not appear.
+    Skip,
+    /// Scan it and write the cache, then use it.
+    ///
+    /// This is what fontconfig does on every startup, invisibly.
+    #[cfg(feature = "scan")]
+    Rebuild,
+}
+
+/// What to do about a cache whose directory has changed since it was written.
+///
+/// Unlike a missing one, a stale cache still describes the directory as it
+/// was, so using it is a real option -- and usually the kinder one, since the
+/// alternative is a font that silently disappears because it happens to sit
+/// beside a newly installed one.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum IfStale {
+    /// Use it as it stands. Fonts added since it was written are missing.
+    Use,
+    /// Pass the directory over entirely.
+    Skip,
+    /// Rescan the directory and write a new cache.
+    #[cfg(feature = "scan")]
+    Rebuild,
+}
+
+/// What [`Config::caches`] should do about a cache it cannot simply read.
+///
+/// Fontconfig answers both questions with "rebuild, and write the result
+/// wherever it can" -- silently, on every startup, which is why installing a
+/// font makes the next application launch slow. That is a reasonable default
+/// for a library with a process-global config and nowhere to hand the choice
+/// back; here the choice is the caller's.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CachePolicy {
+    /// A directory with no cache at all.
+    pub missing: IfMissing,
+    /// A cache older than the directory it describes.
+    pub stale: IfStale,
+}
+
+impl CachePolicy {
+    /// Read what is on disk and nothing more.
+    ///
+    /// Never scans a font and never writes a file, so it is the only policy
+    /// available without the `scan` feature. A missing cache hides its
+    /// directory; a stale one is used as it stands.
+    pub const fn read_only() -> Self {
+        Self { missing: IfMissing::Skip, stale: IfStale::Use }
+    }
+
+    /// Bring everything up to date, as `FcConfigBuildFonts` does.
+    ///
+    /// Scans and writes a cache for any directory that lacks a current one.
+    /// Expect it to take seconds on a large font tree, and to write into the
+    /// first cache directory the configuration names that it can.
+    #[cfg(feature = "scan")]
+    pub const fn rebuild() -> Self {
+        Self { missing: IfMissing::Rebuild, stale: IfStale::Rebuild }
+    }
+}
+
+impl Default for CachePolicy {
+    fn default() -> Self {
+        Self::read_only()
+    }
+}
+
+/// A directory the walk did not yield a cache for, and why.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Skipped {
+    /// The directory.
+    pub dir: String,
+    /// What was wrong with it.
+    pub reason: SkipReason,
+}
+
+/// Why a directory produced no cache.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum SkipReason {
+    /// No cache file exists for it.
+    Missing,
+    /// A cache exists but no longer describes the directory.
+    Stale,
+    /// The cache file exists but could not be read.
+    Unreadable,
+    /// Rebuilding was asked for and failed.
+    #[cfg(feature = "scan")]
+    RebuildFailed(String),
+}
+
 /// Iterator over every cache a [`Config`] reaches.
 ///
 /// Directories are visited breadth-first from the configured roots, following
@@ -1269,8 +1384,22 @@ impl Config {
 /// own font set in.
 pub struct Caches<'a> {
     config: &'a Config,
+    policy: CachePolicy,
     pending: VecDeque<String>,
     seen: HashSet<String, BuildFnv>,
+    skipped: Vec<Skipped>,
+}
+
+impl Caches<'_> {
+    /// The directories this walk passed over, and why.
+    ///
+    /// Empty until the walk reaches them, so read it after iterating. It
+    /// exists because the alternative is what this crate used to do: drop a
+    /// directory with no cache and say nothing, leaving a caller to wonder
+    /// where the fonts went.
+    pub fn skipped(&self) -> &[Skipped] {
+        &self.skipped
+    }
 }
 
 impl Iterator for Caches<'_> {
@@ -1281,12 +1410,7 @@ impl Iterator for Caches<'_> {
             if !self.seen.insert(dir.clone()) {
                 continue;
             }
-            let Some(path) = self.config.cache_path(&dir) else {
-                continue;
-            };
-            let Ok(cache) = Cache::open(&path) else {
-                continue;
-            };
+            let Some(cache) = self.open(&dir) else { continue };
             if let Ok(subdirs) = cache.subdirs() {
                 for subdir in subdirs.flatten() {
                     // A rejected directory prunes the walk, the same way
@@ -1299,6 +1423,58 @@ impl Iterator for Caches<'_> {
             return Some((dir, cache));
         }
         None
+    }
+}
+
+impl Caches<'_> {
+    /// The cache for `dir`, applying the policy to whatever is wrong with it.
+    ///
+    /// Records a reason and yields nothing where the policy says to skip.
+    fn open(&mut self, dir: &str) -> Option<Cache> {
+        let path = self.config.cache_path(dir);
+        let cache = match &path {
+            Some(path) => match Cache::open(path) {
+                Ok(cache) => Some(cache),
+                Err(_) => return self.give_up(dir, SkipReason::Unreadable),
+            },
+            None => None,
+        };
+
+        match cache {
+            None => match self.policy.missing {
+                IfMissing::Skip => self.give_up(dir, SkipReason::Missing),
+                #[cfg(feature = "scan")]
+                IfMissing::Rebuild => self.rebuild(dir),
+            },
+            Some(cache) if crate::stamp::is_current(dir, &cache) => Some(cache),
+            Some(cache) => match self.policy.stale {
+                IfStale::Use => Some(cache),
+                IfStale::Skip => self.give_up(dir, SkipReason::Stale),
+                #[cfg(feature = "scan")]
+                IfStale::Rebuild => self.rebuild(dir),
+            },
+        }
+    }
+
+    fn give_up(&mut self, dir: &str, reason: SkipReason) -> Option<Cache> {
+        self.skipped.push(Skipped { dir: dir.to_string(), reason });
+        None
+    }
+
+    /// Scan the directory, write its cache, and open what was written.
+    #[cfg(feature = "scan")]
+    fn rebuild(&mut self, dir: &str) -> Option<Cache> {
+        let built = crate::build::Builder::new(self.config).dir(Path::new(dir));
+        match built {
+            Ok(Some(built)) => match Cache::open(&built.cache) {
+                Ok(cache) => Some(cache),
+                Err(e) => self.give_up(dir, SkipReason::RebuildFailed(e.to_string())),
+            },
+            // Not a directory at all: a configuration naming one that does
+            // not exist is normal, since one config serves many machines.
+            Ok(None) => self.give_up(dir, SkipReason::Missing),
+            Err(e) => self.give_up(dir, SkipReason::RebuildFailed(e.to_string())),
+        }
     }
 }
 

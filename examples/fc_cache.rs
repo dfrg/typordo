@@ -15,7 +15,7 @@
 
 use std::path::{Path, PathBuf};
 
-use fontconf::{Builder, Cache, CacheWriter, Config, Query};
+use fontconf::{Builder, Cache, CachePolicy, CacheWriter, Config, Query};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut out: Option<PathBuf> = None;
@@ -47,7 +47,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let out = out.ok_or("--rewrite needs --out <directory>")?;
         std::fs::create_dir_all(&out)?;
         let (mut written, mut fonts) = (0, 0);
-        for (dir, cache) in config.caches() {
+        for (dir, cache) in config.caches(CachePolicy::read_only()) {
             let (n, bytes) = rewrite_cache(&cache)?;
             std::fs::write(out.join(config.cache_basename(&dir)), bytes)?;
             written += 1;

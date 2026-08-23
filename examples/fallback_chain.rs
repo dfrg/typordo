@@ -10,7 +10,7 @@
 
 use std::error::Error;
 
-use fontconf::{sort, Config, Object, Pattern, Query, Value};
+use fontconf::{sort, CachePolicy, Config, Object, Pattern, Query, Value};
 
 fn main() -> Result<(), Box<dyn Error>> {
     let text: String = std::env::args().skip(1).collect::<Vec<_>>().join(" ");
@@ -20,7 +20,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     }
 
     let config = Config::load()?;
-    let caches: Vec<_> = config.caches().collect();
+    let caches: Vec<_> = config.caches(CachePolicy::read_only()).collect();
     let fonts: Vec<Pattern<'_>> = caches
         .iter()
         .filter_map(|(_, cache)| cache.fonts().ok())

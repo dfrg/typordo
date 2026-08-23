@@ -7,6 +7,7 @@
 
 use std::path::{Path, PathBuf};
 
+use fontconf::CachePolicy;
 use fontconf::Config;
 
 fn fixture_dir() -> PathBuf {
@@ -96,7 +97,7 @@ fn cache_basename_matches_fontconfig() {
 /// but it must terminate cleanly rather than fail.
 #[test]
 fn walking_caches_with_none_present_yields_nothing() {
-    assert_eq!(config().caches().count(), 0);
+    assert_eq!(config().caches(CachePolicy::read_only()).count(), 0);
 }
 
 /// A config written to a temporary file, since these all turn on attributes
@@ -194,4 +195,98 @@ fn a_prefix_match_lands_on_a_separator() {
         "/fonts-extra is not inside /fonts"
     );
     assert_ne!(salted.cache_basename("/fonts/x"), plain.cache_basename("/fonts/x"));
+}
+
+// --- cache policy ---------------------------------------------------------
+
+/// A font directory and a cache directory, with a config naming both.
+fn policy_fixture(name: &str) -> (PathBuf, Config) {
+    let root = std::env::temp_dir().join(format!("fontconf-policy-{name}"));
+    let _ = std::fs::remove_dir_all(&root);
+    let fonts = root.join("fonts");
+    let caches = root.join("caches");
+    std::fs::create_dir_all(&fonts).unwrap();
+    std::fs::create_dir_all(&caches).unwrap();
+
+    let conf = root.join("fonts.conf");
+    std::fs::write(
+        &conf,
+        format!(
+            "<?xml version=\"1.0\"?>\n<fontconfig>\n<dir>{}</dir>\n<cachedir>{}</cachedir>\n\
+             </fontconfig>\n",
+            fonts.display(),
+            caches.display()
+        ),
+    )
+    .unwrap();
+    (fonts, Config::load_from(&conf).expect("fixture config"))
+}
+
+/// A directory with no cache yields nothing, and says so.
+///
+/// It used to yield nothing and say nothing, which is indistinguishable from
+/// a directory with no fonts in it.
+#[test]
+fn a_missing_cache_is_reported_rather_than_hidden() {
+    let (_fonts, config) = policy_fixture("missing");
+    let mut caches = config.caches(CachePolicy::read_only());
+    assert_eq!(caches.by_ref().count(), 0);
+    let skipped = caches.skipped();
+    assert_eq!(skipped.len(), 1, "{skipped:?}");
+    assert_eq!(skipped[0].reason, fontconf::SkipReason::Missing);
+}
+
+#[cfg(feature = "scan")]
+#[test]
+fn rebuilding_makes_a_cache_where_there_was_none() {
+    let (fonts, config) = policy_fixture("rebuild");
+
+    // Nothing to read yet.
+    assert_eq!(config.caches(CachePolicy::read_only()).count(), 0);
+
+    // Asking for a rebuild scans the directory and writes the cache.
+    let mut built = config.build_fonts();
+    let found: Vec<_> = built.by_ref().collect();
+    assert_eq!(found.len(), 1, "the font directory should now have a cache");
+    assert_eq!(found[0].0, fonts.to_string_lossy());
+    assert!(built.skipped().is_empty(), "{:?}", built.skipped());
+
+    // And a plain read now finds it, without scanning again.
+    let mut plain = config.caches(CachePolicy::read_only());
+    assert_eq!(plain.by_ref().count(), 1);
+    assert!(plain.skipped().is_empty());
+}
+
+/// A cache whose directory has moved on is still readable, so the policy
+/// decides: `Use` keeps it, `Skip` reports it rather than pretending.
+///
+/// Adding a file changes the recorded stamp either way -- the modification
+/// time where that can be trusted, the listing checksum where it cannot.
+#[cfg(feature = "scan")]
+#[test]
+fn a_stale_cache_is_used_or_skipped_as_asked() {
+    let (fonts, config) = policy_fixture("stale");
+    assert_eq!(config.build_fonts().count(), 1);
+
+    std::fs::write(fonts.join("added.txt"), b"not a font").unwrap();
+
+    // Used: the cache is out of date but still describes the directory.
+    let mut using = config.caches(CachePolicy::read_only());
+    assert_eq!(using.by_ref().count(), 1, "Use should keep a stale cache");
+    assert!(using.skipped().is_empty(), "{:?}", using.skipped());
+
+    // Skipped: nothing comes back, and the reason is recorded.
+    let mut skipping = config
+        .caches(CachePolicy { missing: fontconf::IfMissing::Skip, stale: fontconf::IfStale::Skip });
+    assert_eq!(skipping.by_ref().count(), 0, "Skip should drop a stale cache");
+    assert_eq!(skipping.skipped().len(), 1);
+    assert_eq!(skipping.skipped()[0].reason, fontconf::SkipReason::Stale);
+
+    // Rebuilt: scanning brings it back up to date, and a plain read is then
+    // no longer stale.
+    assert_eq!(config.build_fonts().count(), 1);
+    let mut after = config
+        .caches(CachePolicy { missing: fontconf::IfMissing::Skip, stale: fontconf::IfStale::Skip });
+    assert_eq!(after.by_ref().count(), 1, "a rebuilt cache should be current");
+    assert!(after.skipped().is_empty(), "{:?}", after.skipped());
 }

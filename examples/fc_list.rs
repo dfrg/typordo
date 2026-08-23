@@ -9,7 +9,7 @@
 use std::collections::BTreeSet;
 use std::path::PathBuf;
 
-use fontconf::{Config, Object, Pattern, Value};
+use fontconf::{CachePolicy, Config, Object, Pattern, Value};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut format = "full".to_string();
@@ -51,7 +51,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut lines = BTreeSet::new();
     let (mut caches, mut patterns) = (0usize, 0usize);
 
-    for (dir, cache) in config.caches() {
+    for (dir, cache) in config.caches(CachePolicy::read_only()) {
         cache.validate().map_err(|e| format!("{dir}: {e}"))?;
         caches += 1;
         for font in cache.fonts()? {

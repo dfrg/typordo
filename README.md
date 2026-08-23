@@ -30,7 +30,7 @@ use fontconf::{best, Config, Object, Pattern, Query};
 let config = Config::load()?;
 
 // Caches own the bytes; patterns borrow from them.
-let caches: Vec<_> = config.caches().collect();
+let caches: Vec<_> = config.caches(CachePolicy::read_only()).collect();
 let fonts: Vec<Pattern<'_>> = caches
     .iter()
     .filter_map(|(_, cache)| cache.fonts().ok())

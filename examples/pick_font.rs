@@ -12,7 +12,8 @@
 use std::error::Error;
 
 use fontconf::{
-    best, render_prepare, Config, Object, OwnedCharSet, OwnedValue, Pattern, Priority, Query,
+    best, render_prepare, CachePolicy, Config, Object, OwnedCharSet, OwnedValue, Pattern, Priority,
+    Query,
 };
 
 fn main() -> Result<(), Box<dyn Error>> {
@@ -33,7 +34,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     // Caches own their bytes and patterns borrow from them, so the caches
     // have to outlive the fonts. `accepts` applies the config's <selectfont>
     // rules, which is how a system hides a font without uninstalling it.
-    let caches: Vec<_> = config.caches().collect();
+    let caches: Vec<_> = config.caches(CachePolicy::read_only()).collect();
     let fonts: Vec<Pattern<'_>> = caches
         .iter()
         .filter_map(|(_, cache)| cache.fonts().ok())

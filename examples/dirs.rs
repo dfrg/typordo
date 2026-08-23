@@ -8,6 +8,7 @@
 
 use std::path::PathBuf;
 
+use fontconf::CachePolicy;
 use fontconf::Config;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -41,7 +42,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
 
-    for (dir, _cache) in config.caches() {
+    for (dir, _cache) in config.caches(CachePolicy::read_only()) {
         println!("{dir}");
     }
     Ok(())

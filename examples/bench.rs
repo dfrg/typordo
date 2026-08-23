@@ -21,7 +21,7 @@
 
 use std::time::Instant;
 
-use fontconf::{best, sort as sort_fonts, Config, Object, OwnedValue, Pattern, Query};
+use fontconf::{best, sort as sort_fonts, CachePolicy, Config, Object, OwnedValue, Pattern, Query};
 
 /// The family a caller was already using when it ran out of coverage.
 ///
@@ -95,7 +95,7 @@ fn run(op: &str, iterations: u32) -> Result<u64, Box<dyn std::error::Error>> {
         "load" => {
             let config = Config::load()?;
             let mut fonts = 0u64;
-            for (_, cache) in config.caches() {
+            for (_, cache) in config.caches(CachePolicy::read_only()) {
                 cache.validate()?;
                 fonts += cache.fonts()?.count() as u64;
             }
@@ -248,7 +248,7 @@ type Loaded = (Config, Vec<(String, fontconf::Cache)>);
 /// Configuration and every cache, loaded once.
 fn loaded() -> Result<Loaded, Box<dyn std::error::Error>> {
     let config = Config::load()?;
-    let caches: Vec<_> = config.caches().collect();
+    let caches: Vec<_> = config.caches(CachePolicy::read_only()).collect();
     Ok((config, caches))
 }
 

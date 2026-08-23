@@ -15,12 +15,12 @@
 //! that fontconfig reads the caches this writes, and picks the same font.
 //!
 //! ```no_run
-//! use fontconf::{best, Config, Object, Pattern, Query};
+//! use fontconf::{best, CachePolicy, Config, Object, Pattern, Query};
 //!
 //! let config = Config::load()?;
 //!
 //! // The caches own the bytes; the patterns borrow from them.
-//! let caches: Vec<_> = config.caches().collect();
+//! let caches: Vec<_> = config.caches(CachePolicy::read_only()).collect();
 //! let fonts: Vec<Pattern<'_>> = caches
 //!     .iter()
 //!     .filter_map(|(_, cache)| cache.fonts().ok())
@@ -125,6 +125,7 @@ mod query;
 mod rules;
 #[cfg(feature = "scan")]
 mod scan;
+mod stamp;
 mod value;
 pub mod weight;
 mod write;
@@ -135,7 +136,9 @@ mod zapf;
 pub use build::{Builder, Built};
 pub use cache::{Cache, Fonts, Subdirs, VERSION};
 pub use charset::{CharSet, CharSetRef, OwnedCharSet};
-pub use config::{Caches, Config, ConfigError, ARCHITECTURE};
+pub use config::{
+    CachePolicy, Caches, Config, ConfigError, IfMissing, IfStale, SkipReason, Skipped, ARCHITECTURE,
+};
 pub use error::{Error, Result};
 pub use langset::{LangResult, LangSet, LangSetRef, OwnedLangSet};
 pub use matching::{best, best_value, score, sort, sorted, BestValue, Priority, Score, PRIORITIES};
