@@ -53,6 +53,8 @@
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
 
+#[cfg(feature = "scan")]
+mod build;
 mod bytes;
 mod cache;
 pub mod casefold;
@@ -91,6 +93,8 @@ pub use object::Object;
 pub use pattern::{Bindings, Element, Elements, Pattern, Values};
 pub use prepare::render_prepare;
 pub use query::{default_langs, OwnedValue, Property, Query};
+#[cfg(feature = "scan")]
+pub use build::{Builder, Built};
 #[cfg(feature = "scan")]
 pub use scan::{scan_bytes, scan_file, ScanError};
 pub use rules::{

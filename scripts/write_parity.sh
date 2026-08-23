@@ -109,6 +109,33 @@ echo "  ours, via our reader: $("$CARGO_TARGET_DIR/release/examples/fc_list" --c
 check "rewritten from the system caches"
 
 rm -rf "$OURS"; mkdir -p "$OURS"
-"$CARGO_TARGET_DIR/release/examples/fc_cache" --out "$OURS" /usr/share/fonts /usr/local/share/fonts
+"$CARGO_TARGET_DIR/release/examples/fc_cache" --out "$OURS"
 echo "  ours, via our reader: $("$CARGO_TARGET_DIR/release/examples/fc_list" --config "$CONF" --format file | wc -l) files"
 check "scanned from the font files"
+
+# Staleness. The cache records the directory's timestamp and nothing else, so
+# a second pass must rescan nothing, and touching one directory must rescan
+# exactly that one.
+echo "=== staleness ==="
+again=$("$CARGO_TARGET_DIR/release/examples/fc_cache" --out "$OURS")
+echo "  second pass: $again"
+case "$again" in
+  "0 directories rescanned, "*) echo "  MATCH (nothing rescanned)" ;;
+  *) echo "  DIFF: a current tree should rescan nothing" ;;
+esac
+
+# A directory nobody else is using, so touching it cannot disturb the system.
+victim=$(mktemp -d)
+"$CARGO_TARGET_DIR/release/examples/fc_cache" --out "$OURS" "$victim" > /dev/null
+sleep 1.1
+touch "$victim/a-new-file"
+one=$("$CARGO_TARGET_DIR/release/examples/fc_cache" --out "$OURS" "$victim")
+echo "  after adding a file: $one"
+case "$one" in
+  "1 directories rescanned, "*) echo "  MATCH (the changed directory rescanned)" ;;
+  *) echo "  DIFF: adding a file should make the cache stale" ;;
+esac
+rm -rf "$victim"
+
+forced=$("$CARGO_TARGET_DIR/release/examples/fc_cache" --out "$OURS" -f)
+echo "  forced: $forced"
