@@ -11,10 +11,11 @@
 use std::path::Path;
 
 use read_fonts::{
-    tables::cmap::CmapSubtable, tables::head::MacStyle, tables::os2::SelectionFlags, FileRef,
-    FontRef, ReadError, TableProvider,
+    tables::cmap::CmapSubtable, tables::head::MacStyle, FileRef, FontRef, ReadError,
+    TableProvider,
 };
 
+use crate::casefold;
 use crate::charset::Coverage;
 use crate::langset::Langs;
 use crate::object::Object;
@@ -123,6 +124,9 @@ fn base_pattern(font: &FontRef<'_>, path: &str, index: i32) -> Query {
     pattern.add(Object::Foundry, foundry(font));
     // Names first: the slant is read off the style name.
     add_names(font, &mut pattern);
+    if let Some(spacing) = spacing(font) {
+        pattern.add(Object::Spacing, spacing);
+    }
     add_coverage(sfnt_coverage(font), &mut pattern);
     pattern
 }
@@ -146,14 +150,34 @@ fn add_coverage(coverage: Coverage, pattern: &mut Query) {
 /// Every character an SFNT font maps, from its Unicode `cmap` subtables.
 fn sfnt_coverage(font: &FontRef<'_>) -> Coverage {
     let mut coverage = Coverage::new();
-    let Ok(cmap) = font.cmap() else {
-        return coverage;
-    };
     let empty = EmptyGlyphs::new(font);
+    walk_mappings(font, |code, gid| {
+        // A mapping to glyph 0 is a mapping to `.notdef`, the absence of a
+        // glyph rather than the presence of one.
+        if gid.to_u32() == 0 {
+            return;
+        }
+        // A control character counts only if its glyph actually draws.
+        if code <= 0x1f && empty.is_empty(gid) {
+            return;
+        }
+        if let Some(c) = char::from_u32(code) {
+            coverage.insert(c);
+        }
+    });
+    coverage
+}
+
+/// Call `visit` with every codepoint the font's Unicode subtables map, and
+/// the glyph it maps to.
+fn walk_mappings(font: &FontRef<'_>, mut visit: impl FnMut(u32, read_fonts::types::GlyphId)) {
+    use read_fonts::tables::cmap::PlatformId;
+    let Ok(cmap) = font.cmap() else {
+        return;
+    };
     for record in cmap.encoding_records() {
         // Only the Unicode-addressed subtables say anything about coverage;
         // a symbol or Mac-Roman subtable indexes something else.
-        use read_fonts::tables::cmap::PlatformId;
         let unicode = matches!(
             (record.platform_id(), record.encoding_id()),
             (PlatformId::Unicode, _) | (PlatformId::Windows, 1 | 10)
@@ -164,9 +188,8 @@ fn sfnt_coverage(font: &FontRef<'_>) -> Coverage {
         let Ok(subtable) = record.subtable(cmap.offset_data()) else {
             continue;
         };
-        collect_subtable(&subtable, &empty, &mut coverage);
+        walk_subtable(&subtable, &mut visit);
     }
-    coverage
 }
 
 /// Which glyphs draw nothing.
@@ -200,29 +223,11 @@ impl<'a> EmptyGlyphs<'a> {
     }
 }
 
-/// Add every codepoint a subtable maps to a real glyph.
-///
-/// A mapping to glyph 0 is a mapping to `.notdef`, which is the absence of a
-/// glyph rather than the presence of one -- fonts routinely map U+0000 there.
-/// Counting it would put a NUL at the head of every font's coverage.
-fn collect_subtable(
-    subtable: &CmapSubtable<'_>,
-    empty: &EmptyGlyphs<'_>,
-    coverage: &mut Coverage,
-) {
+/// Call `visit` for every codepoint one subtable maps.
+fn walk_subtable(subtable: &CmapSubtable<'_>, visit: &mut impl FnMut(u32, read_fonts::types::GlyphId)) {
     let mut add = |code: u32| {
-        let Some(gid) = subtable.map_codepoint(code) else {
-            return;
-        };
-        if gid.to_u32() == 0 {
-            return;
-        }
-        // A control character only counts if its glyph actually draws.
-        if code <= 0x1f && empty.is_empty(gid) {
-            return;
-        }
-        if let Some(c) = char::from_u32(code) {
-            coverage.insert(c);
+        if let Some(gid) = subtable.map_codepoint(code) {
+            visit(code, gid);
         }
     };
     match subtable {
@@ -311,7 +316,14 @@ fn scan_face(font: &FontRef<'_>, path: &str, index: i32) -> Vec<Query> {
             pattern.remove(Object::Slant);
             pattern.add(Object::Slant, slant(font, &pattern));
         }
-        if let Some(ps) = instance.postscript.and_then(|id| name_by_id(font, id)) {
+        // An instance may name itself in the `name` table; most do not, and
+        // the name is then built from the family's PostScript name plus the
+        // instance's own, with spaces removed.
+        let ps = instance
+            .postscript
+            .and_then(|id| name_by_id(font, id))
+            .or_else(|| synthesized_postscript_name(font, instance));
+        if let Some(ps) = ps {
             pattern.remove(Object::PostscriptName);
             pattern.add(Object::PostscriptName, ps.as_str());
         }
@@ -323,11 +335,13 @@ fn scan_face(font: &FontRef<'_>, path: &str, index: i32) -> Vec<Query> {
     add_variable_attributes(font, &mut variable);
     variable.add(Object::Variable, true);
     variable.add(Object::NamedInstance, false);
-    // A variable pattern carries no full name or style: it is not one face.
+    // A variable pattern is not one face, so it carries none of the things
+    // that name one.
     variable.remove(Object::Fullname);
     variable.remove(Object::Fullnamelang);
     variable.remove(Object::Style);
     variable.remove(Object::Stylelang);
+    variable.remove(Object::PostscriptName);
     patterns.push(variable);
 
     patterns
@@ -392,9 +406,45 @@ fn add_variable_attributes(font: &FontRef<'_>, pattern: &mut Query) {
     }
 }
 
-/// One name record by id.
+/// The PostScript name an instance gets when it does not carry one.
+///
+/// The family half of the font's own PostScript name, then the instance's
+/// subfamily with spaces removed: `Cantarell-Regular` and `Extra Bold` give
+/// `Cantarell-ExtraBold`.
+fn synthesized_postscript_name(font: &FontRef<'_>, instance: &Instance) -> Option<String> {
+    let base = name_by_id(font, 6)?;
+    let family = base.split('-').next().unwrap_or(&base);
+    let subfamily = name_by_id(font, instance.subfamily)?;
+    let suffix: String = subfamily.chars().filter(|c| !c.is_whitespace()).collect();
+    Some(format!("{family}-{suffix}"))
+}
+
+/// One name record by id, preferring a language we can name.
 fn name_by_id(font: &FontRef<'_>, id: u16) -> Option<String> {
-    collect_names(font, &[id]).into_iter().next().map(|(text, _)| text)
+    collect_names(font, &[id])
+        .into_iter()
+        .next()
+        .map(|(text, _)| text)
+        .or_else(|| any_name(font, id))
+}
+
+/// One name record by id, whatever language it is filed under.
+fn any_name(font: &FontRef<'_>, id: u16) -> Option<String> {
+    let name = font.name().ok()?;
+    let data = name.string_data();
+    for platform in PLATFORM_ORDER {
+        for record in name.name_record() {
+            if record.name_id().to_u16() != id || record.platform_id() != platform {
+                continue;
+            }
+            let Ok(string) = record.string(data) else { continue };
+            let text: String = string.chars().collect();
+            if !text.is_empty() {
+                return Some(text);
+            }
+        }
+    }
+    None
 }
 
 fn has_table(font: &FontRef<'_>, tag: &[u8; 4]) -> bool {
@@ -421,27 +471,31 @@ fn has_hinting(font: &FontRef<'_>) -> bool {
         .is_some_and(|data| data.len() > 7)
 }
 
-/// The four-character vendor tag from `OS/2`, or `unknown`.
+/// The foundry: the `OS/2` vendor tag, else the copyright notice, else
+/// `unknown`.
 ///
-/// The tag is fixed width and padded with spaces, and fontconfig reports it
-/// with the padding intact: the GNU FreeFont family's foundry really is
-/// `"GNU "`, trailing space included. Only NUL padding is dropped.
+/// The tag is taken *verbatim* whenever its first byte is not NUL -- padding
+/// included. GNU FreeFont's foundry really is `"GNU "` with a trailing space,
+/// and Vazirmatn's is four spaces, not `unknown`. Trimming either one is a
+/// different answer, and the only thing that makes it look like a tidy-up is
+/// that the difference does not print.
 fn foundry(font: &FontRef<'_>) -> String {
-    let Ok(os2) = font.os2() else {
-        return "unknown".to_string();
-    };
-    let text: String = os2
-        .ach_vend_id()
-        .to_be_bytes()
-        .iter()
-        .take_while(|b| **b != 0)
-        .map(|b| *b as char)
-        .collect();
-    if text.trim().is_empty() {
-        "unknown".to_string()
-    } else {
-        text
+    if let Ok(os2) = font.os2() {
+        let bytes = os2.ach_vend_id().to_be_bytes();
+        if bytes[0] != 0 {
+            return bytes
+                .iter()
+                .take_while(|b| **b != 0)
+                .map(|b| *b as char)
+                .collect();
+        }
     }
+    // No vendor tag: fall back to whoever the notice names.
+    collect_names(font, &[7, 0])
+        .iter()
+        .find_map(|(text, _)| notice_to_foundry(text))
+        .unwrap_or("unknown")
+        .to_string()
 }
 
 /// Weight, width, slant and spacing, from `OS/2` and `post`.
@@ -459,7 +513,7 @@ fn add_attributes(font: &FontRef<'_>, pattern: &mut Query, instance: Option<&Ins
                 .map(|os2| weight::from_opentype(f64::from(os2.us_weight_class())))
         })
         .filter(|w| *w >= 0.0)
-        .unwrap_or(80.0);
+        .unwrap_or(100.0); // FC_WEIGHT_MEDIUM, fontconfig's fallback
     pattern.add(Object::Weight, fc_weight);
 
     let fc_width = instance
@@ -470,9 +524,57 @@ fn add_attributes(font: &FontRef<'_>, pattern: &mut Query, instance: Option<&Ins
 
     pattern.add(Object::Slant, slant(font, pattern));
 
-    if font.post().map(|post| post.is_fixed_pitch() != 0).unwrap_or(false) {
-        pattern.add(Object::Spacing, 100); // FC_MONO
+}
+
+/// How many distinct advance widths a font uses, and so how it spaces.
+///
+/// Fontconfig does not trust the `post` fixed-pitch flag -- its own comment
+/// says CJK "monospace" fonts are really dual width and most other fonts do
+/// not bother setting the attribute. It measures instead: collect up to three
+/// distinct advances across the mapped glyphs, and call one width monospaced,
+/// two widths dual when the wider is about twice the narrower, and anything
+/// else proportional.
+///
+/// Only a non-proportional result is recorded, which is why most fonts carry
+/// no `spacing` at all.
+fn spacing(font: &FontRef<'_>) -> Option<i32> {
+    let hmtx = font.hmtx().ok()?;
+    let mut advances: Vec<u16> = Vec::with_capacity(3);
+
+    // Every mapping the cmap has, not the filtered coverage. The two differ
+    // exactly where it matters: a font that maps U+0000 and U+000D to a
+    // narrow `.null` glyph is not monospaced, even though those codepoints
+    // are excluded from what it can draw. Noto Emoji is such a font, and
+    // sampling only the coverage called it monospaced.
+    walk_mappings(font, |_code, gid| {
+        if advances.len() >= 3 {
+            return;
+        }
+        let advance = hmtx.advance(gid).unwrap_or(0);
+        if advance == 0 {
+            return;
+        }
+        if advances.iter().any(|other| approximately_equal(*other, advance)) {
+            return;
+        }
+        advances.push(advance);
+    });
+
+    match advances.as_slice() {
+        [] | [_] => Some(100), // FC_MONO
+        [a, b] => {
+            let (min, max) = (*a.min(b), *a.max(b));
+            // Dual width: the wide glyphs are two narrow cells across.
+            approximately_equal(min.saturating_mul(2), max).then_some(90) // FC_DUAL
+        }
+        _ => None, // proportional, and so not recorded
     }
+}
+
+/// Fontconfig's tolerance: within about three percent of the larger.
+fn approximately_equal(a: u16, b: u16) -> bool {
+    let (a, b) = (i32::from(a), i32::from(b));
+    (a - b).abs() * 33 <= a.abs().max(b.abs())
 }
 
 /// The slant, from the style name if it says, otherwise from the flags.
@@ -498,14 +600,13 @@ fn slant(font: &FontRef<'_>, pattern: &Query) -> i32 {
             }
         }
     }
+    // The fallback follows `head.macStyle`, not `OS/2.fsSelection`. Terminus
+    // Bold sets the fsSelection italic bit and is not italic; macStyle says
+    // bold only, and that is the answer fontconfig gives.
     let italic = font
-        .os2()
-        .map(|os2| os2.fs_selection().contains(SelectionFlags::ITALIC))
-        .unwrap_or(false)
-        || font
-            .head()
-            .map(|head| head.mac_style().contains(MacStyle::ITALIC))
-            .unwrap_or(false);
+        .head()
+        .map(|head| head.mac_style().contains(MacStyle::ITALIC))
+        .unwrap_or(false);
     if italic {
         100
     } else {
@@ -553,7 +654,15 @@ fn add_names(font: &FontRef<'_>, pattern: &mut Query) {
             pattern.add(lang_object, lang);
         }
     }
-    if let Some((ps, _)) = collect_names(font, &[6]).into_iter().next() {
+    // The PostScript name is not localized -- fontconfig records no language
+    // for it -- so unlike the others it is taken whatever language it is
+    // filed under. A font with no name id 6 at all, which the Terminus
+    // bitmaps are, gets one built from its family with the spaces removed.
+    let ps = any_name(font, 6).or_else(|| {
+        let family = any_name(font, 16).or_else(|| any_name(font, 1))?;
+        Some(family.chars().filter(|c| !c.is_whitespace()).collect())
+    });
+    if let Some(ps) = ps {
         pattern.add(Object::PostscriptName, ps.as_str());
     }
 }
@@ -572,10 +681,26 @@ fn collect_names(font: &FontRef<'_>, ids: &[u16]) -> Vec<(String, &'static str)>
 
     for platform in PLATFORM_ORDER {
         for id in ids {
-            for record in records {
-                if record.name_id().to_u16() != *id || record.platform_id() != platform {
-                    continue;
-                }
+            // Within one platform and name id, fontconfig orders by encoding,
+            // then puts the English record first, then the rest by language
+            // id. The English-first part is what makes `%{family}` on a
+            // localized font read as the English name followed by its
+            // translations, rather than whichever language sorted lowest.
+            let mut matching: Vec<_> = records
+                .iter()
+                .enumerate()
+                .filter(|(_, r)| r.name_id().to_u16() == *id && r.platform_id() == platform)
+                .collect();
+            matching.sort_by_key(|(index, r)| {
+                (
+                    r.encoding_id(),
+                    !is_english(platform, r.language_id()),
+                    r.language_id(),
+                    *index,
+                )
+            });
+
+            for (_, record) in matching {
                 let Some(lang) = language_tag(platform, record.language_id()) else {
                     // A localization whose language we cannot name would be
                     // reported without a tag, so it is skipped instead.
@@ -583,7 +708,14 @@ fn collect_names(font: &FontRef<'_>, ids: &[u16]) -> Vec<(String, &'static str)>
                 };
                 let Ok(string) = record.string(data) else { continue };
                 let text: String = string.chars().collect();
-                if text.is_empty() || out.iter().any(|(existing, _)| *existing == text) {
+                // Duplicates are compared the way fontconfig compares any
+                // two names -- ignoring case and blanks -- so a font that
+                // spells the same style `kursiv` for one language and
+                // `Kursiv` for another contributes it once.
+                let duplicate = out
+                    .iter()
+                    .any(|(existing, _)| casefold::eq_ignoring_blanks(existing, &text));
+                if text.is_empty() || duplicate {
                     continue;
                 }
                 out.push((text, lang));
@@ -593,19 +725,18 @@ fn collect_names(font: &FontRef<'_>, ids: &[u16]) -> Vec<(String, &'static str)>
     out
 }
 
+/// Whether a name record is in English, by the platform's own numbering.
+fn is_english(platform: u16, language: u16) -> bool {
+    matches!((platform, language), (3, 0x0409) | (1, 0))
+}
+
 /// The language tag for a name record, or `None` if it is one we cannot name.
 ///
-/// Fontconfig carries a full table of Windows LCIDs and Macintosh language
-/// codes. Only the English entries are recognised here, so a font with
-/// localized names reports fewer of them than fontconfig does -- which is
-/// visible in `familylang`, and in `%{family}` for CJK fonts.
+/// A record whose language cannot be named is skipped rather than reported
+/// untagged: fontconfig pairs every name with a language, and a name with the
+/// wrong one is worse than a name missing.
 fn language_tag(platform: u16, language: u16) -> Option<&'static str> {
-    match (platform, language) {
-        (3, 0x0409) => Some("en"), // Windows, English (US)
-        (1, 0) => Some("en"),      // Macintosh, English
-        (0, _) => Some("en"),      // Unicode platform carries no language
-        _ => None,
-    }
+    crate::name_langs::tag(platform, language)
 }
 
 // --- Type 1 ----------------------------------------------------------------
@@ -683,8 +814,11 @@ fn scan_type1(data: &[u8], path: &str) -> Result<Vec<Query>, ScanError> {
         110
     };
     pattern.add(Object::Slant, slant);
-    if font.is_fixed_pitch() {
-        pattern.add(Object::Spacing, 100);
+    // `/isFixedPitch` is a bare boolean token rather than a string, so it is
+    // read from the header directly; not every URW font sets the flag that
+    // `Type1Font` exposes.
+    if font.is_fixed_pitch() || postscript_flag(data, b"/isFixedPitch") {
+        pattern.add(Object::Spacing, 100); // FC_MONO
     }
 
     Ok(vec![pattern])
@@ -715,6 +849,14 @@ const NOTICE_FOUNDRIES: [(&str, &str); 18] = [
     ("Xorg", "xorg"),
 ];
 
+/// The foundry a copyright notice names, if it names one.
+fn notice_to_foundry(notice: &str) -> Option<&'static str> {
+    NOTICE_FOUNDRIES
+        .iter()
+        .find(|(needle, _)| notice.contains(needle))
+        .map(|(_, foundry)| *foundry)
+}
+
 /// The foundry named by a Type 1 font's notice, if it names one.
 ///
 /// `Type1Font` does not expose `/Notice`, so it is read straight out of the
@@ -722,11 +864,23 @@ const NOTICE_FOUNDRIES: [(&str, &str); 18] = [
 /// encrypted, and a match in there would be noise.
 fn notice_foundry(data: &[u8]) -> Option<&'static str> {
     let header = &data[..data.len().min(64 * 1024)];
-    let notice = postscript_string(header, b"/Notice")?;
-    NOTICE_FOUNDRIES
+    notice_to_foundry(postscript_string(header, b"/Notice")?)
+}
+
+/// Whether a bare PostScript boolean is `true`.
+fn postscript_flag(data: &[u8], key: &[u8]) -> bool {
+    let header = &data[..data.len().min(64 * 1024)];
+    let Some(at) = header.windows(key.len()).position(|w| w == key) else {
+        return false;
+    };
+    let rest = &header[at + key.len()..];
+    let value: Vec<u8> = rest
         .iter()
-        .find(|(needle, _)| notice.contains(needle))
-        .map(|(_, foundry)| *foundry)
+        .skip_while(|b| b.is_ascii_whitespace())
+        .take_while(|b| b.is_ascii_alphanumeric())
+        .copied()
+        .collect();
+    value == b"true"
 }
 
 /// The parenthesized value of a PostScript key, as text.
@@ -757,26 +911,31 @@ fn postscript_string<'a>(data: &'a [u8], key: &[u8]) -> Option<&'a str> {
 /// The value is free text -- `Book`, `Demi`, `Ultra Bold` -- so it is matched
 /// against the same names `<const>` uses.
 fn type1_weight(name: Option<&str>) -> f64 {
-    let Some(name) = name else { return 80.0 };
+    // Fontconfig's default when nothing names a weight is *medium*, not
+    // regular. `Roman` is not a weight in its table -- New Century
+    // Schoolbook says `/Weight (Roman)` and comes out at 100, not 80.
+    const DEFAULT: f64 = 100.0;
+    let Some(name) = name else { return DEFAULT };
     let folded: String = name
         .chars()
         .filter(|c| !c.is_whitespace() && *c != '-')
         .flat_map(char::to_lowercase)
         .collect();
-    let weight = match folded.as_str() {
+    match folded.as_str() {
         "thin" => 0.0,
         "extralight" | "ultralight" => 40.0,
         "light" => 50.0,
         "demilight" | "semilight" => 55.0,
         "book" => 75.0,
-        "regular" | "normal" | "roman" => 80.0,
+        "regular" | "normal" => 80.0,
         "medium" => 100.0,
         "demi" | "demibold" | "semibold" => 180.0,
         "bold" => 200.0,
-        "extrabold" | "ultrabold" => 205.0,
-        "black" | "heavy" => 210.0,
-        "extrablack" | "ultrablack" => 215.0,
-        _ => 80.0,
-    };
-    weight
+        "extrabold" | "superbold" | "ultrabold" => 205.0,
+        "black" => 210.0,
+        "heavy" => 210.0,
+        "superblack" | "extrablack" => 215.0,
+        "ultrablack" => 215.0,
+        _ => DEFAULT,
+    }
 }

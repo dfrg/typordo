@@ -214,3 +214,43 @@ fn a_type1_font_reports_coverage_from_its_glyph_names() {
     };
     assert!(langs.langs().any(|l| l == "en"), "should support English");
 }
+
+/// Localized names are labelled with the language they are written in, and
+/// the English one comes first. A font that lists its style in twenty
+/// languages has to report them in fontconfig's order or `%{style}` reads
+/// differently.
+#[test]
+fn localized_names_are_tagged_and_english_leads() {
+    let path = PathBuf::from("/usr/share/fonts/gnu-free/FreeMonoBold.ttf");
+    if !path.exists() {
+        return;
+    }
+    let scanned = fontconf::scan_file(&path).expect("scan");
+    let font = &scanned[0];
+
+    let styles: Vec<String> = font
+        .get(Object::Style)
+        .unwrap()
+        .values()
+        .filter_map(|(v, _)| match v {
+            OwnedValue::String(s) => Some(s.clone()),
+            _ => None,
+        })
+        .collect();
+    assert!(styles.len() > 5, "expected many localizations: {styles:?}");
+    assert_eq!(styles[0], "Bold", "the English name comes first");
+
+    // Every name is paired with a language.
+    let langs = font.get(Object::Stylelang).unwrap().values().count();
+    assert_eq!(langs, styles.len(), "each name needs its language");
+
+    // The same word in two cases is one name, not two.
+    let mut folded: Vec<String> = styles
+        .iter()
+        .map(|s| fontconf::casefold::fold_str(s).collect())
+        .collect();
+    folded.sort();
+    let before = folded.len();
+    folded.dedup();
+    assert_eq!(folded.len(), before, "names should already be deduplicated");
+}

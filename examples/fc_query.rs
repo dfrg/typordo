@@ -8,16 +8,43 @@ use fontconf::{Object, OwnedValue, Query};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut format = "family".to_string();
+    let mut batch = false;
     let mut files: Vec<String> = Vec::new();
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--format" => format = args.next().unwrap_or_default(),
+            // One path per line on stdin. Scanning is fast; starting a
+            // process per file is not, and a harness runs thousands.
+            "--batch" => batch = true,
             other => files.push(other.to_string()),
         }
     }
     let field = Object::from_name(&format)
         .ok_or_else(|| format!("unknown property {format}"))?;
+
+    if batch {
+        use std::io::BufRead;
+        for line in std::io::stdin().lock().lines() {
+            let file = line?;
+            let file = file.trim_end();
+            match fontconf::scan_file(std::path::Path::new(file)) {
+                Ok(patterns) => {
+                    // A marker per file, so a harness can split the stream
+                    // back into per-file answers.
+                    println!("@{file}");
+                    for pattern in patterns {
+                        println!("{}", show(&pattern, field));
+                    }
+                }
+                Err(e) => {
+                    println!("@{file}");
+                    eprintln!("{file}: {e}");
+                }
+            }
+        }
+        return Ok(());
+    }
 
     for file in &files {
         match fontconf::scan_file(std::path::Path::new(file)) {

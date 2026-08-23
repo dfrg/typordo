@@ -65,6 +65,8 @@ mod langset;
 pub mod orth;
 mod matching;
 mod md5;
+#[cfg(feature = "scan")]
+mod name_langs;
 mod object;
 mod pattern;
 mod prepare;
