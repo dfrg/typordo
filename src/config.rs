@@ -805,10 +805,10 @@ impl Config {
         // Indexed once for the whole pass, not once per rule: the rules see
         // each other's edits, so the index has to follow the query through
         // all of them.
-        let mut families = crate::rules::FamilyIndex::new(query);
+        let mut pass = crate::rules::Pass::new(query);
         for rule in &self.rules {
             if rule.kind == kind {
-                rule.apply(query, pattern, &mut families);
+                rule.apply(query, pattern, &mut pass);
             }
         }
     }

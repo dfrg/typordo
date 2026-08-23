@@ -290,6 +290,27 @@ pub(crate) struct FamilyIndex {
     counts: HashMap<u64, u32, BuildPassthrough>,
 }
 
+/// The state one substitution pass carries from rule to rule.
+///
+/// Both fields exist to be reused. A pass runs hundreds of rules over the
+/// same query, and giving each of them a fresh buffer was most of what was
+/// left allocating on this path.
+pub(crate) struct Pass {
+    families: FamilyIndex,
+    /// Values an edit is about to hand to the query.
+    ///
+    /// Drained rather than moved, so the allocation survives into the next
+    /// edit while the values themselves go into the pattern.
+    tagged: Vec<(OwnedValue, Binding)>,
+}
+
+impl Pass {
+    /// Begin a pass over `query`.
+    pub(crate) fn new(query: &Query) -> Self {
+        Self { families: FamilyIndex::new(query), tagged: Vec::new() }
+    }
+}
+
 impl FamilyIndex {
     /// Index the families `query` starts with.
     pub(crate) fn new(query: &Query) -> Self {
@@ -379,12 +400,7 @@ impl Rule {
     /// reached, so a later test sees what an earlier edit did -- and a test
     /// failing halfway leaves those edits in place, which is what fontconfig
     /// does too.
-    pub fn apply(
-        &self,
-        query: &mut Query,
-        pattern: Option<&Query>,
-        families: &mut FamilyIndex,
-    ) -> bool {
+    pub fn apply(&self, query: &mut Query, pattern: Option<&Query>, pass: &mut Pass) -> bool {
         // Where a test matched, per property, so a following edit knows which
         // value to replace or insert beside.
         let mut marks: Vec<(&Property, Option<usize>)> = Vec::new();
@@ -392,7 +408,7 @@ impl Rule {
 
         for step in &self.steps {
             match step {
-                Step::Test(test) => match test.evaluate(query, pattern, families) {
+                Step::Test(test) => match test.evaluate(query, pattern, &mut pass.families) {
                     Some(position) => {
                         if !marks.iter().any(|(o, _)| **o == test.object) {
                             marks.push((&test.object, position));
@@ -403,7 +419,7 @@ impl Rule {
                 Step::Edit(edit) => {
                     let mark =
                         marks.iter().find(|(o, _)| **o == edit.object).and_then(|(_, at)| *at);
-                    edit.apply(query, pattern, mark, families);
+                    edit.apply(query, pattern, mark, pass);
                     edited = true;
                     // A replaced value invalidates the position we recorded.
                     if matches!(
@@ -510,7 +526,7 @@ impl Edit {
         query: &mut Query,
         pattern: Option<&Query>,
         mark: Option<usize>,
-        families: &mut FamilyIndex,
+        pass: &mut Pass,
     ) {
         let tracked = self.object == Property::Known(Object::Family);
         let values = self.expr.values(query, pattern);
@@ -523,16 +539,19 @@ impl Edit {
             _ => None,
         };
         let binding = self.resolve_binding(query, positional);
-        let tagged: Vec<(OwnedValue, Binding)> = values.into_iter().map(|v| (v, binding)).collect();
+        let tagged = &mut pass.tagged;
+        tagged.clear();
+        tagged.extend(values.into_iter().map(|v| (v, binding)));
 
         // What the index gains is known before the move; what it loses is
         // known only at the point each mode drops it.
         if tracked {
-            for (value, _) in &tagged {
-                families.learn(value);
+            for (value, _) in tagged.iter() {
+                pass.families.learn(value);
             }
         }
 
+        let families = &mut pass.families;
         {
             let slot = query.values_mut(&self.object);
             let forget_all = |families: &mut FamilyIndex, slot: &Vec<(OwnedValue, Binding)>| {
@@ -550,36 +569,38 @@ impl Edit {
                         }
                         let tail = slot.split_off(at + 1);
                         slot.pop();
-                        slot.extend(tagged);
+                        slot.append(tagged);
                         slot.extend(tail);
                     }
                     _ => {
                         forget_all(families, slot);
-                        *slot = tagged;
+                        slot.clear();
+                        slot.append(tagged);
                     }
                 },
                 EditMode::AssignReplace => {
                     forget_all(families, slot);
-                    *slot = tagged;
+                    slot.clear();
+                    slot.append(tagged);
                 }
                 EditMode::Prepend => {
                     let at = mark.unwrap_or(0).min(slot.len());
                     let tail = slot.split_off(at);
-                    slot.extend(tagged);
+                    slot.append(tagged);
                     slot.extend(tail);
                 }
                 EditMode::PrependFirst => {
                     let tail = std::mem::take(slot);
-                    slot.extend(tagged);
+                    slot.append(tagged);
                     slot.extend(tail);
                 }
                 EditMode::Append => {
                     let at = mark.map_or(slot.len(), |at| (at + 1).min(slot.len()));
                     let tail = slot.split_off(at);
-                    slot.extend(tagged);
+                    slot.append(tagged);
                     slot.extend(tail);
                 }
-                EditMode::AppendLast => slot.extend(tagged),
+                EditMode::AppendLast => slot.append(tagged),
                 EditMode::Delete => match mark {
                     Some(at) if at < slot.len() => {
                         if tracked {
