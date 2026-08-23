@@ -126,3 +126,91 @@ fn an_empty_glyf_table_is_not_an_outline_font() {
     assert_eq!(font.value(Object::Outline), Some(&OwnedValue::Bool(false)));
     assert_eq!(font.value(Object::Scalable), Some(&OwnedValue::Bool(false)));
 }
+
+// --- coverage -------------------------------------------------------------
+
+/// The languages a font supports are derived from what it covers, not
+/// declared: fontconfig asks whether every codepoint of each language's
+/// orthography is present.
+#[test]
+fn languages_are_derived_from_coverage() {
+    let Some(path) = fixture_font() else { return };
+    let scanned = fontconf::scan_file(&path).expect("scan");
+    let cache = cached();
+    let recorded = cache.fonts().unwrap().next().unwrap();
+
+    let ours = match scanned[0].value(Object::Lang) {
+        Some(OwnedValue::LangSet(langs)) => fontconf::Languages::Owned(langs),
+        other => panic!("expected a langset, got {other:?}"),
+    };
+    let theirs = match recorded.value(Object::Lang) {
+        Some(fontconf::Value::LangSet(langs)) => langs,
+        other => panic!("expected a cached langset, got {other:?}"),
+    };
+    assert_eq!(
+        ours.langs().collect::<Vec<_>>(),
+        theirs.langs().collect::<Vec<_>>(),
+        "derived languages should match what fontconfig cached"
+    );
+}
+
+#[test]
+fn coverage_matches_what_fontconfig_cached() {
+    let Some(path) = fixture_font() else { return };
+    let scanned = fontconf::scan_file(&path).expect("scan");
+    let cache = cached();
+    let recorded = cache.fonts().unwrap().next().unwrap();
+
+    let ours = match scanned[0].value(Object::Charset) {
+        Some(OwnedValue::CharSet(coverage)) => fontconf::Chars::Owned(coverage),
+        other => panic!("expected a charset, got {other:?}"),
+    };
+    let theirs = match recorded.value(Object::Charset) {
+        Some(fontconf::Value::CharSet(chars)) => chars,
+        other => panic!("expected a cached charset, got {other:?}"),
+    };
+    assert_eq!(ours.len(), theirs.len(), "coverage size");
+    assert_eq!(ours.to_string(), theirs.to_string(), "coverage ranges");
+}
+
+/// A NUL mapped to the blank glyph is not coverage. Fonts routinely map the
+/// ASCII control range to `.notdef` or to the space glyph, and counting
+/// either puts characters in a font's charset that it cannot draw.
+#[test]
+fn control_characters_are_not_counted_unless_they_draw() {
+    let Some(path) = fixture_font() else { return };
+    let scanned = fontconf::scan_file(&path).expect("scan");
+    let coverage = match scanned[0].value(Object::Charset) {
+        Some(OwnedValue::CharSet(c)) => c,
+        other => panic!("expected a charset, got {other:?}"),
+    };
+    assert!(!coverage.contains('\u{0}'), "NUL should not be covered");
+    assert!(!coverage.contains('\r'), "carriage return should not be covered");
+    assert!(coverage.contains('A'));
+}
+
+/// A Type 1 font has no cmap at all: its coverage comes from glyph names
+/// mapped through the Adobe Glyph List.
+#[test]
+fn a_type1_font_reports_coverage_from_its_glyph_names() {
+    let path = PathBuf::from("/usr/share/fonts/urw-base35/NimbusRoman-Regular.t1");
+    if !path.exists() {
+        return;
+    }
+    let scanned = fontconf::scan_file(&path).expect("scan");
+    let coverage = match scanned[0].value(Object::Charset) {
+        Some(OwnedValue::CharSet(c)) => c,
+        other => panic!("expected a charset, got {other:?}"),
+    };
+    for c in ['A', 'z', '0', '!'] {
+        assert!(coverage.contains(c), "{c:?} missing from a Latin Type 1 font");
+    }
+    assert!(!coverage.contains('\u{4e00}'));
+
+    // And that coverage is enough to name languages.
+    let langs = match scanned[0].value(Object::Lang) {
+        Some(OwnedValue::LangSet(l)) => l,
+        other => panic!("expected a langset, got {other:?}"),
+    };
+    assert!(langs.langs().any(|l| l == "en"), "should support English");
+}

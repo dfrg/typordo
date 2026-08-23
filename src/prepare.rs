@@ -215,9 +215,22 @@ fn own(value: Value<'_>) -> OwnedValue {
         Value::Bool(b) => OwnedValue::Bool(b),
         Value::Matrix(m) => OwnedValue::Matrix(m),
         Value::Range(r) => OwnedValue::Range(r),
-        // A charset or langset cannot be carried into an owned pattern yet;
-        // it is dropped rather than misrepresented.
-        Value::CharSet(_) | Value::LangSet(_) => OwnedValue::Void,
+        Value::CharSet(chars) => {
+            let mut coverage = crate::charset::Coverage::new();
+            for c in chars.chars() {
+                coverage.insert(c);
+            }
+            OwnedValue::CharSet(coverage)
+        }
+        Value::LangSet(langs) => {
+            let mut owned = crate::langset::Langs::new();
+            for index in 0..crate::langs::LANGS.len() {
+                if langs.contains_index(index) {
+                    owned.insert_index(index);
+                }
+            }
+            OwnedValue::LangSet(owned)
+        }
     }
 }
 

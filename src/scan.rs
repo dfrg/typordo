@@ -11,12 +11,14 @@
 use std::path::Path;
 
 use read_fonts::{
-    tables::head::MacStyle, tables::os2::SelectionFlags, FileRef, FontRef, ReadError,
-    TableProvider,
+    tables::cmap::CmapSubtable, tables::head::MacStyle, tables::os2::SelectionFlags, FileRef,
+    FontRef, ReadError, TableProvider,
 };
 
+use crate::charset::Coverage;
+use crate::langset::Langs;
 use crate::object::Object;
-use crate::query::Query;
+use crate::query::{OwnedValue, Query};
 use crate::weight;
 
 /// Why a font file could not be scanned.
@@ -121,7 +123,141 @@ fn base_pattern(font: &FontRef<'_>, path: &str, index: i32) -> Query {
     pattern.add(Object::Foundry, foundry(font));
     // Names first: the slant is read off the style name.
     add_names(font, &mut pattern);
+    add_coverage(sfnt_coverage(font), &mut pattern);
     pattern
+}
+
+/// Record what a font covers, and what that lets it write.
+///
+/// The language set is derived from the coverage rather than declared by the
+/// font: fontconfig asks, for each language it knows an orthography for,
+/// whether every codepoint that language needs is present.
+fn add_coverage(coverage: Coverage, pattern: &mut Query) {
+    if coverage.is_empty() {
+        return;
+    }
+    let langs = Langs::from_coverage(&coverage);
+    pattern.add(Object::Charset, OwnedValue::CharSet(coverage));
+    if !langs.is_empty() {
+        pattern.add(Object::Lang, OwnedValue::LangSet(langs));
+    }
+}
+
+/// Every character an SFNT font maps, from its Unicode `cmap` subtables.
+fn sfnt_coverage(font: &FontRef<'_>) -> Coverage {
+    let mut coverage = Coverage::new();
+    let Ok(cmap) = font.cmap() else {
+        return coverage;
+    };
+    let empty = EmptyGlyphs::new(font);
+    for record in cmap.encoding_records() {
+        // Only the Unicode-addressed subtables say anything about coverage;
+        // a symbol or Mac-Roman subtable indexes something else.
+        use read_fonts::tables::cmap::PlatformId;
+        let unicode = matches!(
+            (record.platform_id(), record.encoding_id()),
+            (PlatformId::Unicode, _) | (PlatformId::Windows, 1 | 10)
+        );
+        if !unicode {
+            continue;
+        }
+        let Ok(subtable) = record.subtable(cmap.offset_data()) else {
+            continue;
+        };
+        collect_subtable(&subtable, &empty, &mut coverage);
+    }
+    coverage
+}
+
+/// Which glyphs draw nothing.
+///
+/// Only the ASCII control range needs this: CID fonts built by Adobe map
+/// control characters to the blank space glyph, and fontconfig excludes a
+/// control character whose glyph has no contours rather than claiming the
+/// font covers it.
+struct EmptyGlyphs<'a> {
+    loca: Option<read_fonts::tables::loca::Loca<'a>>,
+}
+
+impl<'a> EmptyGlyphs<'a> {
+    fn new(font: &FontRef<'a>) -> Self {
+        Self { loca: font.loca(None).ok() }
+    }
+
+    /// Whether `glyph` draws nothing.
+    ///
+    /// A `glyf` outline of zero length has no contours. A CFF charstring
+    /// would have to be executed to know, so those are assumed to draw --
+    /// which matches every font checked here.
+    fn is_empty(&self, glyph: read_fonts::types::GlyphId) -> bool {
+        match &self.loca {
+            Some(loca) => loca
+                .get_raw(glyph.to_u32() as usize)
+                .zip(loca.get_raw(glyph.to_u32() as usize + 1))
+                .is_some_and(|(start, end)| start == end),
+            None => false,
+        }
+    }
+}
+
+/// Add every codepoint a subtable maps to a real glyph.
+///
+/// A mapping to glyph 0 is a mapping to `.notdef`, which is the absence of a
+/// glyph rather than the presence of one -- fonts routinely map U+0000 there.
+/// Counting it would put a NUL at the head of every font's coverage.
+fn collect_subtable(
+    subtable: &CmapSubtable<'_>,
+    empty: &EmptyGlyphs<'_>,
+    coverage: &mut Coverage,
+) {
+    let mut add = |code: u32| {
+        let Some(gid) = subtable.map_codepoint(code) else {
+            return;
+        };
+        if gid.to_u32() == 0 {
+            return;
+        }
+        // A control character only counts if its glyph actually draws.
+        if code <= 0x1f && empty.is_empty(gid) {
+            return;
+        }
+        if let Some(c) = char::from_u32(code) {
+            coverage.insert(c);
+        }
+    };
+    match subtable {
+        CmapSubtable::Format4(table) => {
+            for (start, end) in table.start_code().iter().zip(table.end_code()) {
+                let (start, end) = (start.get(), end.get());
+                // 0xffff closes the segment list and is not a character.
+                if start == 0xffff {
+                    continue;
+                }
+                for code in start..=end {
+                    add(u32::from(code));
+                }
+            }
+        }
+        CmapSubtable::Format12(table) => {
+            for group in table.groups() {
+                for code in group.start_char_code()..=group.end_char_code() {
+                    add(code);
+                }
+            }
+        }
+        CmapSubtable::Format6(table) => {
+            let first = u32::from(table.first_code());
+            for offset in 0..u32::from(table.entry_count()) {
+                add(first + offset);
+            }
+        }
+        CmapSubtable::Format0(_) => {
+            for code in 0..256u32 {
+                add(code);
+            }
+        }
+        _ => {}
+    }
 }
 
 /// One pattern per face, expanding a variable font into its instances.
@@ -522,6 +658,15 @@ fn scan_type1(data: &[u8], path: &str) -> Result<Vec<Query>, ScanError> {
     }
 
     pattern.add(Object::Foundry, notice_foundry(data).unwrap_or("unknown"));
+    // A Type 1 font has no cmap. Its coverage comes from glyph names mapped
+    // through the Adobe Glyph List, which `unicode_charmap` does for us.
+    let mut coverage = Coverage::new();
+    for (code, _) in font.unicode_charmap().iter() {
+        if let Some(c) = char::from_u32(code) {
+            coverage.insert(c);
+        }
+    }
+    add_coverage(coverage, &mut pattern);
     pattern.add(Object::Weight, type1_weight(font.weight()));
     pattern.add(Object::Width, 100.0);
     // A Type 1 font states its slant as an angle, so anything non-zero is

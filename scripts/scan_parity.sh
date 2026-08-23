@@ -18,7 +18,7 @@ echo "files: $(wc -l < $FILES)"
 total_ok=0; total_bad=0
 for field in file index fontwrapper fontformat outline color scalable \
              fonthashint foundry order fontversion weight width slant \
-             spacing family style fullname postscriptname; do
+             spacing family style fullname postscriptname charset lang; do
   ok=0; bad=0; shown=0
   while IFS= read -r f; do
     ours=$(cargo run -q --example fc_query -- --format "$field" "$f" 2>/dev/null </dev/null)

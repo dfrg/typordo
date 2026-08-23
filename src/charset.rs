@@ -220,7 +220,7 @@ impl std::fmt::Display for CharSet<'_> {
 /// The layout mirrors [`CharSet`]'s -- 256-codepoint pages of eight words --
 /// so merging a font is a handful of word-ORs per page rather than a pass over
 /// its characters.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Coverage {
     pages: std::collections::HashMap<u16, [u32; LEAF_WORDS]>,
 }
@@ -229,6 +229,26 @@ impl Coverage {
     /// An empty set.
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Add everything in a set of characters, however it is stored.
+    ///
+    /// The bool is the whole point: it is what decides that a font earns its
+    /// place in a fallback list.
+    pub fn merge_chars(&mut self, other: &Chars<'_>) -> bool {
+        match other {
+            Chars::Cached(set) => self.merge(set),
+            Chars::Owned(set) => {
+                let mut added = false;
+                for c in set.chars() {
+                    if !self.contains(c) {
+                        added = true;
+                        self.insert(c);
+                    }
+                }
+                added
+            }
+        }
     }
 
     /// Add everything in `other`, reporting whether it contributed anything.
@@ -271,5 +291,151 @@ impl Coverage {
     /// Whether nothing has been merged in.
     pub fn is_empty(&self) -> bool {
         self.len() == 0
+    }
+
+    /// Add one character.
+    pub fn insert(&mut self, c: char) {
+        let page = (c as u32 / PAGE) as u16;
+        let leaf = self.pages.entry(page).or_insert([0; LEAF_WORDS]);
+        leaf[((c as u32 % PAGE) / 32) as usize] |= 1 << (c as u32 % 32);
+    }
+
+    /// The covered characters, ascending.
+    pub fn chars(&self) -> impl Iterator<Item = char> + '_ {
+        let mut pages: Vec<u16> = self.pages.keys().copied().collect();
+        pages.sort_unstable();
+        pages.into_iter().flat_map(move |page| {
+            let leaf = self.pages[&page];
+            let base = u32::from(page) * PAGE;
+            (0..LEAF_WORDS).flat_map(move |word| {
+                let bits = leaf[word];
+                (0..32u32)
+                    .filter(move |bit| bits & (1 << bit) != 0)
+                    .filter_map(move |bit| char::from_u32(base + word as u32 * 32 + bit))
+            })
+        })
+    }
+
+    /// Whether every character in `ranges` is covered.
+    ///
+    /// This is the question a language orthography asks.
+    pub fn covers_ranges(&self, ranges: &[(u32, u32)]) -> bool {
+        ranges.iter().all(|(lo, hi)| {
+            (*lo..=*hi).all(|c| char::from_u32(c).is_none_or(|c| self.contains(c)))
+        })
+    }
+}
+
+/// A set of characters, however it happens to be stored.
+///
+/// Coverage read from a cache borrows its bytes; coverage produced by
+/// scanning a font is built in memory. Both answer the same questions, so
+/// matching and reporting take this rather than one or the other.
+#[derive(Clone, Copy, Debug)]
+pub enum Chars<'a> {
+    /// Read from a cache.
+    Cached(CharSet<'a>),
+    /// Built by scanning a font.
+    Owned(&'a Coverage),
+}
+
+impl<'a> Chars<'a> {
+    /// Whether `c` is covered.
+    pub fn contains(&self, c: char) -> bool {
+        match self {
+            Self::Cached(set) => set.contains(c),
+            Self::Owned(set) => set.contains(c),
+        }
+    }
+
+    /// How many characters are covered.
+    pub fn len(&self) -> usize {
+        match self {
+            Self::Cached(set) => set.len(),
+            Self::Owned(set) => set.len(),
+        }
+    }
+
+    /// Whether nothing is covered.
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    /// The covered characters, ascending.
+    pub fn chars(self) -> CharsIter<'a> {
+        match self {
+            Self::Cached(set) => CharsIter::Cached(Box::new(set.chars())),
+            Self::Owned(set) => CharsIter::Owned(Box::new(set.chars())),
+        }
+    }
+
+    /// The covered characters as contiguous inclusive ranges, ascending.
+    pub fn ranges(self) -> impl Iterator<Item = (char, char)> + 'a {
+        let mut chars = self.chars();
+        let mut pending = chars.next();
+        std::iter::from_fn(move || {
+            let start = pending?;
+            let mut end = start;
+            loop {
+                match chars.next() {
+                    Some(next) if next as u32 == end as u32 + 1 => end = next,
+                    other => {
+                        pending = other;
+                        return Some((start, end));
+                    }
+                }
+            }
+        })
+    }
+
+    /// Check the structure, for coverage that has one to check.
+    pub fn validate(&self) -> Result<()> {
+        match self {
+            Self::Cached(set) => set.validate(),
+            Self::Owned(_) => Ok(()),
+        }
+    }
+}
+
+/// Iterator over the characters of a [`Chars`].
+pub enum CharsIter<'a> {
+    /// Walking a cache's bitmap.
+    Cached(Box<dyn Iterator<Item = char> + 'a>),
+    /// Walking an in-memory set.
+    Owned(Box<dyn Iterator<Item = char> + 'a>),
+}
+
+impl Iterator for CharsIter<'_> {
+    type Item = char;
+
+    fn next(&mut self) -> Option<char> {
+        match self {
+            Self::Cached(iter) | Self::Owned(iter) => iter.next(),
+        }
+    }
+}
+
+impl PartialEq for Chars<'_> {
+    fn eq(&self, other: &Self) -> bool {
+        self.len() == other.len() && self.chars().eq(other.chars())
+    }
+}
+
+impl Eq for Chars<'_> {}
+
+/// The form `fc-query` prints coverage in: inclusive hex ranges.
+impl std::fmt::Display for Chars<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        for (i, (start, end)) in self.ranges().enumerate() {
+            if i > 0 {
+                f.write_str(" ")?;
+            }
+            if start == end {
+                write!(f, "{:x}", start as u32)?;
+            } else {
+                write!(f, "{:x}-{:x}", start as u32, end as u32)?;
+            }
+        }
+        Ok(())
     }
 }

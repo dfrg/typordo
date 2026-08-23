@@ -412,8 +412,8 @@ fn coverage_reports_whether_a_font_contributed() {
     };
 
     let mut coverage = Coverage::new();
-    assert!(coverage.merge(&charset), "the first merge must contribute");
-    assert!(!coverage.merge(&charset), "the same set adds nothing twice");
+    assert!(coverage.merge_chars(&charset), "the first merge must contribute");
+    assert!(!coverage.merge_chars(&charset), "the same set adds nothing twice");
     assert_eq!(coverage.len(), charset.len());
     assert!(coverage.contains('A'));
     assert!(!coverage.contains('\u{4e00}'));

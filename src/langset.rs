@@ -283,3 +283,179 @@ mod tests {
         assert!(LangResult::DifferentTerritory < LangResult::DifferentLang);
     }
 }
+
+/// A set of languages built by scanning a font, rather than read from a cache.
+///
+/// Same bitmap, same bit order; the difference is only where the bytes live.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Langs {
+    bits: [u32; langs::MAP_WORDS],
+}
+
+impl Langs {
+    /// An empty set.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Which languages a font covering `coverage` can write.
+    ///
+    /// A language is included when the font covers *every* codepoint of its
+    /// orthography. There is no partial credit and no threshold: that one
+    /// rule is the whole of `FcLangSetFromCharSet`.
+    pub fn from_coverage(coverage: &crate::charset::Coverage) -> Self {
+        let mut set = Self::new();
+        for index in 0..crate::orth::len() {
+            if coverage.covers_ranges(crate::orth::orthography(index)) {
+                set.insert_index(index);
+            }
+        }
+        set
+    }
+
+    /// Mark language `index` as supported.
+    pub fn insert_index(&mut self, index: usize) {
+        if let Some(word) = self.bits.get_mut(index / 32) {
+            *word |= 1 << (index % 32);
+        }
+    }
+
+    /// Whether bit `index` is set.
+    pub fn contains_index(&self, index: usize) -> bool {
+        self.bits
+            .get(index / 32)
+            .is_some_and(|word| word & (1 << (index % 32)) != 0)
+    }
+
+    /// Every language in the set, in bit order.
+    pub fn langs(&self) -> impl Iterator<Item = &'static str> + '_ {
+        (0..LANGS.len()).filter(|i| self.contains_index(*i)).map(|i| LANGS[i])
+    }
+
+    /// How many languages the set holds.
+    pub fn len(&self) -> usize {
+        self.bits.iter().map(|w| w.count_ones() as usize).sum()
+    }
+
+    /// Whether the set is empty.
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+}
+
+/// A set of languages, however it happens to be stored.
+#[derive(Clone, Copy, Debug)]
+pub enum Languages<'a> {
+    /// Read from a cache.
+    Cached(LangSet<'a>),
+    /// Built by scanning a font.
+    Owned(&'a Langs),
+}
+
+impl<'a> Languages<'a> {
+    /// Whether bit `index` is set.
+    pub fn contains_index(&self, index: usize) -> bool {
+        match self {
+            Self::Cached(set) => set.contains_index(index),
+            Self::Owned(set) => set.contains_index(index),
+        }
+    }
+
+    /// Whether the font covers exactly this language, by name.
+    pub fn contains(&self, lang: &str) -> bool {
+        langs::index_of(lang).is_some_and(|i| self.contains_index(i))
+    }
+
+    /// Every language in the set, in bit order.
+    pub fn langs(self) -> impl Iterator<Item = &'static str> + 'a {
+        (0..LANGS.len()).filter(move |i| self.contains_index(*i)).map(|i| LANGS[i])
+    }
+
+    /// How many languages the set holds.
+    pub fn len(&self) -> usize {
+        (0..LANGS.len()).filter(|i| self.contains_index(*i)).count()
+    }
+
+    /// Whether the set is empty.
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    /// How well this set answers a request for `lang`.
+    pub fn has_lang(&self, lang: &str) -> LangResult {
+        // Ranks, not bit indices: the walk goes through neighbours in name
+        // order for the early exits to be sound.
+        let start = match langs::rank_of(lang) {
+            Ok(rank) if self.contains_rank(rank) => return LangResult::Equal,
+            Ok(rank) => rank,
+            Err(insertion) => insertion,
+        };
+        let mut best = LangResult::DifferentLang;
+        let mut walk = |ranks: &mut dyn Iterator<Item = usize>| {
+            for rank in ranks {
+                let Some(known) = langs::nth_sorted(rank) else { break };
+                let result = compare_lang(lang, known);
+                if result == LangResult::DifferentLang {
+                    break;
+                }
+                if self.contains_rank(rank) && result < best {
+                    best = result;
+                }
+            }
+        };
+        walk(&mut (0..start).rev());
+        walk(&mut (start..LANGS.len()));
+        best
+    }
+
+    fn contains_rank(&self, rank: usize) -> bool {
+        langs::bit_of_rank(rank).is_some_and(|bit| self.contains_index(bit))
+    }
+
+    /// How well this set answers another one.
+    pub fn compare(&self, other: &Languages<'_>) -> LangResult {
+        for index in 0..LANGS.len() {
+            if self.contains_index(index) && other.contains_index(index) {
+                return LangResult::Equal;
+            }
+        }
+        LangResult::DifferentLang
+    }
+
+    /// Check the structure, for a set that has one to check.
+    pub fn validate(&self) -> Result<()> {
+        match self {
+            Self::Cached(set) => set.validate(),
+            Self::Owned(_) => Ok(()),
+        }
+    }
+
+    /// Whether the bitmap fits the language table this crate was built with.
+    pub fn is_consistent(&self) -> bool {
+        match self {
+            Self::Cached(set) => set.is_consistent(),
+            Self::Owned(_) => true,
+        }
+    }
+}
+
+impl PartialEq for Languages<'_> {
+    fn eq(&self, other: &Self) -> bool {
+        (0..LANGS.len()).all(|i| self.contains_index(i) == other.contains_index(i))
+    }
+}
+
+impl Eq for Languages<'_> {}
+
+/// The form `fc-list --format='%{lang}'` prints: names separated by `|`.
+impl std::fmt::Display for Languages<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        for (i, lang) in self.langs().enumerate() {
+            if i > 0 {
+                f.write_str("|")?;
+            }
+            f.write_str(lang)?;
+        }
+        Ok(())
+    }
+}

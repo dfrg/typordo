@@ -6,7 +6,9 @@ edition = "2021"
 [dependencies]
 # Reading and matching need nothing at all. Scanning a font file needs to
 # parse one, and that is the only reason this list is not empty.
-read-fonts = { version = "0.43", optional = true }
+# `agl` maps glyph names to Unicode, which is the only way a Type 1 font --
+# which has no cmap at all -- can report what it covers.
+read-fonts = { version = "0.43", optional = true, features = ["agl"] }
 
 [features]
 default = ["scan"]

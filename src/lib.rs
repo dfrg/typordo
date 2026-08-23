@@ -62,6 +62,7 @@ mod error;
 mod glob;
 pub mod langs;
 mod langset;
+pub mod orth;
 mod matching;
 mod md5;
 mod object;
@@ -78,7 +79,7 @@ mod xml;
 pub use cache::{Cache, Fonts, Subdirs, MAGIC_ALLOC, MAGIC_MMAP, VERSION};
 pub use config::{Caches, Config, ConfigError, ARCHITECTURE};
 pub use error::{Error, Result};
-pub use charset::{CharSet, Coverage};
+pub use charset::{CharSet, Chars, Coverage};
 pub use matching::{
     best, best_value, score, sort, sorted, BestValue, Priority, Score, PRIORITIES,
 };
@@ -91,5 +92,5 @@ pub use scan::{scan_bytes, scan_file, ScanError};
 pub use rules::{
     BinaryOp, Compare, Edit, EditMode, Expr, MatchKind, Qual, Rule, Step, Test, UnaryOp,
 };
-pub use langset::{LangResult, LangSet};
+pub use langset::{LangResult, LangSet, Langs, Languages};
 pub use value::{Binding, Matrix, Range, Value};

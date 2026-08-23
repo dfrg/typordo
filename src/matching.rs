@@ -10,7 +10,7 @@
 //! `color` is not penalised against a query that does.
 
 use crate::casefold;
-use crate::charset::CharSet;
+use crate::charset::Chars;
 use crate::glob;
 use crate::langset;
 use crate::object::Object;
@@ -327,7 +327,7 @@ fn compare_charset(a: &Value<'_>, b: &Value<'_>) -> Option<f64> {
     Some(subtract_count(want, got) as f64)
 }
 
-fn subtract_count(want: &CharSet<'_>, got: &CharSet<'_>) -> usize {
+fn subtract_count(want: &Chars<'_>, got: &Chars<'_>) -> usize {
     want.chars().filter(|c| !got.contains(*c)).count()
 }
 
@@ -619,7 +619,7 @@ where
         let Some(Value::CharSet(charset)) = font.value(Object::Charset) else {
             continue;
         };
-        let adds = coverage.merge(&charset);
+        let adds = coverage.merge_chars(&charset);
         if kept.is_empty() || adds {
             kept.push((font, score));
         }

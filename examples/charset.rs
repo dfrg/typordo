@@ -21,7 +21,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             charset.validate()?;
             println!("{charset}");
             if want.is_empty() {
-                eprintln!("  {file}: {} chars, {} pages", charset.len(), charset.pages());
+                eprintln!("  {file}: {} chars", charset.len());
             }
         }
     }

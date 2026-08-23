@@ -8,6 +8,8 @@
 use std::fmt;
 
 use crate::object::Object;
+use crate::charset::{Chars, Coverage};
+use crate::langset::{Langs, Languages};
 use crate::value::{Binding, Matrix, Range, Value};
 
 /// A value a query can hold.
@@ -30,6 +32,10 @@ pub enum OwnedValue {
     Matrix(Matrix),
     /// A span of numbers.
     Range(Range),
+    /// The characters a font covers, built by scanning it.
+    CharSet(Coverage),
+    /// The languages a font can write, built by scanning it.
+    LangSet(Langs),
 }
 
 impl OwnedValue {
@@ -43,6 +49,8 @@ impl OwnedValue {
             Self::Bool(b) => Value::Bool(*b),
             Self::Matrix(m) => Value::Matrix(*m),
             Self::Range(r) => Value::Range(*r),
+            Self::CharSet(c) => Value::CharSet(Chars::Owned(c)),
+            Self::LangSet(l) => Value::LangSet(Languages::Owned(l)),
         }
     }
 }
