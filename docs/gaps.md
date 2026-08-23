@@ -160,7 +160,7 @@ Places where matching fontconfig exactly would be worse.
   `<matrix>` in a rule expression read a list of children that the parser had
   filled somewhere else, so both had always evaluated to nothing.
 - **`<patelt>` with `<langset>`**, and with it `FcLangSetContains`.
-- **Languages outside fontconfig's table.** They are kept by name, the way
+- **LangSetRef outside fontconfig's table.** They are kept by name, the way
   `FcLangSet` keeps them. This one was not cosmetic: a `<patelt>` naming
   `en-GB` matched 326 fonts in fontconfig and none here, because `en-GB` has
   no bit and a font listing `en` has to answer for it.

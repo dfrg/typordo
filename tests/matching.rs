@@ -391,14 +391,14 @@ fn sorting_agrees_with_best_on_the_winner() {
 /// time, which is exactly the signal trimming uses.
 #[test]
 fn coverage_reports_whether_a_font_contributed() {
-    use fontconf::{Coverage, Value};
+    use fontconf::{OwnedCharSet, Value};
     let cache = cantarell();
     let charset = match cache.fonts().unwrap().next().unwrap().value(Object::Charset) {
         Some(Value::CharSet(c)) => c,
         other => panic!("expected a charset, got {other:?}"),
     };
 
-    let mut coverage = Coverage::new();
+    let mut coverage = OwnedCharSet::new();
     assert!(coverage.merge_chars(&charset), "the first merge must contribute");
     assert!(!coverage.merge_chars(&charset), "the same set adds nothing twice");
     assert_eq!(coverage.len(), charset.len());
@@ -419,7 +419,7 @@ fn a_charset_value_of_the_wrong_type_does_not_score_as_perfect() {
     let font = cache.fonts().unwrap().next().expect("a font");
 
     // A character no Latin font covers, so a real charset scores a miss.
-    let mut uncovered = fontconf::Coverage::new();
+    let mut uncovered = fontconf::OwnedCharSet::new();
     uncovered.insert('\u{4e00}');
     let mut honest = Query::new();
     honest.add(Object::Charset, OwnedValue::CharSet(uncovered));

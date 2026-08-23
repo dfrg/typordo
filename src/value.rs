@@ -1,7 +1,7 @@
 use crate::bytes::Bytes;
-use crate::charset::{CharSet, Chars};
+use crate::charset::{CharSet, CharSetRef};
 use crate::error::{Error, Result};
-use crate::langset::{LangSet, Languages};
+use crate::langset::{LangSet, LangSetRef};
 
 /// A 2x2 transform, fontconfig's `FcMatrix`.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -59,9 +59,9 @@ pub enum Value<'a> {
     /// A 2x2 transform to apply to the face.
     Matrix(Matrix),
     /// The characters a font covers.
-    CharSet(Chars<'a>),
+    CharSet(CharSetRef<'a>),
     /// The languages a font can write.
-    LangSet(Languages<'a>),
+    LangSet(LangSetRef<'a>),
     /// A span of numbers, as a variable axis reports its extent.
     Range(Range),
 }
@@ -151,13 +151,13 @@ pub(crate) fn value_at<'a>(data: Bytes<'a>, at: usize) -> Result<Value<'a>> {
         }
         6 => {
             let c = data.follow(at, union)?.ok_or(Error::BadOffset { base: at, delta: 0 })?;
-            Value::CharSet(Chars::Cached(CharSet { data, at: c }))
+            Value::CharSet(CharSetRef::Cached(CharSet { data, at: c }))
         }
         // 7 is FcTypeFTFace, a live FT_Face pointer. It cannot be serialized
         // and must never appear in a file.
         8 => {
             let l = data.follow(at, union)?.ok_or(Error::BadOffset { base: at, delta: 0 })?;
-            Value::LangSet(Languages::Cached(LangSet { data, at: l }))
+            Value::LangSet(LangSetRef::Cached(LangSet { data, at: l }))
         }
         9 => {
             let r = data.follow(at, union)?.ok_or(Error::BadOffset { base: at, delta: 0 })?;

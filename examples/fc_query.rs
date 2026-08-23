@@ -89,8 +89,8 @@ fn show(pattern: &Query, field: Option<Object>) -> String {
             OwnedValue::Bool(b) => if *b { "True" } else { "False" }.to_string(),
             OwnedValue::Range(r) => format!("[{} {}]", format_g(r.begin), format_g(r.end)),
             OwnedValue::Matrix(m) => format!("[{} {}; {} {}]", m.xx, m.xy, m.yx, m.yy),
-            OwnedValue::CharSet(c) => fontconf::Chars::Owned(c).to_string(),
-            OwnedValue::LangSet(l) => fontconf::Languages::Owned(l).to_string(),
+            OwnedValue::CharSet(c) => fontconf::CharSetRef::Owned(c).to_string(),
+            OwnedValue::LangSet(l) => fontconf::LangSetRef::Owned(l).to_string(),
             OwnedValue::Void => String::new(),
         })
         .collect::<Vec<_>>()

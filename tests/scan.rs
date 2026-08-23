@@ -135,7 +135,7 @@ fn languages_are_derived_from_coverage() {
     let recorded = cache.fonts().unwrap().next().unwrap();
 
     let ours = match scanned[0].value(Object::Lang) {
-        Some(OwnedValue::LangSet(langs)) => fontconf::Languages::Owned(langs),
+        Some(OwnedValue::LangSet(langs)) => fontconf::LangSetRef::Owned(langs),
         other => panic!("expected a langset, got {other:?}"),
     };
     let theirs = match recorded.value(Object::Lang) {
@@ -157,7 +157,7 @@ fn coverage_matches_what_fontconfig_cached() {
     let recorded = cache.fonts().unwrap().next().unwrap();
 
     let ours = match scanned[0].value(Object::Charset) {
-        Some(OwnedValue::CharSet(coverage)) => fontconf::Chars::Owned(coverage),
+        Some(OwnedValue::CharSet(coverage)) => fontconf::CharSetRef::Owned(coverage),
         other => panic!("expected a charset, got {other:?}"),
     };
     let theirs = match recorded.value(Object::Charset) {

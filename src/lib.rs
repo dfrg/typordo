@@ -134,10 +134,10 @@ mod zapf;
 #[cfg(feature = "scan")]
 pub use build::{Builder, Built};
 pub use cache::{Cache, Fonts, Subdirs, VERSION};
-pub use charset::{CharSet, Chars, Coverage};
+pub use charset::{CharSet, CharSetRef, OwnedCharSet};
 pub use config::{Caches, Config, ConfigError, ARCHITECTURE};
 pub use error::{Error, Result};
-pub use langset::{LangResult, LangSet, Langs, Languages};
+pub use langset::{LangResult, LangSet, LangSetRef, OwnedLangSet};
 pub use matching::{best, best_value, score, sort, sorted, BestValue, Priority, Score, PRIORITIES};
 pub use object::Object;
 pub use pattern::{Bindings, Element, Elements, Pattern, Values};

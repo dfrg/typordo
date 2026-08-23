@@ -171,7 +171,7 @@ fn run(op: &str, iterations: u32) -> Result<u64, Box<dyn std::error::Error>> {
             for i in 0..iterations {
                 let (lang, chars) = &SCRIPTS[i as usize % SCRIPTS.len()];
                 let mut query = Query::new();
-                let mut coverage = fontconf::Coverage::new();
+                let mut coverage = fontconf::OwnedCharSet::new();
                 for c in chars.iter().filter_map(|c| char::from_u32(*c)) {
                     coverage.insert(c);
                 }

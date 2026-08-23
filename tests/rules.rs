@@ -239,7 +239,7 @@ fn a_config_can_invent_a_property_and_read_it_back() {
 
 /// The languages a font is left with after the scan rules run.
 fn scanned_langs(config: &Config, family: &str, langs: &[&str]) -> Vec<String> {
-    let mut set = fontconf::Langs::new();
+    let mut set = fontconf::OwnedLangSet::new();
     for lang in langs {
         set.insert_index(fontconf::langs::index_of(lang).expect(lang));
     }
@@ -285,7 +285,7 @@ fn a_scan_rule_unions_languages() {
 #[test]
 fn scan_rules_do_not_run_at_match_time() {
     let config = config();
-    let mut set = fontconf::Langs::new();
+    let mut set = fontconf::OwnedLangSet::new();
     set.insert_index(fontconf::langs::index_of("hi").unwrap());
     let mut query = Query::new();
     query.add(Object::Family, "Overclaims");

@@ -37,7 +37,12 @@ const LEAF_BYTES: usize = LEAF_WORDS * 4;
 /// Codepoints per page.
 pub(crate) const PAGE: u32 = 256;
 
-/// The characters a font covers.
+/// The characters a font covers, read from a cache.
+///
+/// One of three types for the same idea, told apart by where the bits live:
+/// this borrows them from a cache, [`OwnedCharSet`] holds its own and can
+/// grow, and [`CharSetRef`] is either of those seen through a reference.
+/// Matching and reporting take the last, so they do not care which.
 ///
 /// Borrowed from the cache like everything else; no coverage data is copied.
 #[derive(Clone, Copy)]
@@ -341,7 +346,10 @@ impl std::fmt::Display for CharSet<'_> {
     }
 }
 
-/// A growable union of character sets.
+/// A set of characters held in memory, which can grow.
+///
+/// The owned counterpart to [`CharSet`]: that one borrows a cache's bits,
+/// this one holds its own. [`CharSetRef`] is either.
 ///
 /// Sorting a font list needs to know whether each font adds anything the ones
 /// before it did not, which means accumulating coverage as the walk proceeds.
@@ -349,7 +357,7 @@ impl std::fmt::Display for CharSet<'_> {
 /// so merging a font is a handful of word-ORs per page rather than a pass over
 /// its characters.
 #[derive(Default)]
-pub struct Coverage {
+pub struct OwnedCharSet {
     /// Pages in ascending order, which is how a cache stores them and how
     /// every reader of this wants them.
     ///
@@ -379,29 +387,29 @@ type Leaf = [u32; LEAF_WORDS];
 /// Only the coverage counts. `recent` is a memo of where the last lookup
 /// landed, so two sets covering the same characters are the same set whatever
 /// each was last asked about.
-impl PartialEq for Coverage {
+impl PartialEq for OwnedCharSet {
     fn eq(&self, other: &Self) -> bool {
         self.pages == other.pages
     }
 }
 
-impl Eq for Coverage {}
+impl Eq for OwnedCharSet {}
 
 /// The scratch buffer is working space, not content: a clone starts without
 /// one rather than carrying a copy of whatever the last merge left behind.
-impl Clone for Coverage {
+impl Clone for OwnedCharSet {
     fn clone(&self) -> Self {
         Self { pages: self.pages.clone(), recent: self.recent.clone(), scratch: Vec::new() }
     }
 }
 
-impl std::fmt::Debug for Coverage {
+impl std::fmt::Debug for OwnedCharSet {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "Coverage({} chars in {} pages)", self.len(), self.pages.len())
+        write!(f, "OwnedCharSet({} chars in {} pages)", self.len(), self.pages.len())
     }
 }
 
-impl Coverage {
+impl OwnedCharSet {
     /// An empty set.
     pub fn new() -> Self {
         Self::default()
@@ -441,10 +449,10 @@ impl Coverage {
     ///
     /// The bool is the whole point: it is what decides that a font earns its
     /// place in a fallback list.
-    pub fn merge_chars(&mut self, other: &Chars<'_>) -> bool {
+    pub fn merge_chars(&mut self, other: &CharSetRef<'_>) -> bool {
         match other {
-            Chars::Cached(set) => self.merge(set),
-            Chars::Owned(set) => {
+            CharSetRef::Cached(set) => self.merge(set),
+            CharSetRef::Owned(set) => {
                 let mut added = false;
                 for c in set.chars() {
                     if !self.contains(c) {
@@ -635,20 +643,24 @@ impl Coverage {
     }
 }
 
-/// A set of characters, however it happens to be stored.
+/// A reference to a set of characters, whichever way it is stored.
 ///
 /// Coverage read from a cache borrows its bytes; coverage produced by
 /// scanning a font is built in memory. Both answer the same questions, so
 /// matching and reporting take this rather than one or the other.
+///
+/// Both arms are borrows -- a cache cursor, or a reference to an
+/// [`OwnedCharSet`] -- which is what keeps this `Copy`. Scoring clones it
+/// per font, so it must stay cheap.
 #[derive(Clone, Copy, Debug)]
-pub enum Chars<'a> {
+pub enum CharSetRef<'a> {
     /// Read from a cache.
     Cached(CharSet<'a>),
     /// Built by scanning a font.
-    Owned(&'a Coverage),
+    Owned(&'a OwnedCharSet),
 }
 
-impl<'a> Chars<'a> {
+impl<'a> CharSetRef<'a> {
     /// Whether `c` is covered.
     pub fn contains(&self, c: char) -> bool {
         match self {
@@ -706,7 +718,7 @@ impl<'a> Chars<'a> {
     }
 }
 
-/// Iterator over the characters of a [`Chars`].
+/// Iterator over the characters of a [`CharSetRef`].
 pub enum CharsIter<'a> {
     /// Walking a cache's bitmap.
     Cached(Box<dyn Iterator<Item = char> + 'a>),
@@ -724,16 +736,16 @@ impl Iterator for CharsIter<'_> {
     }
 }
 
-impl PartialEq for Chars<'_> {
+impl PartialEq for CharSetRef<'_> {
     fn eq(&self, other: &Self) -> bool {
         self.len() == other.len() && self.chars().eq(other.chars())
     }
 }
 
-impl Eq for Chars<'_> {}
+impl Eq for CharSetRef<'_> {}
 
 /// The form `fc-query` prints coverage in: inclusive hex ranges.
-impl std::fmt::Display for Chars<'_> {
+impl std::fmt::Display for CharSetRef<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         for (i, (start, end)) in self.ranges().enumerate() {
             if i > 0 {
@@ -752,10 +764,10 @@ impl std::fmt::Display for Chars<'_> {
 /// Set arithmetic on the owned form.
 #[cfg(test)]
 mod set_tests {
-    use super::Coverage;
+    use super::OwnedCharSet;
 
-    fn coverage(chars: &str) -> Coverage {
-        let mut set = Coverage::new();
+    fn coverage(chars: &str) -> OwnedCharSet {
+        let mut set = OwnedCharSet::new();
         for c in chars.chars() {
             set.insert(c);
         }
@@ -808,10 +820,10 @@ mod set_tests {
 /// behave identically however the pages arrive.
 #[cfg(test)]
 mod page_tests {
-    use super::Coverage;
+    use super::OwnedCharSet;
 
-    fn coverage(chars: &[char]) -> Coverage {
-        let mut set = Coverage::new();
+    fn coverage(chars: &[char]) -> OwnedCharSet {
+        let mut set = OwnedCharSet::new();
         for c in chars {
             set.insert(*c);
         }
@@ -868,13 +880,13 @@ mod page_tests {
     /// both halves need checking -- including that `added` stays right.
     #[test]
     fn merging_reports_what_it_added() {
-        let mut base = Coverage::new();
+        let mut base = OwnedCharSet::new();
         let latin = coverage(&['a', 'b']);
         let han = coverage(&['\u{4e00}']);
 
-        assert!(base.merge_chars(&crate::Chars::Owned(&latin)), "an empty set gains");
-        assert!(!base.merge_chars(&crate::Chars::Owned(&latin)), "the same set adds nothing");
-        assert!(base.merge_chars(&crate::Chars::Owned(&han)), "a new page is new");
+        assert!(base.merge_chars(&crate::CharSetRef::Owned(&latin)), "an empty set gains");
+        assert!(!base.merge_chars(&crate::CharSetRef::Owned(&latin)), "the same set adds nothing");
+        assert!(base.merge_chars(&crate::CharSetRef::Owned(&han)), "a new page is new");
         assert_eq!(base.leaves().len(), 2);
         assert!(base.contains('a') && base.contains('\u{4e00}'));
     }
@@ -904,7 +916,7 @@ mod cursor_tests {
         let Some(Value::CharSet(set)) = font.value(Object::Charset) else {
             panic!("expected a charset");
         };
-        let crate::charset::Chars::Cached(set) = set else {
+        let crate::charset::CharSetRef::Cached(set) = set else {
             panic!("expected a cached charset");
         };
 

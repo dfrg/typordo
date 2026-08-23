@@ -15,8 +15,8 @@ use read_fonts::{
 };
 
 use crate::casefold;
-use crate::charset::Coverage;
-use crate::langset::Langs;
+use crate::charset::OwnedCharSet;
+use crate::langset::OwnedLangSet;
 use crate::object::Object;
 use crate::query::{OwnedValue, Query};
 use crate::weight;
@@ -136,11 +136,11 @@ fn base_pattern(font: &FontRef<'_>, path: &str, index: i32) -> Query {
 /// The language set is derived from the coverage rather than declared by the
 /// font: fontconfig asks, for each language it knows an orthography for,
 /// whether every codepoint that language needs is present.
-fn add_coverage(coverage: Coverage, pattern: &mut Query) {
+fn add_coverage(coverage: OwnedCharSet, pattern: &mut Query) {
     if coverage.is_empty() {
         return;
     }
-    let langs = Langs::from_coverage(&coverage);
+    let langs = OwnedLangSet::from_coverage(&coverage);
     pattern.add(Object::Charset, OwnedValue::CharSet(coverage));
     // Always, even when the set is empty. A font covering a script
     // fontconfig has no language for -- Adlam, and a dozen others -- gets an
@@ -274,8 +274,8 @@ fn capability(font: &FontRef<'_>) -> Option<String> {
 }
 
 /// Every character an SFNT font maps, from its Unicode `cmap` subtables.
-fn sfnt_coverage(font: &FontRef<'_>) -> Coverage {
-    let mut coverage = Coverage::new();
+fn sfnt_coverage(font: &FontRef<'_>) -> OwnedCharSet {
+    let mut coverage = OwnedCharSet::new();
     let empty = EmptyGlyphs::new(font);
     walk_mappings(font, |code, gid| {
         // A mapping to glyph 0 is a mapping to `.notdef`, the absence of a
@@ -1038,7 +1038,7 @@ fn scan_type1(data: &[u8], path: &str) -> Result<Vec<Query>, ScanError> {
     // A Type 1 font has no cmap. Its coverage comes from glyph names mapped
     // through the Adobe Glyph List, which `unicode_charmap` does for us --
     // except for the dingbats, whose names have a list of their own.
-    let mut coverage = Coverage::new();
+    let mut coverage = OwnedCharSet::new();
     for (code, _) in font.unicode_charmap().iter() {
         if let Some(c) = char::from_u32(code) {
             coverage.insert(c);

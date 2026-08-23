@@ -172,8 +172,8 @@ fn show(pattern: &Query, field: Object) -> String {
             OwnedValue::Matrix(m) => {
                 format!("[{} {}; {} {}]", m.xx, m.xy, m.yx, m.yy)
             }
-            OwnedValue::CharSet(c) => fontconf::Chars::Owned(c).to_string(),
-            OwnedValue::LangSet(l) => fontconf::Languages::Owned(l).to_string(),
+            OwnedValue::CharSet(c) => fontconf::CharSetRef::Owned(c).to_string(),
+            OwnedValue::LangSet(l) => fontconf::LangSetRef::Owned(l).to_string(),
             OwnedValue::Void => String::new(),
         })
         .collect::<Vec<_>>()

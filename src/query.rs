@@ -7,8 +7,8 @@
 
 use std::fmt;
 
-use crate::charset::{Chars, Coverage};
-use crate::langset::{Langs, Languages};
+use crate::charset::{CharSetRef, OwnedCharSet};
+use crate::langset::{LangSetRef, OwnedLangSet};
 use crate::object::Object;
 use crate::value::{Binding, Matrix, Range, Value};
 
@@ -33,9 +33,9 @@ pub enum OwnedValue {
     /// A span of numbers.
     Range(Range),
     /// The characters a font covers, built by scanning it.
-    CharSet(Coverage),
+    CharSet(OwnedCharSet),
     /// The languages a font can write, built by scanning it.
-    LangSet(Langs),
+    LangSet(OwnedLangSet),
 }
 
 impl OwnedValue {
@@ -49,8 +49,8 @@ impl OwnedValue {
             Self::Bool(b) => Value::Bool(*b),
             Self::Matrix(m) => Value::Matrix(*m),
             Self::Range(r) => Value::Range(*r),
-            Self::CharSet(c) => Value::CharSet(Chars::Owned(c)),
-            Self::LangSet(l) => Value::LangSet(Languages::Owned(l)),
+            Self::CharSet(c) => Value::CharSet(CharSetRef::Owned(c)),
+            Self::LangSet(l) => Value::LangSet(LangSetRef::Owned(l)),
         }
     }
 }
@@ -67,11 +67,11 @@ impl OwnedValue {
             Value::Matrix(m) => Self::Matrix(*m),
             Value::Range(r) => Self::Range(*r),
             Value::CharSet(c) => {
-                let mut coverage = Coverage::new();
+                let mut coverage = OwnedCharSet::new();
                 coverage.merge_chars(c);
                 Self::CharSet(coverage)
             }
-            Value::LangSet(l) => Self::LangSet(Langs::from_languages(l)),
+            Value::LangSet(l) => Self::LangSet(OwnedLangSet::from_languages(l)),
         }
     }
 }

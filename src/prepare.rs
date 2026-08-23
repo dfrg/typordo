@@ -196,14 +196,14 @@ fn own(value: Value<'_>) -> OwnedValue {
         Value::Matrix(m) => OwnedValue::Matrix(m),
         Value::Range(r) => OwnedValue::Range(r),
         Value::CharSet(chars) => {
-            let mut coverage = crate::charset::Coverage::new();
+            let mut coverage = crate::charset::OwnedCharSet::new();
             for c in chars.chars() {
                 coverage.insert(c);
             }
             OwnedValue::CharSet(coverage)
         }
         Value::LangSet(langs) => {
-            let mut owned = crate::langset::Langs::new();
+            let mut owned = crate::langset::OwnedLangSet::new();
             for index in 0..crate::langs::LANGS.len() {
                 if langs.contains_index(index) {
                     owned.insert_index(index);

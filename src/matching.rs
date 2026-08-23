@@ -10,7 +10,7 @@
 //! `color` is not penalised against a query that does.
 
 use crate::casefold;
-use crate::charset::Chars;
+use crate::charset::CharSetRef;
 use crate::fnv::BuildPassthrough;
 use crate::glob;
 use crate::langset;
@@ -328,12 +328,12 @@ fn compare_charset(a: &Value<'_>, b: &Value<'_>) -> Option<f64> {
     Some(subtract_count(want, got) as f64)
 }
 
-fn subtract_count(want: &Chars<'_>, got: &Chars<'_>) -> usize {
+fn subtract_count(want: &CharSetRef<'_>, got: &CharSetRef<'_>) -> usize {
     match got {
         // The font's coverage is the side worth resolving once: it is read
         // out of a cache, and the query names only a few characters.
-        Chars::Cached(set) => set.missing_count(want.chars()),
-        Chars::Owned(set) => want.chars().filter(|c| !set.contains(*c)).count(),
+        CharSetRef::Cached(set) => set.missing_count(want.chars()),
+        CharSetRef::Owned(set) => want.chars().filter(|c| !set.contains(*c)).count(),
     }
 }
 
@@ -519,8 +519,8 @@ fn score_charsets(chars: &[Vec<char>], font: &Values<'_>, score: &mut Score) -> 
         for got in font.clone() {
             let Value::CharSet(got) = got else { return false };
             let missing = match got {
-                Chars::Cached(set) => set.missing_count(want.iter().copied()),
-                Chars::Owned(set) => want.iter().filter(|c| !set.contains(**c)).count(),
+                CharSetRef::Cached(set) => set.missing_count(want.iter().copied()),
+                CharSetRef::Owned(set) => want.iter().filter(|c| !set.contains(**c)).count(),
             };
             // A charset never scores by position within the font, so there
             // is no `k` term here: see [`score_values`].
@@ -632,7 +632,7 @@ enum How {
     /// Against the family index.
     Families,
     /// Against the language ranks.
-    Langs,
+    OwnedLangSet,
     /// Against the query characters, already extracted, one list per value.
     CharSets(Vec<Vec<char>>),
     /// The general path, through the matcher.
@@ -649,7 +649,7 @@ impl<'q> Prepared<'q> {
                 let object = element.object();
                 let how = match object {
                     Object::Family => How::Families,
-                    Object::Lang => How::Langs,
+                    Object::Lang => How::OwnedLangSet,
                     Object::Charset => {
                         // Extracting up front is what makes charset scoring
                         // cheap: the characters are walked once here rather
@@ -739,7 +739,7 @@ fn score_prepared(query: &Prepared<'_>, font: &Pattern<'_>) -> Option<Score> {
                 score_families(&query.families, &got, &mut score);
                 true
             }
-            How::Langs => score_langs(&query.langs, prepped.element, &got, &mut score),
+            How::OwnedLangSet => score_langs(&query.langs, prepped.element, &got, &mut score),
             How::CharSets(chars) => score_charsets(chars, &got, &mut score),
             How::Values(matcher) => score_values(matcher, prepped.element, &got, &mut score),
             How::Skip => true,
@@ -890,7 +890,7 @@ where
 
     // Trimming reads the order directly, so the gather above never happens
     // on this path: the fonts that survive are copied, and the rest are not.
-    let mut coverage = crate::charset::Coverage::new();
+    let mut coverage = crate::charset::OwnedCharSet::new();
     let mut kept = Vec::new();
     for &index in &order {
         let (font, score) = scored[index as usize];

@@ -27,8 +27,8 @@
 
 use std::collections::HashMap;
 
-use crate::charset::Coverage;
-use crate::langset::Langs;
+use crate::charset::OwnedCharSet;
+use crate::langset::OwnedLangSet;
 use crate::query::{OwnedValue, Query};
 use crate::value::{Binding, Matrix, Range};
 
@@ -250,7 +250,7 @@ fn write_range(buf: &mut Buffer, range: &Range) -> usize {
 ///
 /// The sharing is worth doing: a family with nine weights usually has nine
 /// identical coverages, and a leaf costs 32 bytes per 256 codepoints.
-fn write_charset(buf: &mut Buffer, coverage: &Coverage, charsets: &mut CharSets) -> usize {
+fn write_charset(buf: &mut Buffer, coverage: &OwnedCharSet, charsets: &mut CharSets) -> usize {
     let leaves = coverage.leaves();
     let mut key = Vec::with_capacity(leaves.len() * (2 + LEAF));
     for (page, leaf) in leaves {
@@ -289,7 +289,7 @@ fn write_charset(buf: &mut Buffer, coverage: &Coverage, charsets: &mut CharSets)
 /// The `extra` field holds languages that are not on that list, and is
 /// deliberately left null -- fontconfig does not serialize it either, and
 /// rejects a cache where it is anything else.
-fn write_langset(buf: &mut Buffer, set: &Langs) -> usize {
+fn write_langset(buf: &mut Buffer, set: &OwnedLangSet) -> usize {
     let words = set.words();
     let at = buf.reserve(L.map + words.len() * 4);
     buf.u32(at + L.map_size, words.len() as u32);
@@ -378,7 +378,9 @@ impl Buffer {
 #[cfg(test)]
 mod tests {
     use super::CacheWriter;
-    use crate::{Binding, Cache, Coverage, Langs, Matrix, Object, OwnedValue, Query, Range};
+    use crate::{
+        Binding, Cache, Matrix, Object, OwnedCharSet, OwnedLangSet, OwnedValue, Query, Range,
+    };
 
     /// Write a cache and read it straight back, strictly.
     fn round_trip(writer: &CacheWriter<'_>) -> Cache {
@@ -414,11 +416,11 @@ mod tests {
 
     /// One font carrying every value type the format has.
     fn kitchen_sink() -> Query {
-        let mut coverage = Coverage::new();
+        let mut coverage = OwnedCharSet::new();
         for c in ['A', 'B', 'Z', 'a', '\u{4e00}', '\u{10000}'] {
             coverage.insert(c);
         }
-        let mut langs = Langs::new();
+        let mut langs = OwnedLangSet::new();
         langs.insert_index(crate::langs::index_of("en").unwrap());
         langs.insert_index(crate::langs::index_of("ja").unwrap());
 

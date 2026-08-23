@@ -265,7 +265,7 @@ fn a_cyclic_value_chain_terminates() {
 
 // --- character coverage ---------------------------------------------------
 
-fn cantarell_charset(cache: &Cache) -> fontconf::Chars<'_> {
+fn cantarell_charset(cache: &Cache) -> fontconf::CharSetRef<'_> {
     let font = cache.fonts().unwrap().next().unwrap();
     match font.value(Object::Charset) {
         Some(Value::CharSet(charset)) => charset,
@@ -347,7 +347,7 @@ fn all_instances_share_one_coverage() {
 
 // --- languages ------------------------------------------------------------
 
-fn cantarell_langs(cache: &Cache) -> fontconf::Languages<'_> {
+fn cantarell_langs(cache: &Cache) -> fontconf::LangSetRef<'_> {
     let font = cache.fonts().unwrap().next().unwrap();
     match font.value(Object::Lang) {
         Some(Value::LangSet(langs)) => langs,

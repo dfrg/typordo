@@ -12,7 +12,7 @@
 use std::error::Error;
 
 use fontconf::{
-    best, render_prepare, Config, Coverage, Object, OwnedValue, Pattern, Priority, Query,
+    best, render_prepare, Config, Object, OwnedCharSet, OwnedValue, Pattern, Priority, Query,
 };
 
 fn main() -> Result<(), Box<dyn Error>> {
@@ -49,7 +49,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     query.add(Object::Family, family);
     query.add(Object::Lang, lang);
 
-    let mut wanted = Coverage::new();
+    let mut wanted = OwnedCharSet::new();
     for c in text.chars() {
         wanted.insert(c);
     }

@@ -28,7 +28,7 @@ use std::path::{Path, PathBuf};
 use crate::cache::Cache;
 use crate::casefold;
 use crate::glob;
-use crate::langset::Langs;
+use crate::langset::OwnedLangSet;
 use crate::md5;
 use crate::object::Object;
 use crate::pattern::Pattern;
@@ -192,7 +192,7 @@ enum SelectorValue {
     /// An inclusive span, from `<range>`.
     Range(Range),
     /// Languages, from `<langset>`.
-    LangSet(Langs),
+    LangSet(OwnedLangSet),
     /// A value this crate cannot evaluate.
     ///
     /// It never matches, and poisons the selector that holds it. Dropping it
@@ -245,7 +245,7 @@ impl SelectorValue {
             // language it holds broadly answers a narrower request: a font
             // listing `en` satisfies a selector naming `en-US`.
             (Self::LangSet(want), Value::LangSet(got)) => {
-                Langs::from_languages(got).contains_set(want)
+                OwnedLangSet::from_languages(got).contains_set(want)
             }
             // A listing comparison asks the font to sit *inside* what the
             // selector names, so a scalar matches any span covering it while
@@ -322,7 +322,7 @@ fn value_expr(value: SelectorValue) -> Expr {
         SelectorValue::Range(v) => Expr::Value(OwnedValue::Range(v)),
         SelectorValue::LangSet(v) => Expr::Value(OwnedValue::LangSet(v)),
         SelectorValue::CharSet(chars) => {
-            let mut coverage = crate::charset::Coverage::new();
+            let mut coverage = crate::charset::OwnedCharSet::new();
             for c in chars {
                 coverage.insert(c);
             }
@@ -360,7 +360,7 @@ fn range_from(values: &[SelectorValue]) -> SelectorValue {
 /// answers a request for `en-GB`, and treating the name as unreadable would
 /// silently turn such a selector into one that matches nothing.
 fn langset_from(values: &[SelectorValue], strict: Strictness) -> SelectorValue {
-    let mut set = Langs::new();
+    let mut set = OwnedLangSet::new();
     let mut named = false;
     for value in values {
         let SelectorValue::String(name) = value else {
