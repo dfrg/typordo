@@ -3,8 +3,13 @@
 Run from the repo root:  python tools/gen_casefold.py
 """
 import io
+import os
+import sys
 
-SRC = 'reference/fc-2.17.0/fc-case/CaseFolding.txt'  # from the fontconfig checkout
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from emit import emit  # noqa: E402
+
+SRC = 'tools/data/fontconfig-2.17.0/fc-case/CaseFolding.txt'  # from the fontconfig checkout
 OUT = 'src/casefold.rs'
 
 single, multi, version = [], [], None
@@ -387,12 +392,6 @@ mod tests {
 }
 '''
 
-with io.open(OUT, 'w', encoding='utf-8', newline='\n') as out:
-    out.write(header)
-    out.writelines(body)
-    out.write(mid)
-    out.writelines(mbody)
-    out.write(tail)
-    out.write(TESTS)
+emit(OUT, header, body, mid, mbody, tail, TESTS)
 
 print('generated %d single + %d multi folds from %s' % (len(single), len(multi), version))

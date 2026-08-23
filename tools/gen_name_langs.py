@@ -11,9 +11,14 @@ Run from WSL, where the FreeType headers are, from the repo root:
 """
 import io
 import os
+import sys
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from emit import emit  # noqa: E402
+import os
 import re
 
-FCFREETYPE = 'reference/fc-2.17.0/src/fcfreetype.c'
+FCFREETYPE = 'tools/data/fontconfig-2.17.0/src/fcfreetype.c'
 TTNAMEID = '/usr/include/freetype2/freetype/ttnameid.h'
 OUT = 'src/name_langs.rs'
 
@@ -198,9 +203,6 @@ mod tests {
 }
 '''
 
-with io.open(OUT, 'w', encoding='utf-8', newline='\n') as out:
-    out.write(header)
-    out.writelines(body)
-    out.write(tail)
+emit(OUT, header, body, tail)
 
 print('generated %d name-language entries' % len(table))

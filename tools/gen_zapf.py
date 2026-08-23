@@ -9,6 +9,11 @@ Run from the repo root:  python tools/gen_zapf.py
 (after fetching scripts/zapfdingbats.txt from adobe-type-tools/agl-aglfn)
 """
 import io
+import os
+import sys
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from emit import emit  # noqa: E402
 
 SRC = 'scripts/zapfdingbats.txt'
 OUT = 'src/zapf.rs'
@@ -92,9 +97,6 @@ mod tests {
 }
 '''
 
-with io.open(OUT, 'w', encoding='utf-8', newline='\n') as out:
-    out.write(header)
-    out.writelines(body)
-    out.write(tail)
+emit(OUT, header, body, tail)
 
 print('generated %d dingbat names' % len(rows))

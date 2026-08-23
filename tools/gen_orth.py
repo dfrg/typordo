@@ -11,9 +11,14 @@ Run from the repo root:  python tools/gen_orth.py
 """
 import io
 import os
+import sys
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from emit import emit  # noqa: E402
+import os
 import re
 
-SRC_DIR = 'reference/fc-2.17.0/fc-lang'
+SRC_DIR = 'tools/data/fontconfig-2.17.0/fc-lang'
 MESON = os.path.join(SRC_DIR, 'meson.build')
 OUT = 'src/orth.rs'
 RELEASE = '2.17.0'
@@ -186,11 +191,6 @@ mod tests {
 }
 '''
 
-with io.open(OUT, 'w', encoding='utf-8', newline='\n') as out:
-    out.write(header)
-    out.writelines(body)
-    out.write(mid)
-    out.writelines(rbody)
-    out.write(tail)
+emit(OUT, header, body, mid, rbody, tail)
 
 print('generated %d ranges across %d languages' % (total, len(tables)))

@@ -32,3 +32,20 @@ for f in "" "--features full-fontconfig-compat"; do
   bad=$(cargo clippy -q --all-targets $f 2>&1 | grep -cE '^(warning|error)')
   printf '%-42s %s clippy issues\n' "clippy $f" "$bad"
 done
+
+# Every generated table still matches the generator that claims to produce
+# it. This compares without writing, so a drifting generator is reported
+# rather than allowed to overwrite the file it has drifted from.
+#
+# gen_name_langs needs FreeType's ttnameid.h for the numeric constants, which
+# is not vendored -- it is skipped where that header is absent rather than
+# counted as a failure.
+bad=0
+for g in tools/gen_*.py; do
+  case "$g" in
+    *gen_name_langs.py)
+      [ -r /usr/include/freetype2/freetype/ttnameid.h ] || continue ;;
+  esac
+  python3 "$g" --check >/dev/null 2>&1 || { bad=$((bad + 1)); echo "  DRIFTED: $g"; }
+done
+printf '%-42s %s drifted\n' "generated tables" "$bad"

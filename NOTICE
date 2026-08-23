@@ -1,0 +1,81 @@
+Third-party material in this repository
+=======================================
+
+This crate is an independent implementation. It links to nothing and copies
+no code. What it does contain is data, and several tables are generated from
+upstream sources rather than invented here -- the language list has to be
+byte-for-byte the one fontconfig serializes, or every langset in a cache
+decodes wrongly.
+
+Those sources are vendored under tools/data/ so the generators in tools/ can
+be run and their output verified. Each is listed below with its terms.
+
+
+fontconfig 2.17.0
+-----------------
+
+  tools/data/fontconfig-2.17.0/fc-lang/*.orth
+  tools/data/fontconfig-2.17.0/fc-lang/meson.build
+  tools/data/fontconfig-2.17.0/src/fcfreetype.c
+
+Copyright © 2000-2007 Keith Packard, and others as noted in each file.
+
+  Permission to use, copy, modify, distribute, and sell this software and its
+  documentation for any purpose is hereby granted without fee, provided that
+  the above copyright notice appear in all copies and that both that
+  copyright notice and this permission notice appear in supporting
+  documentation, and that the name of the author(s) not be used in
+  advertising or publicity pertaining to distribution of the software without
+  specific, written prior permission.  The authors make no representations
+  about the suitability of this software for any purpose.  It is provided
+  "as is" without express or implied warranty.
+
+  THE AUTHOR(S) DISCLAIMS ALL WARRANTIES WITH REGARD TO THIS SOFTWARE,
+  INCLUDING ALL IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS, IN NO
+  EVENT SHALL THE AUTHOR(S) BE LIABLE FOR ANY SPECIAL, INDIRECT OR
+  CONSEQUENTIAL DAMAGES OR ANY DAMAGES WHATSOEVER RESULTING FROM LOSS OF USE,
+  DATA OR PROFITS, WHETHER IN AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER
+  TORTIOUS ACTION, ARISING OUT OF OR IN CONNECTION WITH THE USE OR
+  PERFORMANCE OF THIS SOFTWARE.
+
+The full text is in each file's own header, which is preserved unmodified.
+
+Generated into: src/orth.rs, src/langs.rs, src/name_langs.rs.
+
+
+Unicode Character Database
+--------------------------
+
+  tools/data/fontconfig-2.17.0/fc-case/CaseFolding.txt
+
+CaseFolding-15.1.0.txt, © 2023 Unicode, Inc., distributed under the Unicode
+Terms of Use: https://www.unicode.org/terms_of_use.html
+
+The file is redistributed unmodified, with its own notice intact. It reaches
+this repository by way of the fontconfig tarball, which is why it sits under
+that directory.
+
+Generated into: src/casefold.rs.
+
+
+Adobe Glyph List for New Fonts
+------------------------------
+
+  scripts/zapfdingbats.txt
+
+From adobe-type-tools/agl-aglfn, under the BSD 3-Clause license.
+Copyright © 2002-2019 Adobe Systems Incorporated.
+
+Generated into: src/zapf.rs.
+
+
+Not vendored
+------------
+
+tools/gen_name_langs.py also reads FreeType's ttnameid.h, for the numeric
+values of the TT_MS_LANGID_* and TT_MAC_LANGID_* constants that
+fcfreetype.c's mapping table is written in terms of. That header is licensed
+under the FreeType License or GPLv2, and is left as a build-time prerequisite
+rather than redistributed here: install FreeType's development headers to run
+that one generator. Its output, src/name_langs.rs, is committed like the
+others, so building this crate never needs it.

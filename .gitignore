@@ -1,2 +1,8 @@
 /target
 /reference
+
+# The generators import a helper from tools/, so running one leaves bytecode
+# behind. Nothing here is worth keeping: it is per-interpreter, and there are
+# already two versions of it from two Pythons.
+__pycache__/
+*.pyc

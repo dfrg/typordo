@@ -2,6 +2,13 @@
 name = "fontconf"
 version = "0.1.0"
 edition = "2021"
+license = "MIT"
+# Data generated into src/ comes from upstream sources; see NOTICE.
+#
+# The generator inputs stay in the repository but not in the published
+# crate: building needs the generated tables in src/, not the ~1MB of
+# orthography files they were derived from.
+exclude = ["/reference", "/tools/data"]
 
 [dependencies]
 # Reading and matching need nothing at all. Scanning a font file needs to

@@ -17,9 +17,14 @@ by name for lookup.
 Run from the repo root:  python tools/gen_langs.py
 """
 import io
+import os
+import sys
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from emit import emit  # noqa: E402
 import re
 
-SRC = 'reference/fc-2.17.0/fc-lang/meson.build'
+SRC = 'tools/data/fontconfig-2.17.0/fc-lang/meson.build'
 OUT = 'src/langs.rs'
 RELEASE = '2.17.0'
 
@@ -241,11 +246,6 @@ mod tests {
 }
 '''
 
-with io.open(OUT, 'w', encoding='utf-8', newline='\n') as out:
-    out.write(header)
-    out.writelines(body)
-    out.write(mid)
-    out.writelines(sorted_body)
-    out.write(tail)
+emit(OUT, header, body, mid, sorted_body, tail)
 
 print('generated %d languages, %d map words, from %s' % (len(langs), words, RELEASE))
