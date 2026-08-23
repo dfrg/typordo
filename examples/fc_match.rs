@@ -97,11 +97,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // "we picked a worse font" apart from "the two fonts scored identically
     // and fontconfig's tie-break differs from ours".
     if let Some(wanted) = &score_of {
+        // Every pattern for the file, not the first: a variable font
+        // contributes one per named instance, and they score differently.
         for font in &fonts {
             if font.string(Object::File) == Some(wanted.as_str()) {
                 if let Some(score) = fontconf::score(&query, font) {
-                    println!("{}", format_score(&score));
-                    return Ok(());
+                    println!(
+                        "weight={:<10} instance={:<6} {}",
+                        font.value(Object::Weight)
+                            .map_or("?".to_string(), |v| format!("{v:?}")),
+                        font.value(Object::NamedInstance)
+                            .and_then(|v| v.as_bool())
+                            .unwrap_or(false),
+                        format_score(&score)
+                    );
+                    continue;
                 }
             }
         }

@@ -22,6 +22,10 @@
 #    Cache::validate does -- so this is not a handicap either side is carrying
 #    alone.
 #
+#  * Numbers are only comparable within one font set. The corpus here has
+#    changed size more than once; anything quoted from an older run was
+#    measured against a different amount of work.
+#
 #  * Our default build *reads* cache files; fontconfig *maps* anything over
 #    1KiB. That is a real difference in what `load` costs, so the run reports
 #    our number both ways.

@@ -11,10 +11,15 @@ have to exist to test it. Nothing is deleted: an entry moves to **Done**, to
 fontconfig would have been the worse answer. The history of what was
 actually wrong stays readable.
 
-The corpus everything is measured against: Fedora 44 under WSL, 695 font
-files producing 819 patterns, `/etc/fonts` with 51 configuration files.
-Broad -- CJK collections, Type 1, variable fonts, bitmap fonts, a Dingbats
-clone -- but one machine.
+The corpus everything is measured against: Fedora 44 under WSL, 2385 font
+files producing 2999 patterns across 336 families and 281 languages,
+`/etc/fonts` with 51 configuration files. Broad -- CJK collections, Type 1,
+variable fonts, OpenType bitmaps, colour emoji, a Dingbats clone, and a Noto
+face for nearly every script there is -- but one machine.
+
+Widening it from 695 files found two divergences that the smaller set had
+never reached, one of them a real bug. That is the argument for widening it
+again.
 
 Three things need a dependency or an `unsafe` block to do properly, so they
 are behind features rather than gone: `mmap`, `statfs`, and
@@ -42,6 +47,23 @@ do not cover, so that they are read for what they are.
   check in the repo. `scripts/cross_check.sh` compiled it happily, because
   compiling is all it can do. It was found by reading, which is not a process
   anyone should rely on.
+
+### Found by the corpus, not yet fixed
+
+- **A named instance's full name, on two files.** `NotoEmoji[wght].ttf` and
+  `NotoSansHanifiRohingya[wght].ttf`. We rebuild an instance's full name from
+  the family and the instance style -- `Noto Emoji Light` -- and fontconfig
+  keeps the face's own, `Noto Emoji`. Cantarell goes the other way and wants
+  the rebuilt name, which is why the rule is there at all, so the difference
+  is in *when* FreeType rebuilds it rather than whether. 2 of 2385 files, in
+  a field nothing matches on.
+- **Two fc-match answers differ against caches we scanned ourselves.**
+  `:lang=ja` and `:lang=hi` pick `NotoSansAdlamUnjoined` where fontconfig
+  picks the CJK and Devanagari faces. Only against caches built by scanning:
+  the same queries agree against caches we rewrote from fontconfig's own, and
+  `fc-list` agrees on all twenty fields of all 2999 patterns either way. So
+  the cache *contents* match and something about their order or a field
+  fc-list does not print does not. Not yet diagnosed.
 
 ### Configuration
 
@@ -138,6 +160,13 @@ Places where matching fontconfig exactly would be worse.
   `FcLangSet` keeps them. This one was not cosmetic: a `<patelt>` naming
   `en-GB` matched 326 fonts in fontconfig and none here, because `en-GB` has
   no bit and a font listing `en` has to answer for it.
+- **The language a locale means.** `FcLangNormalize`: the territory survives
+  only when the full tag names a language fontconfig knows, so `zh_CN` stays
+  `zh-cn` while `en_US` becomes plain `en`. We had been lowercasing and
+  swapping the underscore, which put `en-us` into every query as a default.
+  It scored the same and sorted differently, because the language
+  satisfaction pass lets one font answer each requested language and an extra
+  language lets an extra font through. Found only by widening the corpus.
 - **`SOURCE_DATE_EPOCH`**, including the two details that are easy to miss:
   the nanoseconds go whenever the variable is set at all, even to something
   unparseable, and the seconds are clamped rather than overwritten.
