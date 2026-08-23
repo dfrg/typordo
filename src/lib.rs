@@ -74,8 +74,8 @@
 //!
 //! Every claim about fontconfig here is checked against fontconfig itself --
 //! `fc-list`, `fc-match`, `fc-query`, `fc-cache` -- on one machine: Fedora 44,
-//! x86_64, 2385 font files. That is the only place an oracle exists. Windows
-//! runs the test suite and the harnesses that do not need fontconfig.
+//! x86_64, 2385 font files. That is the only place an oracle exists; the test
+//! suite itself needs no fontconfig at all.
 //!
 //! The 32-bit layouts are derived rather than measured. They are checked
 //! against the five closed forms `fcarch.c` states, for every pointer and

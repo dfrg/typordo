@@ -6,11 +6,11 @@
 # character the ones before them could not. -a skips that trimming. Both are
 # checked, because they exercise different halves.
 #
-# Run from WSL: bash /mnt/c/Work/play/fontconf/scripts/sort_parity.sh
+# Run: bash scripts/sort_parity.sh
 set -uo pipefail
-cd /mnt/c/Work/play/fontconf
+cd "$(dirname "$0")/.." || exit 1
 export PATH="$HOME/.cargo/bin:$PATH"
-export CARGO_TARGET_DIR="$HOME/fct"
+export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$PWD/target}"
 cargo build -q --release --example fc_match || exit 1
 
 CONF=${CONF:-/etc/fonts/fonts.conf}

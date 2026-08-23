@@ -6,11 +6,11 @@
 # -- it is the wrong oracle for a cache reader, and using it made the CJK
 # .ttc files look broken when they were not.
 #
-# Run from WSL: bash /mnt/c/Work/play/fontconf/scripts/lang_parity.sh
+# Run: bash scripts/lang_parity.sh
 set -uo pipefail
-cd /mnt/c/Work/play/fontconf
+cd "$(dirname "$0")/.." || exit 1
 export PATH="$HOME/.cargo/bin:$PATH"
-export CARGO_TARGET_DIR="$HOME/fct"
+export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$PWD/target}"
 cargo build -q --release --example langs || exit 1
 
 cargo run -q --release --example langs 2>/dev/null | sort > /tmp/lang_ours.txt

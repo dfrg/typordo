@@ -5,11 +5,11 @@
 # scoring, not the substitution pass that rewrites a query first. Handing
 # both implementations the same rule-free config isolates one from the other.
 #
-# Run from WSL: bash /mnt/c/Work/play/fontconf/scripts/match_parity.sh
+# Run: bash scripts/match_parity.sh
 set -uo pipefail
-cd /mnt/c/Work/play/fontconf
+cd "$(dirname "$0")/.." || exit 1
 export PATH="$HOME/.cargo/bin:$PATH"
-export CARGO_TARGET_DIR="$HOME/fct"
+export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$PWD/target}"
 cargo build -q --release --example fc_match || exit 1
 
 # REAL=1 runs against the system's own /etc/fonts, rules and all. Without it

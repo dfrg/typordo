@@ -1,10 +1,10 @@
 #!/bin/bash
 # Compare our reader against the system fc-list, driven by the real config.
-# Run from WSL: bash /mnt/c/Work/play/fontconf/scripts/parity.sh
+# Run: bash scripts/parity.sh
 set -uo pipefail
-cd /mnt/c/Work/play/fontconf
+cd "$(dirname "$0")/.." || exit 1
 export PATH="$HOME/.cargo/bin:$PATH"
-export CARGO_TARGET_DIR="$HOME/fct"   # never build into the Windows target/
+export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$PWD/target}"
 
 echo "=== building ==="
 cargo build -q --release --example fc_list || exit 1

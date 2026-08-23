@@ -1,7 +1,7 @@
 #!/bin/bash
 # Time this crate against libfontconfig, doing the same work.
 #
-# Run from WSL: bash /mnt/c/Work/play/fontconf/scripts/bench.sh
+# Run: bash scripts/bench.sh
 #
 # What the numbers mean, because a benchmark that is not read carefully is
 # worse than none:
@@ -30,9 +30,9 @@
 #    1KiB. That is a real difference in what `load` costs, so the run reports
 #    our number both ways.
 set -uo pipefail
-cd /mnt/c/Work/play/fontconf
+cd "$(dirname "$0")/.." || exit 1
 export PATH="/usr/bin:/bin:$HOME/.cargo/bin:$PATH"
-export CARGO_TARGET_DIR="$HOME/fct"
+export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$PWD/target}"
 
 REPEATS=${REPEATS:-9}   # odd, so the median is a real sample
 BIN="$CARGO_TARGET_DIR/release/examples/bench"

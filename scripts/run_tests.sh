@@ -1,17 +1,17 @@
 #!/bin/bash
-# The test suite as Linux sees it, across the feature matrix.
+# The whole test suite, across the feature matrix.
 #
 # Some behaviour is genuinely platform-specific -- how a directory reports
-# having changed, whether a `.uuid` file is consulted -- so passing on Windows
-# is not passing. And `statfs` only compiles on Unix at all.
+# having changed, whether a `.uuid` file is consulted -- and `statfs` only
+# compiles on Unix at all, so the matrix is worth running rather than
+# assuming.
 #
-# Nothing here reaches for awk or bc: invoked as `wsl bash <script>` the PATH
-# is not the login one, and half the usual tools are missing.
+# Nothing here reaches for awk or bc, so it runs on a minimal PATH.
 #
-# Run from WSL: bash /mnt/c/Work/play/fontconf/scripts/run_tests_wsl.sh
-cd /mnt/c/Work/play/fontconf
+# Run: bash scripts/run_tests.sh
+cd "$(dirname "$0")/.." || exit 1
 export PATH="/usr/bin:/bin:$HOME/.cargo/bin:$PATH"
-export CARGO_TARGET_DIR="$HOME/fct"
+export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$PWD/target}"
 
 total() {
   local sum=0 n

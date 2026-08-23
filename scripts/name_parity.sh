@@ -11,11 +11,11 @@
 # font directory and an empty cache directory, and whatever lands there is
 # the name it chose.
 #
-# Run from WSL: bash /mnt/c/Work/play/fontconf/scripts/name_parity.sh
+# Run: bash scripts/name_parity.sh
 set -uo pipefail
-cd /mnt/c/Work/play/fontconf
+cd "$(dirname "$0")/.." || exit 1
 export PATH="$HOME/.cargo/bin:$PATH"
-export CARGO_TARGET_DIR="$HOME/fct"
+export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$PWD/target}"
 cargo build -q --release --example dirs || exit 1
 OURS="$CARGO_TARGET_DIR/release/examples/dirs"
 

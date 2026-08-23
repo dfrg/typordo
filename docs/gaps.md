@@ -11,7 +11,7 @@ have to exist to test it. Nothing is deleted: an entry moves to **Done**, to
 fontconfig would have been the worse answer. The history of what was
 actually wrong stays readable.
 
-The corpus everything is measured against: Fedora 44 under WSL, 2385 font
+The corpus everything is measured against: Fedora 44 on x86_64, 2385 font
 files producing 2999 patterns across 336 primary family names (1931
 including localized aliases) and 281 languages,
 `/etc/fonts` with 378 configuration files. Broad -- CJK collections, Type 1,
@@ -37,9 +37,8 @@ do not cover, so that they are read for what they are.
 
 - **One machine is the whole corpus.** Every claim about fontconfig is
   checked against fontconfig itself, on one machine -- see the corpus above.
-  That is the only place an oracle exists; Windows runs the test suite and
-  the harnesses that do not need fontconfig. Anything platform-specific --
-  the 32-bit layouts, the `statfs` filesystem check, the Windows listing
+  That is the only place an oracle exists. Anything platform-specific -- the
+  32-bit layouts, the `statfs` filesystem check, the directory-listing
   checksum -- rests on reading the source rather than on measurement.
 
   This is not hypothetical. Optimising the charset merge introduced a read of
@@ -74,23 +73,6 @@ do not cover, so that they are read for what they are.
   machine: a construct no Fedora config happens to contain has never been
   exercised against fontconfig, only against the reference source.
 
-### Platform differences
-
-- **Windows directory timestamps do not track file changes.** Adding a file
-  to a directory does not update that directory's modification time -- not
-  after three seconds, not at all as far as `std::fs::metadata` can see --
-  while adding a *subdirectory* does. Fontconfig documents the same thing in
-  `fcstat.c` and reaches for a different Win32 call. Rather than take a
-  dependency for one call, the cache records an Adler-32 of the directory
-  listing there instead -- the same fallback the `statfs` feature reaches for
-  on a Unix filesystem whose timestamps cannot be trusted, and the same one
-  fontconfig puts in that field for FAT.
-
-  The consequence: the number in a cache written on Windows is not an mtime
-  and means nothing to any other fontconfig. That costs nothing today, since
-  the absolute paths inside a cache already tie it to one machine, but it
-  would matter if a cache were ever shipped between them.
-
 ### Features, not gaps
 
 - **`mmap`.** A mapped cache is shared between every process that reads it,
@@ -101,8 +83,8 @@ do not cover, so that they are read for what they are.
 - **`statfs`.** FAT does not record a directory time fontconfig will trust,
   and neither should anyone: a cache there can stay stale indefinitely.
   Asking needs libc. Without the feature the timestamp is trusted on every
-  Unix filesystem, which is right for all of them except the ones the feature
-  is for. Windows never trusts it, feature or not.
+  filesystem, which is right for all of them except the ones the feature is
+  for.
 
 ## Decided against, for now
 

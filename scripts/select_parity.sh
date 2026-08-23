@@ -5,11 +5,11 @@
 # against fc-list rather than against our own fixtures is to hand both
 # implementations the same synthetic config over the real font set.
 #
-# Run from WSL: bash /mnt/c/Work/play/fontconf/scripts/select_parity.sh
+# Run: bash scripts/select_parity.sh
 set -uo pipefail
-cd /mnt/c/Work/play/fontconf
+cd "$(dirname "$0")/.." || exit 1
 export PATH="$HOME/.cargo/bin:$PATH"
-export CARGO_TARGET_DIR="$HOME/fct"
+export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$PWD/target}"
 cargo build -q --release --example fc_list || exit 1
 
 CONF=/tmp/fontconf-select

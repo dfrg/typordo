@@ -72,7 +72,7 @@ over the same fonts.
 
 The one shortfall is `scan_parity`, and it is deliberate: see Status below.
 
-The corpus is Fedora 44 under WSL: 2385 font files producing 2999 patterns
+The corpus is Fedora 44 on x86_64: 2385 font files producing 2999 patterns
 across 336 primary family names and 281 languages, with 378 configuration
 files. Broad — CJK collections, Type 1, variable fonts, OpenType bitmaps,
 colour emoji, and a Noto face for nearly every script there is — but one
@@ -160,14 +160,14 @@ all and contains no `unsafe`; `mmap` and `statfs` each introduce exactly one
 ## Testing
 
 ```
-cargo test                  # 230 tests, no fontconfig needed
-scripts/run_tests_wsl.sh    # the same across the feature matrix, plus clippy
-scripts/all_parity.sh       # every harness against live fontconfig
+cargo test                # 230 tests, no fontconfig needed
+scripts/run_tests.sh      # the same across the feature matrix, plus clippy
+scripts/all_parity.sh     # every harness against live fontconfig
 ```
 
-The parity harnesses need a Linux machine with fontconfig installed and
-`--release`, since they run the whole corpus through both implementations.
-Windows runs the test suite and the harnesses that do not need fontconfig.
+The parity harnesses need fontconfig installed and `--release`, since they
+run the whole corpus through both implementations. The test suite itself
+needs neither.
 
 The 32-bit layouts are derived rather than measured: checked against the five
 closed forms `fcarch.c` states and compiled for `i686` and `armv7` with those

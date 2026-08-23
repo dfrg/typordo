@@ -1,5 +1,5 @@
 #!/bin/bash
-# Widen the WSL font set so the parity harnesses cover more of the format.
+# Widen the installed font set so the parity harnesses cover more of the format.
 #
 # The interesting additions are not "more Latin fonts". They are the ones
 # that exercise something nothing installed has: colour emoji for
@@ -15,7 +15,7 @@
 #              and have no reader here at all. Expect scanning to disagree,
 #              and read scripts/scan_parity.sh to find out how much.
 #
-# Run from WSL: bash scripts/install_fonts.sh [scalable|bitmap|all]
+# Run: bash scripts/install_fonts.sh [scalable|bitmap|all]
 set -uo pipefail
 export PATH="/usr/bin:/bin:/usr/sbin:$PATH"
 stage="${1:-scalable}"
