@@ -430,7 +430,34 @@ fn score_values(
 /// allocates nothing. A hit is confirmed with the real comparison, because
 /// equal hashes are not equal names.
 struct Families<'q> {
-    buckets: std::collections::HashMap<u64, Vec<Family<'q>>>,
+    buckets: std::collections::HashMap<u64, Vec<Family<'q>>, BuildPassthrough>,
+}
+
+/// A hasher for keys that are already hashes.
+///
+/// The key here is an FNV of the folded name, so running SipHash over it
+/// again buys nothing and costs more than the lookup it protects.
+type BuildPassthrough = std::hash::BuildHasherDefault<Passthrough>;
+
+#[derive(Default)]
+struct Passthrough(u64);
+
+impl std::hash::Hasher for Passthrough {
+    fn finish(&self) -> u64 {
+        self.0
+    }
+
+    fn write_u64(&mut self, value: u64) {
+        self.0 = value;
+    }
+
+    fn write(&mut self, bytes: &[u8]) {
+        // Never reached: the only key type is `u64`. Mixing rather than
+        // ignoring, so that a future key type is merely slow, not broken.
+        for byte in bytes {
+            self.0 = self.0.rotate_left(8) ^ u64::from(*byte);
+        }
+    }
 }
 
 /// One family the query asked for, and how early it asked.
@@ -445,8 +472,8 @@ struct Family<'q> {
 impl<'q> Families<'q> {
     /// Index the family element of `query`, if it has one.
     fn new(query: &'q Query) -> Self {
-        let mut buckets: std::collections::HashMap<u64, Vec<Family<'q>>> =
-            std::collections::HashMap::new();
+        let mut buckets: std::collections::HashMap<u64, Vec<Family<'q>>, BuildPassthrough> =
+            std::collections::HashMap::default();
         let Some(element) = query.get(Object::Family) else {
             return Self { buckets };
         };

@@ -150,13 +150,13 @@ impl<'a> CharSet<'a> {
         self.data.u16(at)
     }
 
-    /// A whole leaf, resolving the array bases once.
+    /// A whole leaf, given an already-resolved leaf array base.
     ///
-    /// [`CharSet::leaf_word`] re-resolves them for every word it reads, which
-    /// is eight times per page; merging a font into a coverage set does that
-    /// for every page of every candidate.
-    pub(crate) fn leaf(&self, index: usize) -> Result<[u32; LEAF_WORDS]> {
-        let leaves = self.leaves_base()?;
+    /// The base is a parameter because the caller that matters resolves it
+    /// once for a whole font: [`CharSet::leaf_word`] re-resolves it for every
+    /// word it reads, which is eight times per page, for every page of every
+    /// candidate a fallback list considers.
+    pub(crate) fn leaf_at(&self, leaves: usize, index: usize) -> Result<[u32; LEAF_WORDS]> {
         let delta = self.data.i64(leaves + index * crate::layout::PTR)?;
         let leaf = self.data.resolve(leaves, delta)?;
         let mut out = [0u32; LEAF_WORDS];
@@ -348,9 +348,17 @@ impl Coverage {
         let mut cursor = 0usize;
         let mut fresh: Vec<(u16, Leaf)> = Vec::new();
 
+        // The two array bases are resolved once. Reading them per page --
+        // which `page_number` and `leaf` each do -- is two offset decodes and
+        // two bounds checks for every one of the thousands of pages a CJK
+        // font has, repeated for every font a fallback list considers.
+        let (Ok(numbers), Ok(leaves)) = (other.numbers_base(), other.leaves_base()) else {
+            return false;
+        };
+
         for index in 0..other.pages() {
-            let Ok(page) = other.page_number(index) else { continue };
-            let Ok(theirs) = other.leaf(index) else { continue };
+            let Ok(page) = other.data.u16(numbers + index * 2) else { continue };
+            let Ok(theirs) = other.leaf_at(leaves, index) else { continue };
 
             // Both sides ascend, so the cursor only ever moves forwards.
             while self.pages.get(cursor).is_some_and(|(at, _)| *at < page) {

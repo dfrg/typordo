@@ -552,28 +552,45 @@ pub fn eq(a: &str, b: &str) -> bool {
 /// This is `FcStrCmpIgnoreBlanksAndCase`: fontconfig skips blanks *before*
 /// folding, so a blank that a fold would introduce is not itself skipped.
 pub fn eq_ignoring_blanks(a: &str, b: &str) -> bool {
-    // Both sides have to be ASCII to take the short way, not just one: a
-    // character outside it can still fold *into* ASCII -- U+212A KELVIN SIGN
-    // folds to `k` -- so comparing bytes against a non-ASCII string would
-    // miss a real match.
-    if a.is_ascii() && b.is_ascii() {
-        return ascii_eq_ignoring_blanks(a.as_bytes(), b.as_bytes());
-    }
-    nonblank(a).eq(nonblank(b))
-}
-
-/// [`eq_ignoring_blanks`] for two strings already known to be ASCII.
-fn ascii_eq_ignoring_blanks(a: &[u8], b: &[u8]) -> bool {
-    let mut a = a.iter().filter(|c| **c != BLANK as u8);
-    let mut b = b.iter().filter(|c| **c != BLANK as u8);
+    // Bytes, in one pass, for as long as both sides stay ASCII. Checking
+    // that up front instead would walk both strings before comparing them,
+    // and this is called once per font per property.
+    //
+    // The moment either side leaves ASCII the whole comparison restarts
+    // through the tables. It has to be both sides and not either: a
+    // character outside ASCII can still fold *into* it -- U+212A KELVIN SIGN
+    // folds to `k` -- so byte comparison would miss a real match.
+    let (x, y) = (a.as_bytes(), b.as_bytes());
+    let (mut i, mut j) = (0usize, 0usize);
     loop {
-        match (a.next(), b.next()) {
+        while x.get(i) == Some(&BLANK_BYTE) {
+            i += 1;
+        }
+        while y.get(j) == Some(&BLANK_BYTE) {
+            j += 1;
+        }
+        match (x.get(i), y.get(j)) {
             (None, None) => return true,
-            (Some(x), Some(y)) if x.eq_ignore_ascii_case(y) => {}
+            (Some(l), Some(r)) if l.is_ascii() && r.is_ascii() => {
+                if !l.eq_ignore_ascii_case(r) {
+                    return false;
+                }
+                i += 1;
+                j += 1;
+            }
+            // One of them is a continuation or a lead byte: start again the
+            // long way, over characters rather than bytes.
+            (Some(l), Some(r)) if !l.is_ascii() || !r.is_ascii() => {
+                return nonblank(a).eq(nonblank(b));
+            }
+            // One side ended where the other did not.
             _ => return false,
         }
     }
 }
+
+/// [`BLANK`] as the byte it is, since the fast path works in bytes.
+const BLANK_BYTE: u8 = BLANK as u8;
 
 /// A hash of `s` in the same terms [`eq_ignoring_blanks`] compares it.
 ///
