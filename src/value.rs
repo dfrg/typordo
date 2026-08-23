@@ -33,6 +33,11 @@ impl Range {
     pub fn is_scalar(&self) -> bool {
         self.begin == self.end
     }
+
+    /// Whether `value` falls inside, ends included.
+    pub fn contains(&self, value: f64) -> bool {
+        self.begin <= value && value <= self.end
+    }
 }
 
 /// One value held against a property.

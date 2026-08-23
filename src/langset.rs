@@ -199,6 +199,27 @@ pub fn compare_lang(a: &str, b: &str) -> LangResult {
     }
 }
 
+/// Whether `super_` covers `sub`, treating a missing region as a wildcard.
+///
+/// `FcLangContains`. This is not symmetric with [`compare_lang`]: `en` covers
+/// `en-US` *and* `en-US` covers `en`, because the side without a region is
+/// taken to mean any region. Two different regions do not cover each other.
+pub fn lang_contains(super_: &str, sub: &str) -> bool {
+    let mut a = super_.chars();
+    let mut b = sub.chars();
+    loop {
+        let ca = a.next().map(|c| c.to_ascii_lowercase());
+        let cb = b.next().map(|c| c.to_ascii_lowercase());
+        match (ca, cb) {
+            (None, None) => return true,
+            // One side stopped where the other starts a region.
+            (Some('-'), None) | (None, Some('-')) => return true,
+            (x, y) if x != y => return false,
+            _ => {}
+        }
+    }
+}
+
 /// End of a subtag: the end of the string, or the separator.
 fn is_subtag_end(c: Option<char>) -> bool {
     matches!(c, None | Some('-'))
@@ -270,6 +291,70 @@ mod set_tests {
         assert!(set.subtract(&set).is_empty());
     }
 
+    /// A regional variant fontconfig has no bit for still has to work: a
+    /// font listing `en` answers a request for `en-GB`, and the bitmap alone
+    /// cannot say so.
+    #[test]
+    fn a_language_outside_the_table_is_kept_by_name() {
+        let mut set = Langs::new();
+        set.insert("en-GB");
+        assert!(langs::index_of("en-gb").is_none(), "the premise: no bit for it");
+        assert_eq!(set.langs().collect::<Vec<_>>(), ["en-gb"]);
+        assert_eq!(set.len(), 1);
+    }
+
+    #[test]
+    fn a_broad_language_answers_a_narrower_request() {
+        let font = langs(&["en"]);
+        let mut asked = Langs::new();
+        asked.insert("en-GB");
+        assert!(font.contains_set(&asked));
+        assert!(font.contains_lang("en-GB"));
+    }
+
+    /// And the other way round, which is what `FcLangContains` means by
+    /// treating a missing region as a wildcard.
+    #[test]
+    fn a_narrow_language_answers_a_broader_request() {
+        let mut font = Langs::new();
+        font.insert("en-GB");
+        assert!(font.contains_lang("en"));
+        assert!(!font.contains_lang("de"));
+    }
+
+    #[test]
+    fn two_different_regions_do_not_answer_each_other() {
+        let mut font = Langs::new();
+        font.insert("en-GB");
+        assert!(!font.contains_lang("en-US"));
+    }
+
+    #[test]
+    fn names_are_folded_and_kept_once() {
+        let mut set = Langs::new();
+        set.insert("EN-gb");
+        set.insert("en-GB");
+        assert_eq!(set.langs().collect::<Vec<_>>(), ["en-gb"]);
+    }
+
+    #[test]
+    fn a_name_the_table_knows_becomes_a_bit() {
+        let mut set = Langs::new();
+        set.insert("JA");
+        assert_eq!(set, langs(&["ja"]));
+    }
+
+    #[test]
+    fn set_arithmetic_reaches_the_names_too() {
+        let mut a = Langs::new();
+        a.insert("en");
+        a.insert("en-GB");
+        let mut b = Langs::new();
+        b.insert("en-GB");
+        assert_eq!(a.union(&b), a);
+        assert_eq!(a.subtract(&b).langs().collect::<Vec<_>>(), ["en"]);
+    }
+
     #[test]
     fn neither_operation_changes_its_operands() {
         let a = langs(&["en"]);
@@ -333,6 +418,17 @@ mod tests {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Langs {
     bits: [u32; langs::MAP_WORDS],
+    /// Languages fontconfig's table cannot name.
+    ///
+    /// `FcLangSet` keeps these in a string set of its own, and it has to:
+    /// the bitmap can only say what the table names, and `en-GB` is not one
+    /// of those even though `en` is. Dropping them would make a selector or
+    /// a query for a regional variant match nothing at all.
+    ///
+    /// Never serialized -- fontconfig rejects a cache whose language set has
+    /// one -- so in practice only a query or a configuration ever carries
+    /// any. Kept sorted so two sets compare by value.
+    extra: Vec<String>,
 }
 
 impl Langs {
@@ -363,16 +459,39 @@ impl Langs {
         }
     }
 
+    /// Add a language by name.
+    ///
+    /// A name the table knows sets a bit; anything else is kept as a string.
+    /// Names are compared without case, so they are stored folded.
+    pub fn insert(&mut self, lang: &str) {
+        let lang = lang.to_lowercase();
+        match langs::index_of(&lang) {
+            Some(index) => self.insert_index(index),
+            None => {
+                if let Err(at) = self.extra.binary_search(&lang) {
+                    self.extra.insert(at, lang);
+                }
+            }
+        }
+    }
+
     /// Whether bit `index` is set.
+    ///
+    /// Only the table half: see [`Langs::contains_lang`] for the question
+    /// that also consults the names the table cannot hold.
     pub fn contains_index(&self, index: usize) -> bool {
         self.bits
             .get(index / 32)
             .is_some_and(|word| word & (1 << (index % 32)) != 0)
     }
 
-    /// Every language in the set, in bit order.
-    pub fn langs(&self) -> impl Iterator<Item = &'static str> + '_ {
-        (0..LANGS.len()).filter(|i| self.contains_index(*i)).map(|i| LANGS[i])
+    /// Every language in the set: the table half in bit order, then any
+    /// name the table could not hold.
+    pub fn langs(&self) -> impl Iterator<Item = &str> + '_ {
+        (0..LANGS.len())
+            .filter(|i| self.contains_index(*i))
+            .map(|i| LANGS[i])
+            .chain(self.extra.iter().map(String::as_str))
     }
 
     /// Every language in the set, however it is stored.
@@ -392,6 +511,11 @@ impl Langs {
         for (word, bits) in out.bits.iter_mut().zip(other.bits.iter()) {
             *word |= bits;
         }
+        for name in &other.extra {
+            if let Err(at) = out.extra.binary_search(name) {
+                out.extra.insert(at, name.clone());
+            }
+        }
         out
     }
 
@@ -406,7 +530,56 @@ impl Langs {
         for (word, bits) in out.bits.iter_mut().zip(other.bits.iter()) {
             *word &= !bits;
         }
+        out.extra.retain(|name| !other.extra.contains(name));
         out
+    }
+
+    /// Whether this set answers everything `other` asks for.
+    ///
+    /// `FcLangSetContains`, which is what a `<patelt>` comparison uses. A
+    /// language missing outright is still covered when the set holds one that
+    /// contains it, so a font listing `en` satisfies a request for `en-US`.
+    pub fn contains_set(&self, other: &Self) -> bool {
+        (0..LANGS.len())
+            .filter(|index| other.contains_index(*index) && !self.contains_index(*index))
+            .all(|index| self.contains_lang(LANGS[index]))
+            && other.extra.iter().all(|name| self.contains_lang(name))
+    }
+
+    /// Whether the set holds `lang` or something that covers it.
+    ///
+    /// `FcLangSetContainsLang`. The walk goes outward from where `lang` would
+    /// sort and stops as soon as the neighbours are a different language,
+    /// which is why the table has to be searched in name order rather than
+    /// bit order.
+    pub fn contains_lang(&self, lang: &str) -> bool {
+        if self.extra.iter().any(|name| lang_contains(name, lang)) {
+            return true;
+        }
+        let start = match langs::rank_of(lang) {
+            Ok(rank) if self.contains_rank(rank) => return true,
+            Ok(rank) => rank,
+            Err(insertion) => insertion,
+        };
+        let walk = |ranks: &mut dyn Iterator<Item = usize>| {
+            for rank in ranks {
+                let Some(known) = langs::nth_sorted(rank) else { break };
+                if compare_lang(known, lang) == LangResult::DifferentLang {
+                    break;
+                }
+                if self.contains_rank(rank) && lang_contains(known, lang) {
+                    return true;
+                }
+            }
+            false
+        };
+        walk(&mut (start..LANGS.len())) || walk(&mut (0..start).rev())
+    }
+
+    fn contains_rank(&self, rank: usize) -> bool {
+        langs::nth_sorted(rank)
+            .and_then(langs::index_of)
+            .is_some_and(|index| self.contains_index(index))
     }
 
     /// The raw bitmap, as the cache stores it.
@@ -416,7 +589,8 @@ impl Langs {
 
     /// How many languages the set holds.
     pub fn len(&self) -> usize {
-        self.bits.iter().map(|w| w.count_ones() as usize).sum()
+        let bits: usize = self.bits.iter().map(|w| w.count_ones() as usize).sum();
+        bits + self.extra.len()
     }
 
     /// Whether the set is empty.

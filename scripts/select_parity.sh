@@ -134,3 +134,85 @@ write_conf fold-sharp-s.conf '    <rejectfont>
       </pattern>
     </rejectfont>'
 check fold-sharp-s.conf
+
+# <langset> selects fonts that answer a language.
+write_conf langset-en.conf '    <rejectfont>
+      <pattern>
+        <patelt name="lang"><langset><string>en</string></langset></patelt>
+      </pattern>
+    </rejectfont>'
+check langset-en.conf
+
+write_conf langset-two.conf '    <rejectfont>
+      <pattern>
+        <patelt name="lang"><langset><string>en</string><string>de</string></langset></patelt>
+      </pattern>
+    </rejectfont>'
+check langset-two.conf
+
+# A region fontconfig has no bit for. It has to match anyway: a font listing
+# `en` answers a request for `en-GB`, and a bitmap alone cannot say so.
+write_conf langset-region.conf '    <rejectfont>
+      <pattern>
+        <patelt name="lang"><langset><string>en-GB</string></langset></patelt>
+      </pattern>
+    </rejectfont>'
+check langset-region.conf
+
+# The same, spelled with a capital region, since language names fold.
+write_conf langset-case.conf '    <rejectfont>
+      <pattern>
+        <patelt name="lang"><langset><string>en-US</string></langset></patelt>
+      </pattern>
+    </rejectfont>'
+check langset-case.conf
+
+# A language nothing has, which must reject nothing rather than everything.
+write_conf langset-unknown.conf '    <rejectfont>
+      <pattern>
+        <patelt name="lang"><langset><string>xx-yy</string></langset></patelt>
+      </pattern>
+    </rejectfont>'
+check langset-unknown.conf
+
+# <range> selects a span. A font weight is a scalar for a static face and a
+# range for a variable one, and both have to sit inside the span named here.
+write_conf range-weight.conf '    <rejectfont>
+      <pattern>
+        <patelt name="weight"><range><int>0</int><int>100</int></range></patelt>
+      </pattern>
+    </rejectfont>'
+check range-weight.conf
+
+# A span narrow enough that a variable font cannot fit inside it, which is
+# what tells "the font is within the span" apart from "they overlap".
+write_conf range-narrow.conf '    <rejectfont>
+      <pattern>
+        <patelt name="weight"><range><int>80</int><int>80</int></range></patelt>
+      </pattern>
+    </rejectfont>'
+check range-narrow.conf
+
+write_conf range-double.conf '    <rejectfont>
+      <pattern>
+        <patelt name="weight"><range><double>0.0</double><double>200.5</double></range></patelt>
+      </pattern>
+    </rejectfont>'
+check range-double.conf
+
+# <range> inside <charset>: a span of codepoints rather than one.
+write_conf charset-range.conf '    <rejectfont>
+      <pattern>
+        <patelt name="charset"><charset><range><int>0x4e00</int><int>0x4e10</int></range></charset></patelt>
+      </pattern>
+    </rejectfont>'
+check charset-range.conf
+
+# A codepoint and a span together, which is how the two collection paths meet.
+# Both have to be assigned characters or the test proves nothing.
+write_conf charset-mixed.conf '    <rejectfont>
+      <pattern>
+        <patelt name="charset"><charset><int>0x41</int><range><int>0x3042</int><int>0x3046</int></range></charset></patelt>
+      </pattern>
+    </rejectfont>'
+check charset-mixed.conf

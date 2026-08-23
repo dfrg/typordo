@@ -295,11 +295,32 @@ fn entries(dir: &Path) -> io::Result<(Vec<PathBuf>, Vec<PathBuf>)> {
 #[cfg(not(windows))]
 fn directory_stamp(dir: &Path) -> io::Result<(i32, i64)> {
     let modified = std::fs::metadata(dir)?.modified()?;
-    Ok(match modified.duration_since(std::time::UNIX_EPOCH) {
+    let (seconds, nanoseconds) = match modified.duration_since(std::time::UNIX_EPOCH) {
         Ok(since) => (since.as_secs() as i32, i64::from(since.subsec_nanos())),
         // Before the epoch, which no real directory is, but the type allows.
         Err(e) => (-(e.duration().as_secs() as i32), 0),
-    })
+    };
+    // A reproducible build pins the clock, and a cache recording the real
+    // time would differ between two builds of the same image.
+    let Ok(pinned) = std::env::var("SOURCE_DATE_EPOCH") else {
+        return Ok((seconds, nanoseconds));
+    };
+    // The nanoseconds go whenever the variable is set at all, even to
+    // something unusable: it has no way to express them, so keeping the real
+    // ones would defeat the whole point.
+    //
+    // The seconds are *clamped*, not overwritten -- a directory older than
+    // the pinned time keeps its own -- and a value that will not parse is
+    // ignored rather than fatal, both of which is what fontconfig does. Note
+    // it has to parse wider than it is stored: a pinned time past 2038 is
+    // still a legal thing to write down, it just never clamps anything.
+    let clamped = pinned
+        .trim()
+        .parse::<i64>()
+        .ok()
+        .filter(|epoch| *epoch < i64::from(seconds))
+        .map_or(seconds, |epoch| epoch as i32);
+    Ok((clamped, 0))
 }
 
 /// The same, for Windows, where the modification time cannot be used.

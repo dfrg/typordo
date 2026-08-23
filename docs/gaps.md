@@ -40,23 +40,14 @@ clone -- but one machine.
 - **A font replaced in place.** Neither the mtime nor the listing checksum
   changes when a font file is overwritten under the same name, so the cache
   keeps describing the old one until something forces a rescan. Fontconfig
-  has the same hole.
+  has the same hole, so closing it here would be a divergence, not a fix.
 
 ### Configuration
 
-- **`<patelt>` with `<langset>`.** A `<selectfont>` selector cannot compare
-  against a language set. The selector is deliberately poisoned rather than
-  matched, so it rejects nothing instead of accepting everything -- wrong,
-  but wrong in the safe direction. Needs a language-set shape in
-  `SelectorValue` and a comparison for it.
-- **`<range>` literals.** The parser has no range value at all, so a
-  `<range>` inside a `<charset>` is skipped. Fontconfig accepts it.
-- **Languages outside fontconfig's table.** `FcLangSet` keeps them in an
-  `extra` string set; ours is a bitmap over the table and nothing else.
-  Exact for subtraction -- a font's own set is a bitmap over the same table,
-  so it can never hold one -- and lossy for union.
-- **`SOURCE_DATE_EPOCH`.** Fontconfig clamps a directory's recorded mtime to
-  this when it is set, for reproducible builds. We record the real mtime.
+- **`<name>` targets beyond the pattern and the font.** Everything the
+  configuration on this machine uses is covered, but the corpus is one
+  machine: a construct no Fedora config happens to contain has never been
+  exercised against fontconfig, only against the reference source.
 
 ### Platform differences
 
@@ -73,6 +64,18 @@ clone -- but one machine.
   and means nothing to any other fontconfig. That costs nothing today, since
   the absolute paths inside a cache already tie it to one machine, but it
   would matter if a cache were ever shipped between them.
+
+## Divergences we chose
+
+Places where matching fontconfig exactly would be worse.
+
+- **A clamped `SOURCE_DATE_EPOCH` keeps its cache.** When the pinned time is
+  older than the directory -- so the clamp actually fires -- fontconfig
+  writes the cache, then validates it by comparing the clamped stamp against
+  the *unclamped* directory mtime, concludes it failed, and deletes it. We
+  write the cache and keep it, applying the same clamp when reading it back
+  so it stays valid. In a real reproducible build the directory mtime is
+  already pinned, the clamp never fires, and the two behave identically.
 
 ## Not attempted
 
@@ -92,3 +95,15 @@ clone -- but one machine.
 - **Rebuilding a directory tree** -- `Builder`, what `fc-cache` does:
   staleness, atomic replace, `CACHEDIR.TAG`, and walking the subdirectories a
   cache records rather than the filesystem.
+- **`<range>` literals**, in a rule and inside a `<charset>`. Finding the gap
+  turned up two neighbours that were quietly broken: a `<charset>` or a
+  `<matrix>` in a rule expression read a list of children that the parser had
+  filled somewhere else, so both had always evaluated to nothing.
+- **`<patelt>` with `<langset>`**, and with it `FcLangSetContains`.
+- **Languages outside fontconfig's table.** They are kept by name, the way
+  `FcLangSet` keeps them. This one was not cosmetic: a `<patelt>` naming
+  `en-GB` matched 326 fonts in fontconfig and none here, because `en-GB` has
+  no bit and a font listing `en` has to answer for it.
+- **`SOURCE_DATE_EPOCH`**, including the two details that are easy to miss:
+  the nanoseconds go whenever the variable is set at all, even to something
+  unparseable, and the seconds are clamped rather than overwritten.

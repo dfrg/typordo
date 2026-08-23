@@ -35,10 +35,10 @@ fn with_family(name: &str) -> Query {
 #[test]
 fn the_fixture_parses_into_rules() {
     let config = config();
-    assert_eq!(config.rules().len(), 9, "{:?}", config.rules().len());
+    assert_eq!(config.rules().len(), 12, "{:?}", config.rules().len());
     let scan = config.rules().iter().filter(|r| r.kind == MatchKind::Scan).count();
     assert_eq!(scan, 2);
-    assert_eq!(config.rules().len() - scan, 7);
+    assert_eq!(config.rules().len() - scan, 10);
 }
 
 /// `<prefer>` goes in front of the matched family and `<default>` after it,
@@ -332,5 +332,50 @@ fn scan_rules_do_not_run_at_match_time() {
     match query.value(Object::Lang) {
         Some(OwnedValue::LangSet(set)) => assert!(set.langs().any(|l| l == "hi")),
         other => panic!("lang became {other:?}"),
+    }
+}
+
+/// A `<range>` literal, which the expression parser had no value shape for
+/// until ranges existed.
+#[test]
+fn a_range_literal_is_assigned() {
+    let config = config();
+    let mut query = with_family("Ranged");
+    config.substitute(&mut query);
+    match query.value(Object::Weight) {
+        Some(OwnedValue::Range(range)) => {
+            assert_eq!((range.begin, range.end), (40.0, 210.0));
+        }
+        other => panic!("weight became {other:?}"),
+    }
+}
+
+/// A `<charset>` literal, whose children used to be collected into a list the
+/// expression path never read -- so it always came out empty.
+#[test]
+fn a_charset_literal_expands_its_spans() {
+    let config = config();
+    let mut query = with_family("Spanned");
+    config.substitute(&mut query);
+    match query.value(Object::Charset) {
+        Some(OwnedValue::CharSet(set)) => {
+            assert_eq!(set.chars().collect::<String>(), "Aabc");
+        }
+        other => panic!("charset became {other:?}"),
+    }
+}
+
+/// The same bug, and the reason to look for it: a `<matrix>` in a rule read
+/// `exprs` while its children had gone into `values`.
+#[test]
+fn a_matrix_literal_is_assigned() {
+    let config = config();
+    let mut query = with_family("Skewed");
+    config.substitute(&mut query);
+    match query.value(Object::Matrix) {
+        Some(OwnedValue::Matrix(m)) => {
+            assert_eq!((m.xx, m.xy, m.yx, m.yy), (1.0, 0.2, 0.0, 1.0));
+        }
+        other => panic!("matrix became {other:?}"),
     }
 }

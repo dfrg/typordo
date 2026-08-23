@@ -33,7 +33,8 @@ use crate::query::{OwnedValue, Property, Query};
 use crate::rules::{
     BinaryOp, Compare, Edit, EditMode, Expr, MatchKind, Qual, Rule, Step, Test, UnaryOp,
 };
-use crate::value::{Binding, Matrix, Value};
+use crate::langset::Langs;
+use crate::value::{Binding, Matrix, Range, Value};
 use crate::xml::{Event, Reader, XmlError};
 
 /// The architecture tag fontconfig builds into a cache file name.
@@ -148,8 +149,12 @@ enum SelectorValue {
     Double(f64),
     Bool(bool),
     Matrix(Matrix),
-    /// Codepoints, from `<charset><int>..</int></charset>`.
+    /// Codepoints, from `<charset>`.
     CharSet(Vec<char>),
+    /// An inclusive span, from `<range>`.
+    Range(Range),
+    /// Languages, from `<langset>`.
+    LangSet(Langs),
     /// A value this crate cannot evaluate.
     ///
     /// It never matches, and poisons the selector that holds it. Dropping it
@@ -198,6 +203,20 @@ impl SelectorValue {
             (Self::Bool(want), Value::Bool(got)) => want == got,
             (Self::Matrix(want), Value::Matrix(got)) => want == got,
             (Self::CharSet(want), Value::CharSet(got)) => want.iter().all(|c| got.contains(*c)),
+            // The font has to answer everything the selector asks for, and a
+            // language it holds broadly answers a narrower request: a font
+            // listing `en` satisfies a selector naming `en-US`.
+            (Self::LangSet(want), Value::LangSet(got)) => {
+                Langs::from_languages(got).contains_set(want)
+            }
+            // A listing comparison asks the font to sit *inside* what the
+            // selector names, so a scalar matches any span covering it while
+            // a span matches only a span that covers all of it.
+            (Self::Range(want), Value::Range(got)) => within(got, want),
+            (Self::Range(want), Value::Int(got)) => within(&point(f64::from(*got)), want),
+            (Self::Range(want), Value::Double(got)) => within(&point(*got), want),
+            (Self::Int(want), Value::Range(got)) => within(got, &point(f64::from(*want))),
+            (Self::Double(want), Value::Range(got)) => within(got, &point(*want)),
             _ => false,
         }
     }
@@ -220,59 +239,126 @@ fn matrix_from(values: &[SelectorValue]) -> SelectorValue {
 }
 
 /// Build a `<charset>` from the `<int>` codepoints it collected.
-/// A `<langset>` literal, from the `<string>` languages inside it.
+/// A single number as a span, which is how fontconfig compares one against a
+/// range: `FcConfigPromote` widens the scalar and then the ranges compare.
+fn point(value: f64) -> Range {
+    Range { begin: value, end: value }
+}
+
+/// Whether the font's span sits inside the selector's, `FcRangeIsInRange`.
+fn within(font: &Range, selector: &Range) -> bool {
+    selector.contains(font.begin) && selector.contains(font.end)
+}
+
+/// Whether an unreadable part of a literal poisons the whole thing.
 ///
-/// Names outside fontconfig's language list go into an `extra` set there and
-/// are dropped here. That is exact for subtraction -- a font's own language
-/// set is a bitmap over the same list, so it can never hold one -- and loses
-/// them on union, which no configuration in the wild does.
-fn langset_literal(exprs: &[Expr]) -> Expr {
-    let mut set = crate::langset::Langs::new();
-    let mut named = false;
-    for expr in exprs {
-        let Expr::Value(OwnedValue::String(name)) = expr else { continue };
-        named = true;
-        if let Some(index) = crate::langs::index_of(&name.to_lowercase()) {
-            set.insert_index(index);
-        }
-    }
-    if named {
-        Expr::Value(OwnedValue::LangSet(set))
-    } else {
-        Expr::Unknown
+/// A `<patelt>` selector must poison: dropping a value it cannot evaluate
+/// *widens* the selector, and a `<selectfont>` rule that widens rejects fonts
+/// fontconfig keeps. A rule expression must not: an edit naming one language
+/// this crate has no room for should still make the rest of its change.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Strictness {
+    Poison,
+    Salvage,
+}
+
+/// One value element -- a scalar, or one of the four built from children.
+fn literal(frame: &Frame, body: &str, strict: Strictness) -> SelectorValue {
+    match frame.name.as_str() {
+        "matrix" => matrix_from(&frame.values),
+        "charset" => charset_from(&frame.values, strict),
+        "langset" => langset_from(&frame.values, strict),
+        "range" => range_from(&frame.values),
+        kind => SelectorValue::parse(kind, body),
     }
 }
 
-/// A `<charset>` literal, from the `<int>` codepoints inside it.
-///
-/// Fontconfig also accepts `<range>` here; nothing in this parser produces a
-/// range value yet, so such a child is skipped rather than misread.
-fn charset_literal(exprs: &[Expr]) -> Expr {
-    let mut coverage = crate::charset::Coverage::new();
-    let mut named = false;
-    for expr in exprs {
-        let Expr::Value(OwnedValue::Int(value)) = expr else { continue };
-        named = true;
-        if let Some(c) = u32::try_from(*value).ok().and_then(char::from_u32) {
-            coverage.insert(c);
+/// A literal value element as a rule expression.
+fn value_expr(value: SelectorValue) -> Expr {
+    match value {
+        SelectorValue::String(v) => Expr::Value(OwnedValue::String(v)),
+        SelectorValue::Int(v) => Expr::Value(OwnedValue::Int(v)),
+        SelectorValue::Double(v) => Expr::Value(OwnedValue::Double(v)),
+        SelectorValue::Bool(v) => Expr::Value(OwnedValue::Bool(v)),
+        SelectorValue::Matrix(v) => Expr::Value(OwnedValue::Matrix(v)),
+        SelectorValue::Range(v) => Expr::Value(OwnedValue::Range(v)),
+        SelectorValue::LangSet(v) => Expr::Value(OwnedValue::LangSet(v)),
+        SelectorValue::CharSet(chars) => {
+            let mut coverage = crate::charset::Coverage::new();
+            for c in chars {
+                coverage.insert(c);
+            }
+            Expr::Value(OwnedValue::CharSet(coverage))
         }
-    }
-    if named {
-        Expr::Value(OwnedValue::CharSet(coverage))
-    } else {
-        Expr::Unknown
+        SelectorValue::Unsupported => Expr::Unknown,
     }
 }
 
-fn charset_from(values: &[SelectorValue]) -> SelectorValue {
+/// A `<range>`, from the two numbers inside it.
+///
+/// If either is a `<double>` the whole range is one, matching fontconfig:
+/// `<range><int>1</int><double>2.5</double></range>` spans 1.0 to 2.5 rather
+/// than being rejected for mixing its types.
+fn range_from(values: &[SelectorValue]) -> SelectorValue {
+    let numbers: Vec<f64> = values
+        .iter()
+        .filter_map(|v| match v {
+            SelectorValue::Double(d) => Some(*d),
+            SelectorValue::Int(i) => Some(f64::from(*i)),
+            _ => None,
+        })
+        .collect();
+    match numbers[..] {
+        // An inverted range is an error to fontconfig, not an empty span.
+        [begin, end] if begin <= end => SelectorValue::Range(Range { begin, end }),
+        _ => SelectorValue::Unsupported,
+    }
+}
+
+/// A `<langset>` from the `<string>` languages inside it.
+///
+/// A name outside fontconfig's table -- `en-GB`, say -- is kept as a name.
+/// It cannot be a bit, but it still has to match: a font listing `en`
+/// answers a request for `en-GB`, and treating the name as unreadable would
+/// silently turn such a selector into one that matches nothing.
+fn langset_from(values: &[SelectorValue], strict: Strictness) -> SelectorValue {
+    let mut set = Langs::new();
+    let mut named = false;
+    for value in values {
+        let SelectorValue::String(name) = value else {
+            if strict == Strictness::Poison {
+                return SelectorValue::Unsupported;
+            }
+            continue;
+        };
+        named = true;
+        set.insert(name);
+    }
+    if named {
+        SelectorValue::LangSet(set)
+    } else {
+        SelectorValue::Unsupported
+    }
+}
+
+/// Build a `<charset>` from the codepoints and spans it collected.
+fn charset_from(values: &[SelectorValue], strict: Strictness) -> SelectorValue {
     let mut chars = Vec::with_capacity(values.len());
     for value in values {
-        let SelectorValue::Int(cp) = value else {
-            return SelectorValue::Unsupported;
+        // A span is expanded here, because a charset is a bitmap and has no
+        // notion of one. Fontconfig does the same.
+        let (begin, end) = match value {
+            SelectorValue::Int(cp) => (i64::from(*cp), i64::from(*cp)),
+            SelectorValue::Range(range) => (range.begin as i64, range.end as i64),
+            _ if strict == Strictness::Poison => return SelectorValue::Unsupported,
+            _ => continue,
         };
-        match u32::try_from(*cp).ok().and_then(char::from_u32) {
-            Some(c) => chars.push(c),
-            None => return SelectorValue::Unsupported,
+        for cp in begin..=end {
+            match u32::try_from(cp).ok().and_then(char::from_u32) {
+                Some(c) => chars.push(c),
+                None if strict == Strictness::Poison => return SelectorValue::Unsupported,
+                None => {}
+            }
         }
     }
     if chars.is_empty() {
@@ -306,21 +392,6 @@ fn add_default_langs(query: &mut Query) {
             }
         }
         query.add_weak(Object::Lang, lang.as_str());
-    }
-}
-
-/// Build a matrix literal from four evaluated number expressions.
-fn literal_matrix(xx: &Expr, xy: &Expr, yx: &Expr, yy: &Expr) -> Expr {
-    let number = |e: &Expr| match e {
-        Expr::Value(OwnedValue::Double(d)) => Some(*d),
-        Expr::Value(OwnedValue::Int(i)) => Some(f64::from(*i)),
-        _ => None,
-    };
-    match (number(xx), number(xy), number(yx), number(yy)) {
-        (Some(xx), Some(xy), Some(yx), Some(yy)) => {
-            Expr::Value(OwnedValue::Matrix(Matrix { xx, xy, yx, yy }))
-        }
-        _ => Expr::Unknown,
     }
 }
 
@@ -784,53 +855,30 @@ impl Config {
                 };
                 self.selectors.globs_mut().push(glob);
             }
-            // The value elements a <patelt> may contain, and the two that
-            // build themselves out of nested <double>/<int> children.
+            // The value elements, including the four that build themselves
+            // out of children.
             "string" | "int" | "double" | "bool" | "const" | "matrix" | "charset"
-            | "langset" => {
+            | "langset" | "range" => {
                 let Some(parent) = stack.last_mut() else { return Ok(()) };
                 match parent.name.as_str() {
-                    // <matrix> holds four <double>s, <charset> holds <int>
-                    // codepoints; both collected their children into `values`.
-                    "matrix" | "charset" => {
-                        parent.values.push(SelectorValue::parse(&frame.name, body));
+                    // A container collects its children: four numbers for a
+                    // <matrix>, codepoints and spans for a <charset>, names
+                    // for a <langset>, two numbers for a <range>.
+                    "matrix" | "charset" | "langset" | "range" => {
+                        parent.values.push(literal(&frame, body, Strictness::Poison));
                     }
+                    // A <patelt> is a selector, and a value it cannot read
+                    // has to poison it rather than be dropped.
                     "patelt" => {
-                        let value = match frame.name.as_str() {
-                            "matrix" => matrix_from(&frame.values),
-                            "charset" => charset_from(&frame.values),
-                            // A `<patelt>` compares by value, and a
-                            // selector has no language-set shape to compare
-                            // against. Left unsupported so the selector
-                            // poisons rather than matching everything.
-                            "langset" => SelectorValue::Unsupported,
-                            kind => SelectorValue::parse(kind, body),
-                        };
-                        parent.values.push(value);
+                        parent.values.push(literal(&frame, body, Strictness::Poison));
                     }
-                    // Anywhere else, the same element names are literals in
-                    // a rule expression rather than parts of a selector.
+                    // Anywhere else the same names are literals in a rule
+                    // expression, where dropping what cannot be read is
+                    // right: an edit with one unreadable value in it should
+                    // still make the rest of its change.
                     _ => {
-                        let expr = match frame.name.as_str() {
-                            "matrix" => match frame.exprs.as_slice() {
-                                [xx, xy, yx, yy] => literal_matrix(xx, xy, yx, yy),
-                                _ => Expr::Unknown,
-                            },
-                            "charset" => charset_literal(&frame.exprs),
-                            "langset" => langset_literal(&frame.exprs),
-                            kind => match SelectorValue::parse(kind, body) {
-                                SelectorValue::String(v) => {
-                                    Expr::Value(OwnedValue::String(v))
-                                }
-                                SelectorValue::Int(v) => Expr::Value(OwnedValue::Int(v)),
-                                SelectorValue::Double(v) => {
-                                    Expr::Value(OwnedValue::Double(v))
-                                }
-                                SelectorValue::Bool(v) => Expr::Value(OwnedValue::Bool(v)),
-                                _ => Expr::Unknown,
-                            },
-                        };
-                        parent.exprs.push(expr);
+                        let value = literal(&frame, body, Strictness::Salvage);
+                        parent.exprs.push(value_expr(value));
                     }
                 }
             }

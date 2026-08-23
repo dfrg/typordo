@@ -139,3 +139,63 @@ rm -rf "$victim"
 
 forced=$("$CARGO_TARGET_DIR/release/examples/fc_cache" --out "$OURS" -f)
 echo "  forced: $forced"
+
+# SOURCE_DATE_EPOCH pins the clock for a reproducible build. Fontconfig
+# clamps the recorded time down to it and drops the nanoseconds, which the
+# variable cannot express. Compare the recorded field directly, since nothing
+# prints it.
+#
+# Note what fontconfig does when the clamp actually fires -- when the epoch is
+# older than the directory. It writes the cache, then checks the cache it just
+# wrote by comparing the clamped stamp against the *unclamped* directory
+# mtime, decides it failed, and deletes it. In a real reproducible build the
+# directory mtime is already pinned, so the clamp never fires and nobody sees
+# this. We write the cache and keep it: the same clamp is applied when reading
+# it back, so it stays valid.
+echo "=== SOURCE_DATE_EPOCH ==="
+sde_dir=$(mktemp -d)
+sde_out=$(mktemp -d)
+stamp() {
+  python3 -c "import struct,sys;d=open(sys.argv[1],'rb').read();print(struct.unpack_from('<i',d,48)[0], struct.unpack_from('<q',d,56)[0])" "$1"
+}
+name=$(python3 -c "
+import hashlib,sys
+print(hashlib.md5(sys.argv[1].encode()).hexdigest() + '-le64.cache-9')" "$sde_dir")
+now=$(python3 -c "import os,sys;print(int(os.stat(sys.argv[1]).st_mtime))" "$sde_dir")
+
+for epoch in $((now - 1000)) $((now + 1000)) 4000000000 not-a-number; do
+  SOURCE_DATE_EPOCH=$epoch "$CARGO_TARGET_DIR/release/examples/fc_cache" --out "$sde_out" -f "$sde_dir" > /dev/null
+  ours=$(stamp "$sde_out/$name")
+
+  cat > /tmp/fc-sde.conf <<XML
+<?xml version="1.0"?>
+<!DOCTYPE fontconfig SYSTEM "urn:fontconfig:fonts.dtd">
+<fontconfig>
+  <dir>$sde_dir</dir>
+  <cachedir>$sde_out/theirs</cachedir>
+</fontconfig>
+XML
+  rm -rf "$sde_out/theirs"; mkdir -p "$sde_out/theirs"
+  SOURCE_DATE_EPOCH=$epoch FONTCONFIG_FILE=/tmp/fc-sde.conf fc-cache -f "$sde_dir" >/dev/null 2>&1
+  if [ ! -f "$sde_out/theirs/$name" ]; then
+    echo "  epoch=$epoch: fontconfig deleted its own cache; ours kept, stamp=$ours"
+    continue
+  fi
+  theirs=$(stamp "$sde_out/theirs/$name")
+  if [ "$ours" = "$theirs" ]; then
+    echo "  MATCH   epoch=$epoch stamp=$ours"
+  else
+    echo "  DIFF    epoch=$epoch ours=$ours theirs=$theirs"
+  fi
+done
+
+# And ours stays valid across runs when the clock is pinned, which is the
+# whole point: the same clamp is applied when the cache is read back.
+pin=$((now - 1000))
+SOURCE_DATE_EPOCH=$pin "$CARGO_TARGET_DIR/release/examples/fc_cache" --out "$sde_out" -f "$sde_dir" > /dev/null
+again=$(SOURCE_DATE_EPOCH=$pin "$CARGO_TARGET_DIR/release/examples/fc_cache" --out "$sde_out" "$sde_dir")
+case "$again" in
+  "0 directories rescanned, "*) echo "  MATCH   the pinned cache stays current: $again" ;;
+  *) echo "  DIFF    a pinned cache should not go stale: $again" ;;
+esac
+rm -rf "$sde_dir" "$sde_out"
