@@ -48,6 +48,24 @@ do not cover, so that they are read for what they are.
   compiling is all it can do. It was found by reading, which is not a process
   anyone should rely on.
 
+### Formats we cannot read
+
+- **PCF and BDF bitmap fonts.** `read-fonts` has no reader for them, so a
+  cache we build omits them while fontconfig's includes them. Not a gap this
+  crate can close on its own, and not an unusual position: Chrome ships
+  fontconfig backed by fontations and rebuilds caches the same way, ignoring
+  everything that is not OpenType or TrueType.
+- **Multiple-master Type 1.** The same, for the format OpenType variations
+  replaced. There is none in the corpus and none in Fedora, so this is
+  untested rather than known-broken.
+
+  What both have in common is how they fail. A font the scanner cannot read
+  is skipped rather than fatal -- a font directory holds READMEs and licence
+  files too -- so an unreadable font simply is not in the cache we write.
+  Nothing says so. The check that would catch it is `write_parity.sh`, which
+  compares the pattern count against fontconfig's, and it only catches it for
+  a font that is *installed here*.
+
 ### Found by the corpus, not yet fixed
 
 - **`capability` on three files, and which properties exist on twenty-one.**

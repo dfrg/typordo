@@ -69,7 +69,18 @@ Suggested fix: either a `notice()` accessor, or a general
 `header_string(key)` -- the latter would also cover `/Copyright`,
 `/Version`, and whatever the next backend needs.
 
-## 4. Type 1: `is_fixed_pitch` misses fonts that declare it
+## 4. Type 1: multiple master is not supported
+
+`read-fonts` does not read a multiple-master Type 1 font -- one carrying
+`/BlendAxisTypes`, `/WeightVector` and the rest. FreeType does, so fontconfig
+lists such a font and we would not.
+
+Untested rather than known-broken: there is no multiple-master font in the
+corpus, and none in Fedora as far as a search of the font packages goes. The
+format was discontinued by Adobe and OpenType variations replaced it. This is
+recorded because the failure is quiet -- see the note in `docs/gaps.md`.
+
+## 5. Type 1: `is_fixed_pitch` misses fonts that declare it
 
 `Type1Font::is_fixed_pitch` did not agree with fontconfig across the set; we
 fall back to scanning the raw bytes for `/isFixedPitch` alongside it. Worth
@@ -79,7 +90,7 @@ the FontInfo dict rather than where the crate looks.
 Workaround here: `font.is_fixed_pitch() || postscript_flag(data,
 b"/isFixedPitch")` in `src/scan.rs`.
 
-## 5. Instance full names use name 1 rather than name 16
+## 6. Instance full names use name 1 rather than name 16
 
 `fc-fontations/names.rs::mangle_full_name_for_named_instance` builds the
 full name from `StringId::FAMILY_NAME`. For a font that also has a
@@ -89,7 +100,7 @@ fontconfig reports as the family, so the full name stays consistent with it.
 Workaround here: `name 16 -> name 1` in the instance branch of the variable
 font scan.
 
-## 6. Name strings are not trimmed
+## 7. Name strings are not trimmed
 
 Several Noto faces pad a name record with a trailing space: NotoSerifKhmer
 reports its style as `Condensed SemiBold ` with the space. Fontconfig trims.
