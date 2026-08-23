@@ -650,15 +650,31 @@ impl<'q> Prepared<'q> {
                 let how = match object {
                     Object::Family => How::Families,
                     Object::Lang => How::Langs,
-                    Object::Charset => How::CharSets(
-                        element
+                    Object::Charset => {
+                        // Extracting up front is what makes charset scoring
+                        // cheap: the characters are walked once here rather
+                        // than out of the query's page bitmap for every font
+                        // in the set.
+                        //
+                        // It only holds if every value really is a charset.
+                        // One that is not has no characters to extract, and
+                        // an empty list reads as "wants nothing", which
+                        // scores zero -- a perfect charset match against
+                        // every font. Those go to the general comparison,
+                        // which rejects a type it cannot compare.
+                        let extracted: Option<Vec<Vec<char>>> = element
                             .values()
                             .map(|(value, _)| match value {
-                                OwnedValue::CharSet(set) => set.chars().collect(),
-                                _ => Vec::new(),
+                                OwnedValue::CharSet(set) => Some(set.chars().collect()),
+                                _ => None,
                             })
-                            .collect(),
-                    ),
+                            .collect();
+                        match (extracted, matcher(object)) {
+                            (Some(lists), _) => How::CharSets(lists),
+                            (None, Some(matcher)) => How::Values(matcher),
+                            (None, None) => How::Skip,
+                        }
+                    }
                     other => match matcher(other) {
                         Some(matcher) => How::Values(matcher),
                         None => How::Skip,

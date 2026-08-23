@@ -5,7 +5,7 @@
 //! Extra Bold 205). That is enough to exercise family matching, ranges,
 //! priority order and tie-breaking without a font system present.
 
-use fontconf::{Cache, Object, Priority, Query, Score};
+use fontconf::{Cache, Object, OwnedValue, Priority, Query, Score};
 
 fn cantarell() -> Cache {
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -404,4 +404,36 @@ fn coverage_reports_whether_a_font_contributed() {
     assert_eq!(coverage.len(), charset.len());
     assert!(coverage.contains('A'));
     assert!(!coverage.contains('\u{4e00}'));
+}
+
+/// A value under `charset` that is not a charset must not score as a match.
+///
+/// The prepared path extracts the query's characters up front, and a value
+/// of the wrong type has no characters to extract. Treating that as "wants
+/// nothing" scores it zero -- a perfect charset match against every font --
+/// where the comparison it stands in for rejects the font outright, which is
+/// what fontconfig does with any value whose type it cannot compare.
+#[test]
+fn a_charset_value_of_the_wrong_type_does_not_score_as_perfect() {
+    let cache = cantarell();
+    let font = cache.fonts().unwrap().next().expect("a font");
+
+    // A character no Latin font covers, so a real charset scores a miss.
+    let mut uncovered = fontconf::Coverage::new();
+    uncovered.insert('\u{4e00}');
+    let mut honest = Query::new();
+    honest.add(Object::Charset, OwnedValue::CharSet(uncovered));
+
+    // The same slot, holding something that is not a charset at all.
+    let mut garbage = Query::new();
+    garbage.add(Object::Charset, "not a charset");
+
+    let honest = fontconf::score(&honest, &font).map(|s| s.get(Priority::CharSet));
+    let garbage = fontconf::score(&garbage, &font).map(|s| s.get(Priority::CharSet));
+
+    // Nonsense must not outrank a real request the font genuinely fails.
+    assert!(
+        garbage.is_none() || garbage >= honest,
+        "garbage scored {garbage:?}, an honest miss scored {honest:?}"
+    );
 }
