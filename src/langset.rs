@@ -450,10 +450,10 @@ impl OwnedLangSet {
     /// A language is included when the font covers *every* codepoint of its
     /// orthography. There is no partial credit and no threshold: that one
     /// rule is the whole of `FcLangSetFromCharSet`.
-    pub fn from_coverage(coverage: &crate::charset::OwnedCharSet) -> Self {
+    pub fn from_char_set(chars: &crate::charset::OwnedCharSet) -> Self {
         let mut set = Self::new();
         for index in 0..crate::orth::len() {
-            if coverage.covers_ranges(crate::orth::orthography(index)) {
+            if chars.covers_ranges(crate::orth::orthography(index)) {
                 set.insert_index(index);
             }
         }

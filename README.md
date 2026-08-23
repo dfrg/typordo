@@ -95,6 +95,14 @@ files. Broad — CJK collections, Type 1, variable fonts, OpenType bitmaps,
 colour emoji, and a Noto face for nearly every script there is — but one
 machine, which is the honest limit on all of it.
 
+## Coming from libfontconfig
+
+[docs/fontconfig-api.md](docs/fontconfig-api.md) maps the `Fc*` API onto this
+one, function by function, including what has no equivalent and why. Two
+differences explain most of it: there is no current configuration to reach by
+passing `NULL`, and `FcPattern` is split in two by where its data lives — a
+`Query` you own and build, a `Pattern` that borrows from a cache.
+
 ## Status
 
 Everything measured agrees, with one deliberate exception. What is knowingly

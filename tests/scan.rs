@@ -128,7 +128,7 @@ fn an_empty_glyf_table_is_not_an_outline_font() {
 /// declared: fontconfig asks whether every codepoint of each language's
 /// orthography is present.
 #[test]
-fn languages_are_derived_from_coverage() {
+fn languages_are_derived_from_the_characters_covered() {
     let Some(path) = fixture_font() else { return };
     let scanned = fontconf::scan_file(&path).expect("scan");
     let cache = cached();

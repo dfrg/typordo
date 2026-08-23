@@ -140,7 +140,7 @@ fn add_coverage(coverage: OwnedCharSet, pattern: &mut Query) {
     if coverage.is_empty() {
         return;
     }
-    let langs = OwnedLangSet::from_coverage(&coverage);
+    let langs = OwnedLangSet::from_char_set(&coverage);
     pattern.add(Object::Charset, OwnedValue::CharSet(coverage));
     // Always, even when the set is empty. A font covering a script
     // fontconfig has no language for -- Adlam, and a dozen others -- gets an
