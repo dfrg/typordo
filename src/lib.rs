@@ -77,6 +77,7 @@ mod scan;
 mod value;
 pub mod weight;
 mod xml;
+mod zapf;
 
 pub use cache::{Cache, Fonts, Subdirs, MAGIC_ALLOC, MAGIC_MMAP, VERSION};
 pub use config::{Caches, Config, ConfigError, ARCHITECTURE};

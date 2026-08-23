@@ -22,7 +22,20 @@ OUT = 'src/name_langs.rs'
 # resolves aliases to a fixpoint. Resolving in one pass silently dropped 25
 # languages -- Slovenian, Sorbian, Oriya and the rest -- which then went
 # unlabelled in every font that carried them.
-DEFINE = re.compile(r'^#define\s+(TT_(?:MS|MAC)_LANGID_\w+)\s+(.+?)\s*(?:/\*.*)?$')
+DEFINE = re.compile(r'^#define\s+(TT_(?:MS|MAC)_LANGID_\w+)\s+(.+?)\s*$')
+COMMENT = re.compile(r'/\*.*?\*/')
+
+
+def clean(text):
+    """The value of a #define, with C comments and integer suffixes removed.
+
+    A comment can sit *between* the name and the value -- `/* Arabic */
+    0x0460` -- so cutting at the first `/*` leaves nothing, and hex literals
+    carry a `U` suffix that int() will not parse. Both silently produced an
+    unresolved constant rather than an error.
+    """
+    text = COMMENT.sub(' ', text).strip()
+    return re.sub(r'(?<=[0-9a-fA-F])[UuLl]+$', '', text)
 raw = {}
 with io.open(TTNAMEID, encoding='utf-8', errors='replace') as f:
     # Definitions are line-continued: the deprecated aliases put the name on
@@ -32,7 +45,7 @@ with io.open(TTNAMEID, encoding='utf-8', errors='replace') as f:
 for line in text.splitlines():
     m = DEFINE.match(line.strip())
     if m:
-        raw[m.group(1)] = m.group(2).split('/*')[0].strip()
+        raw[m.group(1)] = clean(m.group(2))
 
 values = {}
 for name, text in raw.items():

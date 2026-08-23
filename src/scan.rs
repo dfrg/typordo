@@ -307,7 +307,9 @@ fn scan_face(font: &FontRef<'_>, path: &str, index: i32) -> Vec<Query> {
         pattern.remove(Object::Index);
         pattern.add(Object::Index, (((ordinal as i32) + 1) << 16) | index);
 
-        // The instance names itself, and that name replaces the style.
+        // The instance names itself, and that name replaces the style. Its
+        // full name follows from it: an instance is a different face to the
+        // one the file's own full name describes.
         if let Some(style) = name_by_id(font, instance.subfamily) {
             pattern.remove(Object::Style);
             pattern.remove(Object::Stylelang);
@@ -315,12 +317,20 @@ fn scan_face(font: &FontRef<'_>, path: &str, index: i32) -> Vec<Query> {
             pattern.add(Object::Stylelang, "en");
             pattern.remove(Object::Slant);
             pattern.add(Object::Slant, slant(font, &pattern));
+
+            if let Some(family) = name_by_id(font, 16).or_else(|| name_by_id(font, 1)) {
+                pattern.remove(Object::Fullname);
+                pattern.remove(Object::Fullnamelang);
+                pattern.add(Object::Fullname, format!("{family} {style}").as_str());
+                pattern.add(Object::Fullnamelang, "en");
+            }
         }
         // An instance may name itself in the `name` table; most do not, and
         // the name is then built from the family's PostScript name plus the
         // instance's own, with spaces removed.
         let ps = instance
             .postscript
+            .filter(|id| *id == 6 || (256..32768).contains(id))
             .and_then(|id| name_by_id(font, id))
             .or_else(|| synthesized_postscript_name(font, instance));
         if let Some(ps) = ps {
@@ -353,8 +363,18 @@ struct Instance {
     postscript: Option<u16>,
     weight: Option<f64>,
     width: Option<f64>,
+    /// Every axis it pins, for naming.
+    axes: Vec<Axis>,
     /// Whether it pins every axis to that axis's default.
     is_default: bool,
+}
+
+/// One axis of a named instance: what it is called, where it is pinned, and
+/// where it would sit by default.
+struct Axis {
+    tag: String,
+    value: f64,
+    default: f64,
 }
 
 /// The font's named instances, or `None` if it is not variable.
@@ -375,11 +395,23 @@ fn named_instances(font: &FontRef<'_>) -> Option<Vec<Instance>> {
                 .get(i)
                 .is_some_and(|c| c.get() == axis.default_value())
         });
+        let pinned: Vec<Axis> = axes
+            .iter()
+            .enumerate()
+            .filter_map(|(i, axis)| {
+                Some(Axis {
+                    tag: axis.axis_tag().to_string(),
+                    value: instance.coordinates.get(i)?.get().to_f64(),
+                    default: axis.default_value().to_f64(),
+                })
+            })
+            .collect();
         out.push(Instance {
             subfamily: instance.subfamily_name_id.to_u16(),
             postscript: instance.post_script_name_id.map(|id| id.to_u16()),
             weight: coord(b"wght"),
             width: coord(b"wdth"),
+            axes: pinned,
             is_default,
         });
     }
@@ -408,15 +440,50 @@ fn add_variable_attributes(font: &FontRef<'_>, pattern: &mut Query) {
 
 /// The PostScript name an instance gets when it does not carry one.
 ///
-/// The family half of the font's own PostScript name, then the instance's
-/// subfamily with spaces removed: `Cantarell-Regular` and `Extra Bold` give
-/// `Cantarell-ExtraBold`.
+/// The name is a prefix and a suffix. The prefix is the font's variations
+/// name prefix, or failing that its family name, keeping only alphanumerics:
+/// `Vazirmatn NL` gives `VazirmatnNL`. The suffix is normally the instance's
+/// own subfamily name after a hyphen -- `Cantarell-ExtraBold`.
+///
+/// When the subfamily name cannot be read the axes name the instance instead:
+/// each axis that is not at its default contributes an underscore, its value,
+/// and its tag. Vazirmatn's instances are `VazirmatnNL_100wght` for exactly
+/// that reason -- its `fvar` points at name records the font does not have.
 fn synthesized_postscript_name(font: &FontRef<'_>, instance: &Instance) -> Option<String> {
-    let base = name_by_id(font, 6)?;
-    let family = base.split('-').next().unwrap_or(&base);
-    let subfamily = name_by_id(font, instance.subfamily)?;
-    let suffix: String = subfamily.chars().filter(|c| !c.is_whitespace()).collect();
-    Some(format!("{family}-{suffix}"))
+    let prefix: String = name_by_id(font, 25)
+        .or_else(|| name_by_id(font, 16))
+        .or_else(|| name_by_id(font, 1))?
+        .chars()
+        .filter(char::is_ascii_alphanumeric)
+        .collect();
+
+    if let Some(subfamily) = name_by_id(font, instance.subfamily) {
+        let suffix: String = subfamily
+            .chars()
+            .filter(char::is_ascii_alphanumeric)
+            .collect();
+        return Some(format!("{prefix}-{suffix}"));
+    }
+
+    let mut name = prefix;
+    for axis in &instance.axes {
+        if axis.value == axis.default {
+            continue;
+        }
+        name.push('_');
+        name.push_str(&format_axis_value(axis.value));
+        name.extend(axis.tag.chars().filter(char::is_ascii_alphanumeric));
+    }
+    Some(name)
+}
+
+/// An axis coordinate as the shortest decimal that represents it.
+fn format_axis_value(value: f64) -> String {
+    if value == value.trunc() {
+        format!("{value:.0}")
+    } else {
+        format!("{value}")
+    }
 }
 
 /// One name record by id, preferring a language we can name.
@@ -438,7 +505,7 @@ fn any_name(font: &FontRef<'_>, id: u16) -> Option<String> {
                 continue;
             }
             let Ok(string) = record.string(data) else { continue };
-            let text: String = string.chars().collect();
+            let text = string.chars().collect::<String>().trim().to_string();
             if !text.is_empty() {
                 return Some(text);
             }
@@ -707,7 +774,11 @@ fn collect_names(font: &FontRef<'_>, ids: &[u16]) -> Vec<(String, &'static str)>
                     continue;
                 };
                 let Ok(string) = record.string(data) else { continue };
-                let text: String = string.chars().collect();
+                // Fontconfig trims a name's surrounding whitespace. Some Noto
+                // faces pad their style with a trailing space, and an
+                // untrimmed name is a different string to every comparison
+                // that follows.
+                let text = string.chars().collect::<String>().trim().to_string();
                 // Duplicates are compared the way fontconfig compares any
                 // two names -- ignoring case and blanks -- so a font that
                 // spells the same style `kursiv` for one language and
@@ -771,17 +842,25 @@ fn scan_type1(data: &[u8], path: &str) -> Result<Vec<Query>, ScanError> {
         pattern.add(Object::Familylang, "en");
     }
     if let Some(full) = font.full_name() {
-        pattern.add(Object::Fullname, full);
-        pattern.add(Object::Fullnamelang, "en");
-        // The style is what the full name adds to the family.
-        if let Some(family) = font.family_name() {
-            if let Some(style) = full.strip_prefix(family) {
-                let style = style.trim();
-                if !style.is_empty() {
-                    pattern.add(Object::Style, style);
-                    pattern.add(Object::Stylelang, "en");
+        // The style is what the full name adds to the family. A font whose
+        // full name is exactly its family adds nothing, and is Regular -- and
+        // its full name is then reported *with* that Regular, so the full
+        // name is rebuilt from the two rather than taken as written.
+        let (full, style) = match font.family_name() {
+            Some(family) => match full.strip_prefix(family) {
+                Some(rest) if rest.trim().is_empty() => {
+                    (format!("{family} Regular"), Some("Regular".to_string()))
                 }
-            }
+                Some(rest) => (full.to_string(), Some(rest.trim().to_string())),
+                None => (full.to_string(), None),
+            },
+            None => (full.to_string(), None),
+        };
+        pattern.add(Object::Fullname, full.as_str());
+        pattern.add(Object::Fullnamelang, "en");
+        if let Some(style) = style {
+            pattern.add(Object::Style, style.as_str());
+            pattern.add(Object::Stylelang, "en");
         }
     }
     if let Some(name) = font.name() {
@@ -790,10 +869,16 @@ fn scan_type1(data: &[u8], path: &str) -> Result<Vec<Query>, ScanError> {
 
     pattern.add(Object::Foundry, notice_foundry(data).unwrap_or("unknown"));
     // A Type 1 font has no cmap. Its coverage comes from glyph names mapped
-    // through the Adobe Glyph List, which `unicode_charmap` does for us.
+    // through the Adobe Glyph List, which `unicode_charmap` does for us --
+    // except for the dingbats, whose names have a list of their own.
     let mut coverage = Coverage::new();
     for (code, _) in font.unicode_charmap().iter() {
         if let Some(c) = char::from_u32(code) {
+            coverage.insert(c);
+        }
+    }
+    for (_, name) in font.glyph_names() {
+        if let Some(c) = crate::zapf::codepoint(name).and_then(char::from_u32) {
             coverage.insert(c);
         }
     }
