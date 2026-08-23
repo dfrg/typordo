@@ -69,6 +69,8 @@ mod pattern;
 mod prepare;
 mod query;
 mod rules;
+#[cfg(feature = "scan")]
+mod scan;
 mod value;
 pub mod weight;
 mod xml;
@@ -84,6 +86,8 @@ pub use object::Object;
 pub use pattern::{Bindings, Element, Elements, Pattern, Values};
 pub use prepare::render_prepare;
 pub use query::{default_langs, OwnedValue, Property, Query};
+#[cfg(feature = "scan")]
+pub use scan::{scan_bytes, scan_file, ScanError};
 pub use rules::{
     BinaryOp, Compare, Edit, EditMode, Expr, MatchKind, Qual, Rule, Step, Test, UnaryOp,
 };

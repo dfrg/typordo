@@ -4,3 +4,11 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+# Reading and matching need nothing at all. Scanning a font file needs to
+# parse one, and that is the only reason this list is not empty.
+read-fonts = { version = "0.43", optional = true }
+
+[features]
+default = ["scan"]
+# Building cache entries from font files, rather than only reading them.
+scan = ["dep:read-fonts"]
