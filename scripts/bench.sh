@@ -97,6 +97,7 @@ row load 1 outer
 echo
 echo "in process, after loading once"
 row list 20
+row prepare 500
 row match 500
 row sort 200
 

@@ -21,6 +21,8 @@
 //! configuration that remaps font paths will not find its caches.
 
 use std::collections::{HashMap, HashSet, VecDeque};
+
+use crate::fnv::BuildFnv;
 use std::path::{Path, PathBuf};
 
 use crate::cache::Cache;
@@ -890,7 +892,7 @@ impl Config {
         Caches {
             config: self,
             pending: self.font_dirs().filter_map(path_to_string).collect(),
-            seen: HashSet::new(),
+            seen: HashSet::default(),
         }
     }
 
@@ -1266,7 +1268,7 @@ impl Config {
 pub struct Caches<'a> {
     config: &'a Config,
     pending: VecDeque<String>,
-    seen: HashSet<String>,
+    seen: HashSet<String, BuildFnv>,
 }
 
 impl Iterator for Caches<'_> {

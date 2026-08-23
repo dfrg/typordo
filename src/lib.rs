@@ -96,6 +96,7 @@ pub mod casefold;
 mod charset;
 mod config;
 mod error;
+mod fnv;
 mod glob;
 pub mod langs;
 mod langset;

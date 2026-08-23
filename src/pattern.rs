@@ -83,6 +83,20 @@ impl<'a> Pattern<'a> {
     fn element_at(&self, index: usize) -> Element<'a> {
         Element { data: self.data, at: self.elts + index * L.elt }
     }
+
+    /// The object id of the element at `index`.
+    ///
+    /// The merge join in scoring asks this for most of a font's properties
+    /// and then moves on, so it reads the one field rather than building a
+    /// cursor to read it through.
+    pub(crate) fn element_id(&self, index: usize) -> i32 {
+        self.data.i32(self.elts + index * L.elt).unwrap_or(0)
+    }
+
+    /// The values held against the element at `index`.
+    pub(crate) fn element_values(&self, index: usize) -> Values<'a> {
+        self.element_at(index).values()
+    }
 }
 
 impl std::fmt::Debug for Pattern<'_> {

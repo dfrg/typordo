@@ -136,6 +136,20 @@ fn run(op: &str, iterations: u32) -> Result<u64, Box<dyn std::error::Error>> {
             Ok(n)
         }
 
+        // Preparing a query and nothing else: parsing the name, running the
+        // configuration over it, and applying the defaults. Both libraries
+        // do this before they can match, so `match` includes it; this says
+        // how much of that number it is.
+        "prepare" => {
+            let (config, _caches) = loaded()?;
+            let mut n = 0u64;
+            for i in 0..iterations {
+                let query = prepared(&config, QUERIES[i as usize % QUERIES.len()]);
+                n += query.len() as u64;
+            }
+            Ok(n)
+        }
+
         // One query, repeated, so the cost of each kind can be seen apart.
         // Set QUERY to choose it.
         "matchq" => {

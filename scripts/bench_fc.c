@@ -131,7 +131,17 @@ main (int argc, char **argv)
 		return 1;
 	}
 
-	if (!strcmp (op, "list")) {
+	if (!strcmp (op, "prepare")) {
+		/* Parsing, substitution and defaults: what both libraries do
+		 * before a match can start. */
+		start = now_ns ();
+		for (long i = 0; i < iterations; i++) {
+			FcPattern *p = prepared (config, QUERIES[i % NQUERIES]);
+			checksum += string_len (p, FC_FAMILY);
+			FcPatternDestroy (p);
+		}
+		elapsed = now_ns () - start;
+	} else if (!strcmp (op, "list")) {
 		start = now_ns ();
 		for (long i = 0; i < iterations; i++) {
 			FcPattern   *pat = FcPatternCreate ();
