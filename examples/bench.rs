@@ -1,0 +1,189 @@
+//! Time the operations fontconfig also does, for comparison with it.
+//!
+//! Paired with `scripts/bench_fc.c`, which links libfontconfig and runs the
+//! same operations, and driven by `scripts/bench.sh`.
+//!
+//! ```text
+//! cargo run --release --example bench -- load 1
+//! cargo run --release --example bench -- match 200
+//! ```
+//!
+//! # Two kinds of measurement
+//!
+//! `noop`, `config` and `load` are done **once per process**, because
+//! fontconfig keeps every cache it has read in a process-wide table: asking
+//! it to load them twice measures its memoisation against our real work. The
+//! driver runs the whole binary many times instead and subtracts `noop`,
+//! which is process start and dynamic linking.
+//!
+//! `list`, `match` and `sort` loop **inside** one process after loading once,
+//! which is what both libraries actually do.
+
+use std::time::Instant;
+
+use fontconf::{best, sort as sort_fonts, Config, Object, Pattern, Query};
+
+/// The queries the match and sort benchmarks run, cycled through.
+///
+/// A mix on purpose: a family that exists, one that does not, a generic that
+/// configuration has to expand, and a language request, because they take
+/// very different paths through scoring.
+const QUERIES: [&str; 8] = [
+    "DejaVu Sans",
+    "sans-serif",
+    "serif:weight=200",
+    "monospace",
+    "NoSuchFamilyAnywhere",
+    ":lang=ja",
+    ":lang=en:weight=200:slant=100",
+    "Noto Sans:lang=ar",
+];
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let mut args = std::env::args().skip(1);
+    let op = args.next().unwrap_or_else(|| "noop".to_string());
+    let iterations: u32 = args.next().unwrap_or_else(|| "1".into()).parse()?;
+
+    let start = Instant::now();
+    let checksum = run(&op, iterations)?;
+    let elapsed = start.elapsed();
+
+    // The checksum exists to stop the optimiser deleting the work; printing
+    // it also catches a benchmark that quietly stopped doing anything.
+    println!("{op} {iterations} {} {checksum}", elapsed.as_nanos());
+    Ok(())
+}
+
+fn run(op: &str, iterations: u32) -> Result<u64, Box<dyn std::error::Error>> {
+    match op {
+        // Process start and dynamic linking, and nothing else.
+        "noop" => Ok(0),
+
+        // Parsing the configuration: 51 XML files here.
+        "config" => {
+            let config = Config::load()?;
+            Ok(config.files().len() as u64)
+        }
+
+        // Configuration, then every cache, validated. This is the number a
+        // program pays before it can answer anything.
+        "load" => {
+            let config = Config::load()?;
+            let mut fonts = 0u64;
+            for (_, cache) in config.caches() {
+                cache.validate()?;
+                fonts += cache.fonts()?.count() as u64;
+            }
+            Ok(fonts)
+        }
+
+        // Walking every font and touching three properties, which forces the
+        // strings to be resolved rather than just counted.
+        //
+        // The duplicates are dropped, because `FcFontList` drops them: it
+        // returns one entry per distinct combination of the properties asked
+        // for, which is why `fc-list` prints 795 lines for 819 patterns.
+        // Without this the two sides would be listing different things.
+        "list" => {
+            let (config, caches) = loaded()?;
+            let mut n = 0u64;
+            for _ in 0..iterations {
+                let mut seen = std::collections::HashSet::new();
+                for (_, cache) in &caches {
+                    for font in cache.fonts()? {
+                        if !config.accepts(&font) {
+                            continue;
+                        }
+                        let key = (
+                            font.string(Object::Family).unwrap_or(""),
+                            font.string(Object::File).unwrap_or(""),
+                            font.string(Object::Style).unwrap_or(""),
+                        );
+                        if !seen.insert(key) {
+                            continue;
+                        }
+                        n += (key.0.len() + key.1.len() + key.2.len()) as u64;
+                    }
+                }
+            }
+            Ok(n)
+        }
+
+        // One best-match per iteration, over the whole font set.
+        "match" => {
+            let (config, caches) = loaded()?;
+            let fonts = fonts(&config, &caches)?;
+            let mut n = 0u64;
+            for i in 0..iterations {
+                let query = prepared(&config, QUERIES[i as usize % QUERIES.len()]);
+                if let Some((font, _score)) = best(&query, fonts.iter().copied()) {
+                    n += font.string(Object::File).map_or(0, |s| s.len()) as u64;
+                }
+            }
+            Ok(n)
+        }
+
+        // A full fallback list per iteration, which is the expensive one: it
+        // scores every font and then trims by what each one adds.
+        "sort" => {
+            let (config, caches) = loaded()?;
+            let fonts = fonts(&config, &caches)?;
+            let mut n = 0u64;
+            for i in 0..iterations {
+                let query = prepared(&config, QUERIES[i as usize % QUERIES.len()]);
+                n += sort_fonts(&query, fonts.iter().copied(), true).len() as u64;
+            }
+            Ok(n)
+        }
+
+        other => Err(format!("unknown operation {other}").into()),
+    }
+}
+
+/// Configuration and every cache, loaded once.
+fn loaded() -> Result<(Config, Vec<(String, fontconf::Cache)>), Box<dyn std::error::Error>> {
+    let config = Config::load()?;
+    let caches: Vec<_> = config.caches().collect();
+    Ok((config, caches))
+}
+
+/// Every font the configuration accepts, as borrowed patterns.
+fn fonts<'a>(
+    config: &Config,
+    caches: &'a [(String, fontconf::Cache)],
+) -> Result<Vec<Pattern<'a>>, Box<dyn std::error::Error>> {
+    Ok(caches
+        .iter()
+        .filter_map(|(_, cache)| cache.fonts().ok())
+        .flatten()
+        .filter(|font| config.accepts(font))
+        .collect())
+}
+
+/// A query with configuration and defaults applied, as matching expects.
+fn prepared(config: &Config, name: &str) -> Query {
+    let mut query = Query::new();
+    parse(&mut query, name);
+    config.substitute(&mut query);
+    query.default_substitute();
+    query
+}
+
+/// Enough of `FcNameParse` for the benchmark queries: a family, then
+/// `:key=value` terms.
+fn parse(query: &mut Query, name: &str) {
+    let mut parts = name.split(':');
+    if let Some(family) = parts.next() {
+        if !family.is_empty() {
+            query.add(Object::Family, family);
+        }
+    }
+    for term in parts {
+        let Some((key, value)) = term.split_once('=') else { continue };
+        let Some(object) = Object::from_name(key) else { continue };
+        match value.parse::<i32>() {
+            Ok(number) => query.add(object, number),
+            Err(_) => query.add(object, value),
+        };
+    }
+}
