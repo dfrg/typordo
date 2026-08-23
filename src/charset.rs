@@ -14,7 +14,7 @@ const LEAVES: usize = 8;
 const NUMBERS: usize = 16;
 
 /// A leaf covers 256 codepoints as eight 32-bit words.
-const LEAF_WORDS: usize = 8;
+pub(crate) const LEAF_WORDS: usize = 8;
 const LEAF_BYTES: usize = LEAF_WORDS * 4;
 /// Codepoints per page.
 pub(crate) const PAGE: u32 = 256;
@@ -293,6 +293,52 @@ impl Coverage {
         self.len() == 0
     }
 
+    /// Everything in either set.
+    pub fn union(&self, other: &Self) -> Self {
+        let mut out = self.clone();
+        for (page, leaf) in &other.pages {
+            let slot = out.pages.entry(*page).or_insert([0; LEAF_WORDS]);
+            for (word, bits) in slot.iter_mut().zip(leaf.iter()) {
+                *word |= bits;
+            }
+        }
+        out
+    }
+
+    /// Everything in this set that is not in `other`.
+    ///
+    /// A page that empties out is dropped rather than kept as zeroes: the
+    /// serialized form counts pages, so an empty leaf would be a difference
+    /// that no character accounts for.
+    pub fn subtract(&self, other: &Self) -> Self {
+        let mut out = Self::new();
+        for (page, leaf) in &self.pages {
+            let mut result = *leaf;
+            if let Some(mask) = other.pages.get(page) {
+                for (word, bits) in result.iter_mut().zip(mask.iter()) {
+                    *word &= !bits;
+                }
+            }
+            if result.iter().any(|word| *word != 0) {
+                out.pages.insert(*page, result);
+            }
+        }
+        out
+    }
+
+    /// The pages of coverage in the order a cache stores them, ascending.
+    ///
+    /// Pages live in a hash map while a set is being built, because scanning
+    /// touches them in whatever order the font's cmap runs; the cache wants
+    /// them sorted, and the binary search in [`CharSet::contains`] depends on
+    /// it.
+    pub(crate) fn leaves(&self) -> Vec<(u16, [u32; LEAF_WORDS])> {
+        let mut leaves: Vec<(u16, [u32; LEAF_WORDS])> =
+            self.pages.iter().map(|(page, leaf)| (*page, *leaf)).collect();
+        leaves.sort_unstable_by_key(|(page, _)| *page);
+        leaves
+    }
+
     /// Add one character.
     pub fn insert(&mut self, c: char) {
         let page = (c as u32 / PAGE) as u16;
@@ -437,5 +483,60 @@ impl std::fmt::Display for Chars<'_> {
             }
         }
         Ok(())
+    }
+}
+
+/// Set arithmetic on the owned form.
+#[cfg(test)]
+mod set_tests {
+    use super::Coverage;
+
+    fn coverage(chars: &str) -> Coverage {
+        let mut set = Coverage::new();
+        for c in chars.chars() {
+            set.insert(c);
+        }
+        set
+    }
+
+    #[test]
+    fn union_takes_everything_from_both() {
+        let joined = coverage("abc").union(&coverage("cde"));
+        assert_eq!(joined.chars().collect::<String>(), "abcde");
+    }
+
+    #[test]
+    fn subtract_takes_only_what_the_other_has() {
+        let left = coverage("abcde").subtract(&coverage("bd"));
+        assert_eq!(left.chars().collect::<String>(), "ace");
+    }
+
+    /// A page that empties out is dropped, not kept as zeroes: the
+    /// serialized form counts pages, so an all-zero leaf would be a
+    /// difference no character accounts for.
+    #[test]
+    fn an_emptied_page_is_dropped() {
+        let latin = coverage("abc");
+        let han = coverage("\u{4e00}");
+        let both = latin.union(&han);
+        assert_eq!(both.subtract(&han), latin);
+        assert_eq!(both.subtract(&han).len(), 3);
+    }
+
+    #[test]
+    fn union_spans_pages() {
+        let joined = coverage("a").union(&coverage("\u{4e00}\u{10000}"));
+        assert_eq!(joined.len(), 3);
+        assert!(joined.contains('\u{10000}'));
+    }
+
+    #[test]
+    fn neither_operation_changes_its_operands() {
+        let a = coverage("abc");
+        let b = coverage("bcd");
+        a.union(&b);
+        a.subtract(&b);
+        assert_eq!(a.chars().collect::<String>(), "abc");
+        assert_eq!(b.chars().collect::<String>(), "bcd");
     }
 }

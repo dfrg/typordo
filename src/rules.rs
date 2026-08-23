@@ -580,14 +580,30 @@ fn apply_binary(op: BinaryOp, a: &OwnedValue, b: &OwnedValue) -> Option<OwnedVal
         B::MoreEq => OwnedValue::Bool(compare(a, Compare::MoreEq, b)),
         B::Contains => OwnedValue::Bool(compare(a, Compare::Contains, b)),
         B::NotContains => OwnedValue::Bool(compare(a, Compare::NotContains, b)),
-        // Plus concatenates strings, and adds everything else.
+        // Plus concatenates strings, unions sets, and adds everything else.
         B::Plus => match (a, b) {
             (OwnedValue::String(a), OwnedValue::String(b)) => {
                 OwnedValue::String(format!("{a}{b}"))
             }
+            (OwnedValue::LangSet(a), OwnedValue::LangSet(b)) => {
+                OwnedValue::LangSet(a.union(b))
+            }
+            (OwnedValue::CharSet(a), OwnedValue::CharSet(b)) => {
+                OwnedValue::CharSet(a.union(b))
+            }
             _ => number_result(as_number(a)? + as_number(b)?, both_int(a, b)),
         },
-        B::Minus => number_result(as_number(a)? - as_number(b)?, both_int(a, b)),
+        // Minus subtracts sets as well as numbers, which is how a config
+        // takes a language away from a font that only appears to have it.
+        B::Minus => match (a, b) {
+            (OwnedValue::LangSet(a), OwnedValue::LangSet(b)) => {
+                OwnedValue::LangSet(a.subtract(b))
+            }
+            (OwnedValue::CharSet(a), OwnedValue::CharSet(b)) => {
+                OwnedValue::CharSet(a.subtract(b))
+            }
+            _ => number_result(as_number(a)? - as_number(b)?, both_int(a, b)),
+        },
         B::Times => number_result(as_number(a)? * as_number(b)?, both_int(a, b)),
         B::Divide => {
             let divisor = as_number(b)?;

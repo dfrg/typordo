@@ -220,6 +220,50 @@ fn matrix_from(values: &[SelectorValue]) -> SelectorValue {
 }
 
 /// Build a `<charset>` from the `<int>` codepoints it collected.
+/// A `<langset>` literal, from the `<string>` languages inside it.
+///
+/// Names outside fontconfig's language list go into an `extra` set there and
+/// are dropped here. That is exact for subtraction -- a font's own language
+/// set is a bitmap over the same list, so it can never hold one -- and loses
+/// them on union, which no configuration in the wild does.
+fn langset_literal(exprs: &[Expr]) -> Expr {
+    let mut set = crate::langset::Langs::new();
+    let mut named = false;
+    for expr in exprs {
+        let Expr::Value(OwnedValue::String(name)) = expr else { continue };
+        named = true;
+        if let Some(index) = crate::langs::index_of(&name.to_lowercase()) {
+            set.insert_index(index);
+        }
+    }
+    if named {
+        Expr::Value(OwnedValue::LangSet(set))
+    } else {
+        Expr::Unknown
+    }
+}
+
+/// A `<charset>` literal, from the `<int>` codepoints inside it.
+///
+/// Fontconfig also accepts `<range>` here; nothing in this parser produces a
+/// range value yet, so such a child is skipped rather than misread.
+fn charset_literal(exprs: &[Expr]) -> Expr {
+    let mut coverage = crate::charset::Coverage::new();
+    let mut named = false;
+    for expr in exprs {
+        let Expr::Value(OwnedValue::Int(value)) = expr else { continue };
+        named = true;
+        if let Some(c) = u32::try_from(*value).ok().and_then(char::from_u32) {
+            coverage.insert(c);
+        }
+    }
+    if named {
+        Expr::Value(OwnedValue::CharSet(coverage))
+    } else {
+        Expr::Unknown
+    }
+}
+
 fn charset_from(values: &[SelectorValue]) -> SelectorValue {
     let mut chars = Vec::with_capacity(values.len());
     for value in values {
@@ -755,8 +799,10 @@ impl Config {
                         let value = match frame.name.as_str() {
                             "matrix" => matrix_from(&frame.values),
                             "charset" => charset_from(&frame.values),
-                            // A langset selector needs fontconfig's language
-                            // table, which is not embedded yet.
+                            // A `<patelt>` compares by value, and a
+                            // selector has no language-set shape to compare
+                            // against. Left unsupported so the selector
+                            // poisons rather than matching everything.
                             "langset" => SelectorValue::Unsupported,
                             kind => SelectorValue::parse(kind, body),
                         };
@@ -770,9 +816,8 @@ impl Config {
                                 [xx, xy, yx, yy] => literal_matrix(xx, xy, yx, yy),
                                 _ => Expr::Unknown,
                             },
-                            // A charset or langset literal in a rule needs a
-                            // representation a query cannot hold yet.
-                            "charset" | "langset" => Expr::Unknown,
+                            "charset" => charset_literal(&frame.exprs),
+                            "langset" => langset_literal(&frame.exprs),
                             kind => match SelectorValue::parse(kind, body) {
                                 SelectorValue::String(v) => {
                                     Expr::Value(OwnedValue::String(v))

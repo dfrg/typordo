@@ -55,6 +55,27 @@ impl OwnedValue {
     }
 }
 
+impl OwnedValue {
+    /// Copy a borrowed value, so it outlives the cache it came from.
+    pub fn from_value(value: &Value<'_>) -> Self {
+        match value {
+            Value::Void => Self::Void,
+            Value::Int(i) => Self::Int(*i),
+            Value::Double(d) => Self::Double(*d),
+            Value::String(s) => Self::String(s.to_string()),
+            Value::Bool(b) => Self::Bool(*b),
+            Value::Matrix(m) => Self::Matrix(*m),
+            Value::Range(r) => Self::Range(*r),
+            Value::CharSet(c) => {
+                let mut coverage = Coverage::new();
+                coverage.merge_chars(c);
+                Self::CharSet(coverage)
+            }
+            Value::LangSet(l) => Self::LangSet(Langs::from_languages(l)),
+        }
+    }
+}
+
 impl From<i32> for OwnedValue {
     fn from(v: i32) -> Self {
         Self::Int(v)
@@ -251,6 +272,27 @@ impl Query {
     /// Whether the query carries no properties.
     pub fn is_empty(&self) -> bool {
         self.elements.is_empty()
+    }
+
+    /// Copy a pattern out of a cache, so it can be edited or written back.
+    ///
+    /// The reverse of writing one: [`Pattern`](crate::Pattern) borrows from a
+    /// cache file and cannot outlive it, and this is how you take one with
+    /// you. It copies -- strings, coverage and all -- which is exactly what
+    /// the borrowed form exists to avoid, so do it deliberately.
+    ///
+    /// Properties the cache identifies only by a runtime id are skipped:
+    /// those ids were minted by whichever process wrote the file and mean
+    /// nothing here.
+    pub fn from_pattern(pattern: &crate::Pattern<'_>) -> Self {
+        let mut query = Self::new();
+        for element in pattern.elements() {
+            let Some(object) = element.object() else { continue };
+            for (value, binding) in element.values().bindings() {
+                query.add_with_binding(object, OwnedValue::from_value(&value), binding);
+            }
+        }
+        query
     }
 
     fn position(&self, object: Object) -> Result<usize, usize> {

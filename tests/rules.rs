@@ -35,8 +35,10 @@ fn with_family(name: &str) -> Query {
 #[test]
 fn the_fixture_parses_into_rules() {
     let config = config();
-    assert_eq!(config.rules().len(), 7, "{:?}", config.rules().len());
-    assert!(config.rules().iter().all(|r| r.kind == MatchKind::Pattern));
+    assert_eq!(config.rules().len(), 9, "{:?}", config.rules().len());
+    let scan = config.rules().iter().filter(|r| r.kind == MatchKind::Scan).count();
+    assert_eq!(scan, 2);
+    assert_eq!(config.rules().len() - scan, 7);
 }
 
 /// `<prefer>` goes in front of the matched family and `<default>` after it,
@@ -271,4 +273,64 @@ fn a_bare_name_reads_the_pattern_being_edited() {
         Property::Custom("pixelsizefixupfactor".into())
     );
     assert_eq!(Property::parse("family"), Property::Known(Object::Family));
+}
+
+/// The languages a font is left with after the scan rules run.
+fn scanned_langs(config: &Config, family: &str, langs: &[&str]) -> Vec<String> {
+    let mut set = fontconf::Langs::new();
+    for lang in langs {
+        set.insert_index(fontconf::langs::index_of(lang).expect(lang));
+    }
+    let mut font = Query::new();
+    font.add(Object::Family, family);
+    font.add(Object::Lang, OwnedValue::LangSet(set));
+    config.substitute_kind(&mut font, MatchKind::Scan, None);
+    match font.value(Object::Lang) {
+        Some(OwnedValue::LangSet(set)) => set.langs().map(str::to_string).collect(),
+        other => panic!("lang became {other:?}"),
+    }
+}
+
+/// A `target="scan"` rule can subtract a language set, which is how a config
+/// takes Devanagari away from a font that covers the codepoints and renders
+/// none of the conjuncts.
+#[test]
+fn a_scan_rule_subtracts_languages() {
+    let config = config();
+    let left = scanned_langs(&config, "Overclaims", &["en", "hi", "mr", "ja"]);
+    assert_eq!(left, ["en", "ja"]);
+}
+
+/// A name fontconfig does not know goes into a set this crate cannot hold.
+/// Dropping it must not drop the whole edit: the rest of the subtraction
+/// still has to happen.
+#[test]
+fn an_unknown_language_does_not_void_the_edit() {
+    let config = config();
+    let left = scanned_langs(&config, "Overclaims", &["hi"]);
+    assert!(left.is_empty(), "expected nothing left, got {left:?}");
+}
+
+#[test]
+fn a_scan_rule_unions_languages() {
+    let config = config();
+    let left = scanned_langs(&config, "Underclaims", &["en"]);
+    assert_eq!(left, ["en", "ja"]);
+}
+
+/// Scan rules are a different target: nothing should happen to a pattern
+/// being matched.
+#[test]
+fn scan_rules_do_not_run_at_match_time() {
+    let config = config();
+    let mut set = fontconf::Langs::new();
+    set.insert_index(fontconf::langs::index_of("hi").unwrap());
+    let mut query = Query::new();
+    query.add(Object::Family, "Overclaims");
+    query.add(Object::Lang, OwnedValue::LangSet(set));
+    config.substitute(&mut query);
+    match query.value(Object::Lang) {
+        Some(OwnedValue::LangSet(set)) => assert!(set.langs().any(|l| l == "hi")),
+        other => panic!("lang became {other:?}"),
+    }
 }

@@ -238,6 +238,49 @@ impl std::fmt::Display for LangSet<'_> {
     }
 }
 
+/// Set arithmetic, which is what a `target="scan"` rule does to a font.
+#[cfg(test)]
+mod set_tests {
+    use super::Langs;
+    use crate::langs;
+
+    fn langs(names: &[&str]) -> Langs {
+        let mut set = Langs::new();
+        for name in names {
+            set.insert_index(langs::index_of(name).expect(name));
+        }
+        set
+    }
+
+    #[test]
+    fn union_takes_everything_from_both() {
+        let joined = langs(&["en", "ja"]).union(&langs(&["ja", "ru"]));
+        assert_eq!(joined.langs().collect::<Vec<_>>(), ["en", "ja", "ru"]);
+    }
+
+    #[test]
+    fn subtract_takes_only_what_the_other_has() {
+        let left = langs(&["en", "hi", "ja"]).subtract(&langs(&["hi", "ru"]));
+        assert_eq!(left.langs().collect::<Vec<_>>(), ["en", "ja"]);
+    }
+
+    #[test]
+    fn subtracting_everything_leaves_nothing() {
+        let set = langs(&["en", "ja"]);
+        assert!(set.subtract(&set).is_empty());
+    }
+
+    #[test]
+    fn neither_operation_changes_its_operands() {
+        let a = langs(&["en"]);
+        let b = langs(&["ja"]);
+        a.union(&b);
+        a.subtract(&b);
+        assert_eq!(a.langs().collect::<Vec<_>>(), ["en"]);
+        assert_eq!(b.langs().collect::<Vec<_>>(), ["ja"]);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{compare_lang, LangResult};
@@ -330,6 +373,45 @@ impl Langs {
     /// Every language in the set, in bit order.
     pub fn langs(&self) -> impl Iterator<Item = &'static str> + '_ {
         (0..LANGS.len()).filter(|i| self.contains_index(*i)).map(|i| LANGS[i])
+    }
+
+    /// Every language in the set, however it is stored.
+    pub fn from_languages(languages: &Languages<'_>) -> Self {
+        let mut set = Self::new();
+        for index in 0..LANGS.len() {
+            if languages.contains_index(index) {
+                set.insert_index(index);
+            }
+        }
+        set
+    }
+
+    /// Everything in either set.
+    pub fn union(&self, other: &Self) -> Self {
+        let mut out = self.clone();
+        for (word, bits) in out.bits.iter_mut().zip(other.bits.iter()) {
+            *word |= bits;
+        }
+        out
+    }
+
+    /// Everything in this set that is not in `other`.
+    ///
+    /// This is what a `target="scan"` rule uses to take a language away from
+    /// a font that covers its characters without really supporting it: the
+    /// GNU FreeFont faces claim every Devanagari codepoint and render none of
+    /// the conjuncts, so the config subtracts `hi`, `mr`, `sa` and the rest.
+    pub fn subtract(&self, other: &Self) -> Self {
+        let mut out = self.clone();
+        for (word, bits) in out.bits.iter_mut().zip(other.bits.iter()) {
+            *word &= !bits;
+        }
+        out
+    }
+
+    /// The raw bitmap, as the cache stores it.
+    pub(crate) fn words(&self) -> &[u32; langs::MAP_WORDS] {
+        &self.bits
     }
 
     /// How many languages the set holds.

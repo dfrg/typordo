@@ -75,6 +75,7 @@ mod rules;
 #[cfg(feature = "scan")]
 mod scan;
 mod value;
+mod write;
 pub mod weight;
 mod xml;
 mod zapf;
@@ -97,3 +98,4 @@ pub use rules::{
 };
 pub use langset::{LangResult, LangSet, Langs, Languages};
 pub use value::{Binding, Matrix, Range, Value};
+pub use write::CacheWriter;
