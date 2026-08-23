@@ -387,22 +387,22 @@ impl Rule {
     ) -> bool {
         // Where a test matched, per property, so a following edit knows which
         // value to replace or insert beside.
-        let mut marks: Vec<(Property, Option<usize>)> = Vec::new();
+        let mut marks: Vec<(&Property, Option<usize>)> = Vec::new();
         let mut edited = false;
 
         for step in &self.steps {
             match step {
                 Step::Test(test) => match test.evaluate(query, pattern, families) {
                     Some(position) => {
-                        if !marks.iter().any(|(o, _)| *o == test.object) {
-                            marks.push((test.object.clone(), position));
+                        if !marks.iter().any(|(o, _)| **o == test.object) {
+                            marks.push((&test.object, position));
                         }
                     }
                     None => return edited,
                 },
                 Step::Edit(edit) => {
                     let mark =
-                        marks.iter().find(|(o, _)| *o == edit.object).and_then(|(_, at)| *at);
+                        marks.iter().find(|(o, _)| **o == edit.object).and_then(|(_, at)| *at);
                     edit.apply(query, pattern, mark, families);
                     edited = true;
                     // A replaced value invalidates the position we recorded.
@@ -410,7 +410,7 @@ impl Rule {
                         edit.mode,
                         EditMode::AssignReplace | EditMode::Delete | EditMode::DeleteAll
                     ) {
-                        marks.retain(|(o, _)| *o != edit.object);
+                        marks.retain(|(o, _)| **o != edit.object);
                     }
                 }
             }
@@ -438,7 +438,17 @@ impl Test {
             (MatchKind::Pattern, Some(pattern)) => pattern,
             _ => query,
         };
-        let wanted = self.expr.values(query, pattern);
+        // A test only reads what it compares against, and the overwhelmingly
+        // common expression is a bare literal that the rule already owns.
+        // Borrowing it saves a Vec and a String copy per test.
+        let computed;
+        let wanted: &[OwnedValue] = match &self.expr {
+            Expr::Value(value) => std::slice::from_ref(value),
+            other => {
+                computed = other.values(query, pattern);
+                &computed
+            }
+        };
         if wanted.is_empty() {
             return None;
         }
@@ -793,6 +803,15 @@ fn matrix_eq(a: &Matrix, b: &Matrix) -> bool {
 
 /// Substring search that ignores case, the way `FcStrStrIgnoreCase` does.
 fn contains_folded(haystack: &str, needle: &str) -> bool {
+    // ASCII folds byte for byte, so the usual case searches in place. Both
+    // sides have to be ASCII, not either: folding can expand, and U+00DF
+    // folds to "ss", which really is inside "strasse".
+    if haystack.is_ascii() && needle.is_ascii() {
+        let (hay, pin) = (haystack.as_bytes(), needle.as_bytes());
+        return pin.is_empty()
+            || (pin.len() <= hay.len()
+                && hay.windows(pin.len()).any(|w| w.eq_ignore_ascii_case(pin)));
+    }
     let fold = |s: &str| casefold::fold_str(s).collect::<String>();
     fold(haystack).contains(&fold(needle))
 }
