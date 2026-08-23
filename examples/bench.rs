@@ -140,8 +140,11 @@ fn run(op: &str, iterations: u32) -> Result<u64, Box<dyn std::error::Error>> {
     }
 }
 
+/// Everything a program holds once it can answer questions.
+type Loaded = (Config, Vec<(String, fontconf::Cache)>);
+
 /// Configuration and every cache, loaded once.
-fn loaded() -> Result<(Config, Vec<(String, fontconf::Cache)>), Box<dyn std::error::Error>> {
+fn loaded() -> Result<Loaded, Box<dyn std::error::Error>> {
     let config = Config::load()?;
     let caches: Vec<_> = config.caches().collect();
     Ok((config, caches))
