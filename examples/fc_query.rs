@@ -20,8 +20,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             other => files.push(other.to_string()),
         }
     }
-    let field = Object::from_name(&format)
-        .ok_or_else(|| format!("unknown property {format}"))?;
+    // `properties` asks which properties a pattern has rather than what one
+    // of them says. An element that exists with an empty value prints the
+    // same as one that is absent, and the two score differently, so the only
+    // way to compare them is to compare the names.
+    let field = if format == "properties" {
+        None
+    } else {
+        Some(
+            Object::from_name(&format)
+                .ok_or_else(|| format!("unknown property {format}"))?,
+        )
+    };
 
     if batch {
         use std::io::BufRead;
@@ -61,7 +71,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-fn show(pattern: &Query, field: Object) -> String {
+fn show(pattern: &Query, field: Option<Object>) -> String {
+    let Some(field) = field else {
+        // The property names, in the order the pattern holds them.
+        return pattern
+            .elements()
+            .map(|element| element.object().name().to_string())
+            .collect::<Vec<_>>()
+            .join(",");
+    };
     let Some(element) = pattern.get(field) else {
         return String::new();
     };

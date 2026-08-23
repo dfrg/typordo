@@ -22,16 +22,48 @@ echo "files: $(wc -l < $FILES)"
 
 FIELDS="${*:-file index fontwrapper fontformat outline color scalable fonthashint
         foundry order fontversion weight width slant spacing family style
-        fullname postscriptname charset lang}"
+        fullname postscriptname charset lang decorative symbol capability
+        namedinstance variable properties}"
+
+# fc-query prints one block per face, each property on its own line.
+NAMES=/tmp/scan-names.py
+cat > $NAMES <<'PY'
+import re, sys
+names = []
+for line in sys.stdin:
+    if line.startswith('Pattern has'):
+        if names:
+            print(','.join(names))
+        names = []
+        continue
+    m = re.match(r'\t([a-z]+):', line)
+    if m:
+        names.append(m.group(1))
+if names:
+    print(','.join(names))
+PY
 
 total_ok=0; total_bad=0
 for field in $FIELDS; do
   "$OURS" --format "$field" --batch < $FILES > /tmp/scan-ours.txt 2>/dev/null
   : > /tmp/scan-theirs.txt
-  while IFS= read -r f; do
-    echo "@$f" >> /tmp/scan-theirs.txt
-    fc-query --format="%{${field}}\n" "$f" </dev/null >> /tmp/scan-theirs.txt 2>/dev/null
-  done < $FILES
+  if [ "$field" = properties ]; then
+    # Which properties a pattern *has*, not what one of them says. An element
+    # that exists with an empty value prints exactly like an absent one, and
+    # the two score differently: the comparison skips a property only one
+    # side has, so an absent language says nothing while an empty one says
+    # "answers nothing". A whole class of difference the other fields cannot
+    # see, and one that hid a real bug until Adlam arrived in the corpus.
+    while IFS= read -r f; do
+      echo "@$f" >> /tmp/scan-theirs.txt
+      fc-query "$f" </dev/null 2>/dev/null | python3 "$NAMES" >> /tmp/scan-theirs.txt
+    done < $FILES
+  else
+    while IFS= read -r f; do
+      echo "@$f" >> /tmp/scan-theirs.txt
+      fc-query --format="%{${field}}\n" "$f" </dev/null >> /tmp/scan-theirs.txt 2>/dev/null
+    done < $FILES
+  fi
 
   read -r ok bad <<< "$(python3 - "$field" <<'PY'
 import sys

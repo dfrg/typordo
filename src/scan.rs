@@ -122,8 +122,14 @@ fn base_pattern(font: &FontRef<'_>, path: &str, index: i32) -> Query {
     pattern.add(Object::Fontversion, version);
 
     pattern.add(Object::Foundry, foundry(font));
-    // Names first: the slant is read off the style name.
+    if let Some(capability) = capability(font) {
+        pattern.add(Object::Capability, capability.as_str());
+    }
+    // Names first: the slant and whether the face is decorative are both
+    // read off the style name.
     add_names(font, &mut pattern);
+    pattern.add(Object::Decorative, is_decorative(&pattern));
+    pattern.add(Object::Symbol, is_symbol(font));
     if let Some(spacing) = spacing(font) {
         pattern.add(Object::Spacing, spacing);
     }
@@ -142,9 +148,131 @@ fn add_coverage(coverage: Coverage, pattern: &mut Query) {
     }
     let langs = Langs::from_coverage(&coverage);
     pattern.add(Object::Charset, OwnedValue::CharSet(coverage));
-    if !langs.is_empty() {
-        pattern.add(Object::Lang, OwnedValue::LangSet(langs));
+    // Always, even when the set is empty. A font covering a script
+    // fontconfig has no language for -- Adlam, and a dozen others -- gets an
+    // empty language set rather than none at all, and the difference is not
+    // cosmetic: scoring walks the properties the two sides share, so a font
+    // with *no* language says nothing about language and ties with one that
+    // answers perfectly, while a font with an empty one is scored as
+    // answering nothing. `fc-list` prints both as the empty string, which is
+    // why this took a corpus with Adlam in it to notice.
+    pattern.add(Object::Lang, OwnedValue::LangSet(langs));
+}
+
+/// Whether the font addresses its glyphs through a symbol encoding.
+///
+/// FreeType picks a Unicode `cmap` where there is one and falls back to
+/// whatever the font has, so a font is a symbol font when the (3, 0) table
+/// is the only one it offers. Those glyphs live at `U+F000` and up and mean
+/// nothing outside the font, which is why fontconfig records it and scores
+/// against it: a query wanting text should not be answered with dingbats.
+fn is_symbol(font: &FontRef<'_>) -> bool {
+    use read_fonts::tables::cmap::PlatformId;
+    let Ok(cmap) = font.cmap() else { return false };
+    let mut symbol = false;
+    for record in cmap.encoding_records() {
+        match (record.platform_id(), record.encoding_id()) {
+            (PlatformId::Unicode, _) | (PlatformId::Windows, 1 | 10) => return false,
+            (PlatformId::Windows, 0) => symbol = true,
+            _ => {}
+        }
     }
+    symbol
+}
+
+/// Whether the style names the font as a decorative variant.
+///
+/// A short list of words, matched anywhere in any style value and without
+/// regard to case. `embosed` is spelled that way in fontconfig; it is a typo
+/// there and copying it is the only way to agree with it.
+fn is_decorative(pattern: &Query) -> bool {
+    const WORDS: [&str; 6] = ["shadow", "caps", "antiqua", "romansc", "embosed", "dunhill"];
+    let Some(element) = pattern.get(Object::Style) else { return false };
+    element.values().any(|(value, _)| {
+        let crate::query::OwnedValue::String(style) = value else { return false };
+        let lowered = style.to_lowercase();
+        WORDS.iter().any(|word| lowered.contains(word))
+    })
+}
+
+/// What complex-script machinery the font carries, as fontconfig words it.
+///
+/// `ttable:Silf` for a Graphite font, then `otlayout:<tag>` for every script
+/// the `GSUB` and `GPOS` tables between them declare. The two lists are
+/// merged rather than concatenated, so a script both tables support is named
+/// once, and a tag that is not alphanumeric is skipped as broken.
+///
+/// Nothing is scored against this -- it has no priority slot -- but callers
+/// read it to decide whether a font can shape a script at all.
+fn capability(font: &FontRef<'_>) -> Option<String> {
+    use read_fonts::types::Tag;
+
+    // Fontconfig reads this only from a font that has an OS/2 table.
+    font.os2().ok()?;
+
+    let scripts = |tag: Tag| -> Vec<Tag> {
+        use read_fonts::FontRead;
+        let Some(data) = font.table_data(tag) else { return Vec::new() };
+        let Ok(layout) = read_fonts::tables::gsub::Gsub::read(data) else { return Vec::new() };
+        let Ok(list) = layout.script_list() else { return Vec::new() };
+        list.script_records().iter().map(|record| record.script_tag()).collect()
+    };
+    let gsub = scripts(Tag::new(b"GSUB"));
+    let gpos = scripts(Tag::new(b"GPOS"));
+
+    let mut out = String::new();
+    if font.table_data(Tag::new(b"Silf")).is_some() {
+        out.push_str("ttable:Silf");
+    }
+    if gsub.is_empty() && gpos.is_empty() && out.is_empty() {
+        return None;
+    }
+
+    // Both lists are in table order, which OpenType requires to be sorted by
+    // tag, so this is a merge and not a sort.
+    let (mut i, mut j) = (0usize, 0usize);
+    let add = |out: &mut String, tag: Tag| {
+        let bytes = tag.to_be_bytes();
+        // A space counts as valid: a three-letter script tag is padded with
+        // one, and `lao ` and `nko ` are written out with it still attached.
+        // Only a tag with something else in it is treated as broken.
+        let valid = |b: &u8| b.is_ascii_alphanumeric() || *b == b' ';
+        if !bytes.iter().all(valid) {
+            return;
+        }
+        if !out.is_empty() {
+            out.push(' ');
+        }
+        out.push_str("otlayout:");
+        out.push_str(&String::from_utf8_lossy(&bytes));
+    };
+    while i < gsub.len() || j < gpos.len() {
+        match (gsub.get(i), gpos.get(j)) {
+            (Some(a), Some(b)) if a == b => {
+                add(&mut out, *a);
+                i += 1;
+                j += 1;
+            }
+            (Some(a), Some(b)) if a < b => {
+                add(&mut out, *a);
+                i += 1;
+            }
+            (Some(_), Some(b)) => {
+                add(&mut out, *b);
+                j += 1;
+            }
+            (Some(a), None) => {
+                add(&mut out, *a);
+                i += 1;
+            }
+            (None, Some(b)) => {
+                add(&mut out, *b);
+                j += 1;
+            }
+            (None, None) => break,
+        }
+    }
+    (!out.is_empty()).then_some(out)
 }
 
 /// Every character an SFNT font maps, from its Unicode `cmap` subtables.
@@ -307,9 +435,7 @@ fn scan_face(font: &FontRef<'_>, path: &str, index: i32) -> Vec<Query> {
         pattern.remove(Object::Index);
         pattern.add(Object::Index, (((ordinal as i32) + 1) << 16) | index);
 
-        // The instance names itself, and that name replaces the style. Its
-        // full name follows from it: an instance is a different face to the
-        // one the file's own full name describes.
+        // The instance names itself, and that name replaces the style.
         if let Some(style) = name_by_id(font, instance.subfamily) {
             pattern.remove(Object::Style);
             pattern.remove(Object::Stylelang);
@@ -318,12 +444,17 @@ fn scan_face(font: &FontRef<'_>, path: &str, index: i32) -> Vec<Query> {
             pattern.remove(Object::Slant);
             pattern.add(Object::Slant, slant(font, &pattern));
 
-            if let Some(family) = name_by_id(font, 16).or_else(|| name_by_id(font, 1)) {
-                pattern.remove(Object::Fullname);
-                pattern.remove(Object::Fullnamelang);
-                pattern.add(Object::Fullname, format!("{family} {style}").as_str());
-                pattern.add(Object::Fullnamelang, "en");
+            // And the full name is reconsidered, because name id 4 describes
+            // the face the file is named for rather than this instance. Only
+            // id 18 carries over; if the font has none, a name is built from
+            // the family and the instance style.
+            pattern.remove(Object::Fullname);
+            pattern.remove(Object::Fullnamelang);
+            for (text, lang) in collect_names(font, &INSTANCE_FULLNAME_IDS) {
+                pattern.add(Object::Fullname, text.as_str());
+                pattern.add(Object::Fullnamelang, lang);
             }
+            add_synthetic_fullname(&mut pattern);
         }
         // An instance may name itself in the `name` table; most do not, and
         // the name is then built from the family's PostScript name plus the
@@ -706,6 +837,16 @@ const FAMILY_IDS: [u16; 3] = [21, 16, 1]; // WWS, typographic, legacy
 const STYLE_IDS: [u16; 3] = [22, 17, 2];
 const FULLNAME_IDS: [u16; 2] = [18, 4]; // Macintosh full name, then full name
 
+/// The full name ids a *named instance* may use.
+///
+/// Fontconfig skips name id 4 for an instance -- it describes the face the
+/// file is named for, not this one -- but goes on reading id 18. A font that
+/// has one keeps it for every instance; a font that has neither gets a name
+/// built from its family and style. That is the whole difference between
+/// Noto Emoji, whose instances are all called `Noto Emoji`, and Cantarell,
+/// whose instances are called `Cantarell Thin` and the rest.
+const INSTANCE_FULLNAME_IDS: [u16; 1] = [18];
+
 /// Platforms in the order fontconfig searches them.
 const PLATFORM_ORDER: [u16; 4] = [3, 0, 1, 2]; // Microsoft, Unicode, Mac, ISO
 
@@ -721,6 +862,7 @@ fn add_names(font: &FontRef<'_>, pattern: &mut Query) {
             pattern.add(lang_object, lang);
         }
     }
+    add_synthetic_fullname(pattern);
     // The PostScript name is not localized -- fontconfig records no language
     // for it -- so unlike the others it is taken whatever language it is
     // filed under. A font with no name id 6 at all, which the Terminus
@@ -732,6 +874,46 @@ fn add_names(font: &FontRef<'_>, pattern: &mut Query) {
     if let Some(ps) = ps {
         pattern.add(Object::PostscriptName, ps.as_str());
     }
+}
+
+/// A full name built from the family and style, when the face has none.
+///
+/// `FcFreeTypeQueryFaceInternal` does this only when the `name` table
+/// offered nothing at all -- a face that names itself keeps that name, even
+/// if it disagrees with the family and style beside it.
+///
+/// The English values are preferred over the first, and the whitespace
+/// trimming is one-sided on each: fontconfig strips the family's trailing
+/// space and the style's leading one, so that the single space it inserts
+/// between them is the only one.
+fn add_synthetic_fullname(pattern: &mut Query) {
+    if pattern.contains(Object::Fullname) {
+        return;
+    }
+    let Some(family) = english_value(pattern, Object::Family, Object::Familylang) else {
+        return;
+    };
+    let Some(style) = english_value(pattern, Object::Style, Object::Stylelang) else {
+        return;
+    };
+    let full = format!("{} {}", family.trim_end(), style.trim_start());
+    pattern.add(Object::Fullname, full.as_str());
+    pattern.add(Object::Fullnamelang, "en");
+}
+
+/// The value of `object` whose language is English, or the first one.
+fn english_value(pattern: &Query, object: Object, lang_object: Object) -> Option<String> {
+    let languages: Vec<&str> = pattern
+        .get(lang_object)
+        .map(|element| element.values().filter_map(|(v, _)| v.as_value().as_str()).collect())
+        .unwrap_or_default();
+    let at = languages.iter().position(|lang| *lang == "en").unwrap_or(0);
+    let element = pattern.get(object)?;
+    let mut values = element.values().filter_map(|(v, _)| v.as_value().as_str());
+    let chosen = values.nth(at).or_else(|| {
+        element.values().filter_map(|(v, _)| v.as_value().as_str()).next()
+    })?;
+    Some(chosen.to_string())
 }
 
 /// Every distinct name across `ids`, in fontconfig's platform-then-id order.
@@ -868,6 +1050,14 @@ fn scan_type1(data: &[u8], path: &str) -> Result<Vec<Query>, ScanError> {
     }
 
     pattern.add(Object::Foundry, notice_foundry(data).unwrap_or("unknown"));
+    // The same four a scalable SFNT face carries. A Type 1 font has no
+    // variations and no symbol encoding, but fontconfig still records that
+    // it has not, and an absent property is not the same as a false one:
+    // scoring compares only the properties both sides have.
+    pattern.add(Object::Decorative, is_decorative(&pattern));
+    pattern.add(Object::Symbol, false);
+    pattern.add(Object::Variable, false);
+    pattern.add(Object::NamedInstance, false);
     // A Type 1 font has no cmap. Its coverage comes from glyph names mapped
     // through the Adobe Glyph List, which `unicode_charmap` does for us --
     // except for the dingbats, whose names have a list of their own.

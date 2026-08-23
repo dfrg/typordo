@@ -50,20 +50,13 @@ do not cover, so that they are read for what they are.
 
 ### Found by the corpus, not yet fixed
 
-- **A named instance's full name, on two files.** `NotoEmoji[wght].ttf` and
-  `NotoSansHanifiRohingya[wght].ttf`. We rebuild an instance's full name from
-  the family and the instance style -- `Noto Emoji Light` -- and fontconfig
-  keeps the face's own, `Noto Emoji`. Cantarell goes the other way and wants
-  the rebuilt name, which is why the rule is there at all, so the difference
-  is in *when* FreeType rebuilds it rather than whether. 2 of 2385 files, in
-  a field nothing matches on.
-- **Two fc-match answers differ against caches we scanned ourselves.**
-  `:lang=ja` and `:lang=hi` pick `NotoSansAdlamUnjoined` where fontconfig
-  picks the CJK and Devanagari faces. Only against caches built by scanning:
-  the same queries agree against caches we rewrote from fontconfig's own, and
-  `fc-list` agrees on all twenty fields of all 2999 patterns either way. So
-  the cache *contents* match and something about their order or a field
-  fc-list does not print does not. Not yet diagnosed.
+- **`capability` on three files, and which properties exist on twenty-one.**
+  All of them variable `.ttc` collections, and the two are the same
+  difference seen twice: we give a named instance of a collection face a
+  `capability` string and fontconfig does not, though it gives one to the
+  face the instance came from. 24 of 64395 field comparisons, in a property
+  that has no priority slot and so is never scored -- callers read it to ask
+  whether a font can shape a script.
 
 ### Configuration
 
