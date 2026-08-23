@@ -1,5 +1,22 @@
 # fontconf
 
+> ### Written by an AI
+>
+> Nearly all of this — the code, the tests, the harnesses, this file — was
+> written by Claude, working from a human's direction and review rather than
+> a human's hands. You should know that before depending on it.
+>
+> It is disclosed because the usual signal is missing. Code normally carries
+> some evidence of a person having thought about it, and that evidence is not
+> reliable here: it reads as though it were considered whether or not it was.
+>
+> What stands in its place is measurement. Every claim about fontconfig is
+> checked against fontconfig itself, harness by harness, and the counts are
+> in the table below — not "compatible", but 3455 of 3455 matches identical.
+> What is knowingly missing or deliberately different is written down in
+> [docs/gaps.md](docs/gaps.md), including a divergence this implementation
+> chose on purpose. Both are worth reading before you trust it with anything.
+
 Fontconfig, without libfontconfig.
 
 A from-scratch Rust implementation of what fontconfig does: scanning font

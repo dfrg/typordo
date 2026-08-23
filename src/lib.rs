@@ -1,5 +1,15 @@
 //! Fontconfig, without libfontconfig.
 //!
+//! <div class="warning">
+//!
+//! **Written by an AI.** Nearly all of this crate was written by Claude,
+//! working from a human's direction and review rather than a human's hands.
+//! What stands in for the usual signal is measurement: every claim about
+//! fontconfig is checked against fontconfig itself, and what is knowingly
+//! missing or deliberately different is written down in `docs/gaps.md`.
+//!
+//! </div>
+//!
 //! Scans font files, reads and writes fontconfig's own cache format, parses
 //! its configuration, and matches fonts the way it does -- closely enough
 //! that fontconfig reads the caches this writes, and picks the same font.
