@@ -43,6 +43,19 @@ if names:
     print(','.join(names))
 PY
 
+# Fields where a difference is expected, and how many files should show it.
+# A deliberate divergence that reads as a failure forever teaches you to
+# ignore the harness, and a silenced one hides the day it changes. So the
+# count is named: matching it reports KNOWN, anything else reports DIFF.
+# See "Divergences we chose" in docs/gaps.md.
+expected_diff() {
+  case "$1" in
+    capability) echo 3 ;;   # named instances of .ttc collections
+    properties) echo 21 ;;  # the same three files, one line per face
+    *) echo 0 ;;
+  esac
+}
+
 total_ok=0; total_bad=0
 for field in $FIELDS; do
   "$OURS" --format "$field" --batch < $FILES > /tmp/scan-ours.txt 2>/dev/null
@@ -96,8 +109,15 @@ print(ok, bad)
 PY
 )"
   total_ok=$((total_ok+ok)); total_bad=$((total_bad+bad))
-  if [ "$bad" -eq 0 ]; then printf '  %-16s MATCH  %s\n' "$field" "$ok"
-  else printf '  %-16s DIFF   %s ok, %s differing\n' "$field" "$ok" "$bad"; fi
+  want=$(expected_diff "$field")
+  if [ "$bad" -eq 0 ]; then
+    printf '  %-16s MATCH  %s\n' "$field" "$ok"
+  elif [ "$bad" -eq "$want" ]; then
+    printf '  %-16s KNOWN  %s ok, %s differing as expected\n' "$field" "$ok" "$bad"
+  else
+    printf '  %-16s DIFF   %s ok, %s differing (expected %s)\n' \
+      "$field" "$ok" "$bad" "$want"
+  fi
 done
 echo
 echo "scan parity: $total_ok identical, $total_bad differing"

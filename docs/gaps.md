@@ -55,26 +55,16 @@ do not cover, so that they are read for what they are.
   crate can close on its own, and not an unusual position: Chrome ships
   fontconfig backed by fontations and rebuilds caches the same way, ignoring
   everything that is not OpenType or TrueType.
-- **Multiple-master Type 1.** The same, for the format OpenType variations
-  replaced. There is none in the corpus and none in Fedora, so this is
-  untested rather than known-broken.
+  Multiple-master Type 1 is *not* in this list. `read-fonts` reads those and
+  draws them at the default instance, which is all scanning needs -- see
+  `docs/fontations-gaps.md`. There is none in the corpus to confirm it with.
 
-  What both have in common is how they fail. A font the scanner cannot read
+  A font the scanner cannot read
   is skipped rather than fatal -- a font directory holds READMEs and licence
   files too -- so an unreadable font simply is not in the cache we write.
   Nothing says so. The check that would catch it is `write_parity.sh`, which
   compares the pattern count against fontconfig's, and it only catches it for
   a font that is *installed here*.
-
-### Found by the corpus, not yet fixed
-
-- **`capability` on three files, and which properties exist on twenty-one.**
-  All of them variable `.ttc` collections, and the two are the same
-  difference seen twice: we give a named instance of a collection face a
-  `capability` string and fontconfig does not, though it gives one to the
-  face the instance came from. 24 of 64395 field comparisons, in a property
-  that has no priority slot and so is never scored -- callers read it to ask
-  whether a font can shape a script.
 
 ### Configuration
 
@@ -135,6 +125,26 @@ answer.
 ## Divergences we chose
 
 Places where matching fontconfig exactly would be worse.
+
+- **A named instance of a font collection keeps its `capability`.**
+  Fontconfig gives the base face of each member of a `.ttc` a capability
+  string -- the scripts its `GSUB` and `GPOS` tables declare -- and gives its
+  named instances none. Three files here, 24 field comparisons.
+
+  It is a bug, and a legible one. `ftglue_face_goto_table` finds a
+  collection member by seeking to `12 + face->face_index * 4` in the `ttcf`
+  header, and FreeType puts the *instance* number in the high sixteen bits of
+  `face_index`. So for any collection face opened at an instance the seek
+  lands far past the end of the file, the table lookup fails, and
+  `GetScriptTags` reports no scripts. It wants `& 0xFFFF`.
+
+  Copying it would mean deliberately withholding correct data: `capability`
+  has no priority slot and is never scored, so it exists only for callers
+  asking whether a font can shape a script, and the answer for an instance of
+  Noto Sans CJK is the same as for the face it came from. A cache of ours
+  read by fontconfig is unaffected either way, and a fontconfig that fixes
+  this would leave a bug-compatible version wrong. `scripts/scan_parity.sh`
+  knows the expected count so the check stays live.
 
 - **A clamped `SOURCE_DATE_EPOCH` keeps its cache.** When the pinned time is
   older than the directory -- so the clamp actually fires -- fontconfig

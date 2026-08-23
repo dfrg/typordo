@@ -69,16 +69,21 @@ Suggested fix: either a `notice()` accessor, or a general
 `header_string(key)` -- the latter would also cover `/Copyright`,
 `/Version`, and whatever the next backend needs.
 
-## 4. Type 1: multiple master is not supported
+## 4. Type 1: multiple-master metadata is not exposed
 
-`read-fonts` does not read a multiple-master Type 1 font -- one carrying
-`/BlendAxisTypes`, `/WeightVector` and the rest. FreeType does, so fontconfig
-lists such a font and we would not.
+`read-fonts` reads a multiple-master Type 1 font and draws it at the default
+instance. What it does not do is parse the multiple-master metadata --
+`/BlendAxisTypes`, `/BlendDesignPositions` and the rest -- or let a caller
+apply a weight vector of its own.
 
-Untested rather than known-broken: there is no multiple-master font in the
-corpus, and none in Fedora as far as a search of the font packages goes. The
-format was discontinued by Adobe and OpenType variations replaced it. This is
-recorded because the failure is quiet -- see the note in `docs/gaps.md`.
+For scanning that is very nearly enough: fontconfig does not expose Type 1
+multiple-master axes either. `FC_VARIABLE` is about OpenType variations, and
+`fcfreetype.c` never calls `FT_Get_MM_Var`. So a multiple-master font should
+scan as an ordinary Type 1 face on both sides, and the axes are invisible to
+both.
+
+Untested, though. There is no multiple-master font in the corpus and none in
+Fedora, so this rests on reading both sources rather than on a comparison.
 
 ## 5. Type 1: `is_fixed_pitch` misses fonts that declare it
 
