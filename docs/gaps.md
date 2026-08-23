@@ -6,8 +6,10 @@ things that are knowingly missing, so that "all parity checks pass" can be
 read for what it is.
 
 Each entry says what is missing, what breaks because of it, and what would
-have to exist to test it. Entries move to **Done** rather than disappearing,
-so the history of what was actually wrong stays readable.
+have to exist to test it. Nothing is deleted: an entry moves to **Done**, to
+**Decided against** with the reason, or to **Divergences** when matching
+fontconfig would have been the worse answer. The history of what was
+actually wrong stays readable.
 
 The corpus everything is measured against: Fedora 44 under WSL, 695 font
 files producing 819 patterns, `/etc/fonts` with 51 configuration files.
@@ -22,20 +24,8 @@ optional dependency and no `unsafe` at all; the feature documentation in
 
 ## Open
 
-### Cache reading and writing
-
-- **The 32-bit layouts are derived, not measured.** `le32d4` and `le32d8`
-  are computed from the target rather than written down, checked against the
-  five closed forms in `fcarch.c` for every shape, and the crate compiles for
-  `i686` and `armv7` with those assertions live. But no cache written by a
-  32-bit fontconfig has ever been read by this code, and there is no oracle
-  for it here. Closing this means qemu: `cross` plus a Fedora container for
-  `i686` and `armv7`, running the existing parity harnesses. Until then those
-  targets are untested rather than unsupported.
-- **A font replaced in place.** Neither the mtime nor the listing checksum
-  changes when a font file is overwritten under the same name, so the cache
-  keeps describing the old one until something forces a rescan. Fontconfig
-  has the same hole, so closing it here would be a divergence, not a fix.
+What is left here is not unimplemented work. It is what the parity numbers
+do not cover, so that they are read for what they are.
 
 ### Testing
 
@@ -82,6 +72,25 @@ optional dependency and no `unsafe` at all; the feature documentation in
   Asking needs libc. Without the feature the timestamp is trusted on every
   Unix filesystem, which is right for all of them except the ones the feature
   is for. Windows never trusts it, feature or not.
+
+## Decided against, for now
+
+Not oversights. Each was looked at and left, with what would change the
+answer.
+
+- **Testing the 32-bit layouts.** `le32d4` and `le32d8` are derived from the
+  target, checked against the five closed forms in `fcarch.c` for every
+  shape, and compiled for `i686` and `armv7` with those assertions live --
+  but no cache written by a 32-bit fontconfig has ever been read by this
+  code. Proving it means qemu: `cross` plus a Fedora container, running the
+  existing harnesses. Deferred until a real 32-bit target turns up; the code
+  is there so that it does not have to be written under pressure when one
+  does. Treat those targets as untested rather than unsupported.
+- **Noticing a font replaced in place.** Neither the mtime nor the listing
+  checksum changes when a file is overwritten under the same name, so the
+  cache keeps describing the old font until something forces a rescan.
+  Fontconfig has exactly the same hole, so closing it would make us disagree
+  with the thing we are matching. `fc-cache -f` is the answer, there as here.
 
 ## Divergences we chose
 
