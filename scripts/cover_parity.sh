@@ -5,13 +5,13 @@ set -uo pipefail
 cd /mnt/c/Work/play/fontconf
 export PATH="$HOME/.cargo/bin:$PATH"
 export CARGO_TARGET_DIR="$HOME/fct"
-cargo build -q --example fc_query || exit 1
+cargo build -q --release --example fc_query || exit 1
 fc-list --format='%{file}\n' | sort -u > /tmp/scan-files.txt
 
 for field in charset lang; do
   ok=0; bad=0; shown=0
   while IFS= read -r f; do
-    ours=$(cargo run -q --example fc_query -- --format "$field" "$f" 2>/dev/null </dev/null)
+    ours=$(cargo run -q --release --example fc_query -- --format "$field" "$f" 2>/dev/null </dev/null)
     theirs=$(fc-query --format="%{${field}}\n" "$f" 2>/dev/null </dev/null)
     if [ "$ours" = "$theirs" ]; then ok=$((ok+1)); else
       bad=$((bad+1))

@@ -10,7 +10,7 @@ set -uo pipefail
 cd /mnt/c/Work/play/fontconf
 export PATH="$HOME/.cargo/bin:$PATH"
 export CARGO_TARGET_DIR="$HOME/fct"
-cargo build -q --example fc_list || exit 1
+cargo build -q --release --example fc_list || exit 1
 
 CONF=/tmp/fontconf-select
 mkdir -p $CONF
@@ -34,7 +34,7 @@ check() {
   local name="$1"
   local conf="$CONF/$name"
   local ours theirs
-  ours=$(cargo run -q --example fc_list -- --config "$conf" --format file | sort -u)
+  ours=$(cargo run -q --release --example fc_list -- --config "$conf" --format file | sort -u)
   theirs=$(FONTCONFIG_FILE="$conf" fc-list --format='%{file}\n' | sort -u)
   local no=$(echo "$ours" | grep -c . ) nt=$(echo "$theirs" | grep -c .)
   if [ "$ours" = "$theirs" ]; then

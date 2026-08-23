@@ -20,7 +20,7 @@ fn config() -> Config {
 #[test]
 fn reads_directories_in_order_and_deduplicates() {
     let config = config();
-    let dirs: Vec<_> = config.font_dirs().iter().filter_map(|d| d.to_str()).collect();
+    let dirs: Vec<_> = config.font_dirs().filter_map(|d| d.to_str()).collect();
     // `/synthetic/fonts` is listed twice in the file and appears once here.
     // The included files' directories follow the parent's, in include order.
     assert_eq!(dirs[0], "/synthetic/fonts");
@@ -87,11 +87,11 @@ fn cache_directories_are_collected_in_search_order() {
 #[test]
 fn cache_basename_matches_fontconfig() {
     assert_eq!(
-        Config::cache_basename("/usr/share/fonts"),
+        config().cache_basename("/usr/share/fonts"),
         "3830d5c3ddfd5cd38a049b759396e72e-le64.cache-9"
     );
     assert_eq!(
-        Config::cache_basename("/usr/share/fonts/dejavu-sans-fonts"),
+        config().cache_basename("/usr/share/fonts/dejavu-sans-fonts"),
         "221930ae9526a9cb8049af2916f03412-le64.cache-9"
     );
 }
@@ -101,4 +101,103 @@ fn cache_basename_matches_fontconfig() {
 #[test]
 fn walking_caches_with_none_present_yields_nothing() {
     assert_eq!(config().caches().count(), 0);
+}
+
+/// A config written to a temporary file, since these all turn on attributes
+/// no checked-in fixture carries.
+fn from_source(name: &str, body: &str) -> Config {
+    let dir = std::env::temp_dir().join("fontconf-naming");
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join(format!("{name}.conf"));
+    std::fs::write(
+        &path,
+        format!(
+            "<?xml version=\"1.0\"?>\n<fontconfig>\n{body}\n</fontconfig>\n"
+        ),
+    )
+    .unwrap();
+    Config::load_from(&path).unwrap()
+}
+
+/// A `salt` changes the name without changing where the fonts are, so that
+/// the same directory can have more than one cache.
+#[test]
+fn a_salt_changes_the_cache_name() {
+    let plain = from_source("plain", "<dir>/fonts</dir>");
+    let salted = from_source("salted", "<dir salt=\"pepper\">/fonts</dir>");
+    let other = from_source("other", "<dir salt=\"other\">/fonts</dir>");
+
+    assert_ne!(plain.cache_basename("/fonts"), salted.cache_basename("/fonts"));
+    assert_ne!(salted.cache_basename("/fonts"), other.cache_basename("/fonts"));
+    // And it reaches everything beneath the directory that carries it.
+    assert_ne!(plain.cache_basename("/fonts/sub"), salted.cache_basename("/fonts/sub"));
+}
+
+/// A `<remap-dir>` hashes the path it is told to pretend to be, which is how
+/// a container finds caches built outside it.
+#[test]
+fn a_remap_hashes_the_path_it_pretends_to_be() {
+    let remapped = from_source(
+        "remapped",
+        "<remap-dir as-path=\"/usr/share/fonts\">/run/host/fonts</remap-dir>",
+    );
+    let plain = from_source("plain-usr", "<dir>/usr/share/fonts</dir>");
+    assert_eq!(
+        remapped.cache_basename("/run/host/fonts"),
+        plain.cache_basename("/usr/share/fonts")
+    );
+    // The prefix is what moves; a subdirectory keeps its own tail.
+    assert_eq!(
+        remapped.cache_basename("/run/host/fonts/dejavu"),
+        plain.cache_basename("/usr/share/fonts/dejavu")
+    );
+}
+
+/// A `<remap-dir>` also adds the directory, so its fonts are found at all.
+#[test]
+fn a_remap_adds_the_directory() {
+    let config = from_source(
+        "remap-adds",
+        "<remap-dir as-path=\"/usr/share/fonts\">/run/host/fonts</remap-dir>",
+    );
+    let dirs: Vec<_> = config.font_dirs().filter_map(|d| d.to_str()).collect();
+    assert_eq!(dirs, ["/run/host/fonts"]);
+}
+
+/// Without an `as-path` a `<remap-dir>` says nothing. Fontconfig warns and
+/// drops it, rather than treating it as a plain directory.
+#[test]
+fn a_remap_without_a_target_is_dropped() {
+    let config = from_source("remap-bare", "<remap-dir>/run/host/fonts</remap-dir>");
+    assert_eq!(config.font_dirs().count(), 0);
+}
+
+/// Fontconfig takes the first font directory containing the path, not the
+/// longest, so a plain `<dir>` listed first shadows a `<remap-dir>` beneath.
+#[test]
+fn the_first_matching_directory_wins_not_the_longest() {
+    let shadowed = from_source(
+        "shadowed",
+        "<dir>/fonts</dir>\n<remap-dir as-path=\"/elsewhere\" salt=\"s\">/fonts/sub</remap-dir>",
+    );
+    let plain = from_source("plain-fonts", "<dir>/fonts</dir>");
+    assert_eq!(
+        shadowed.cache_basename("/fonts/sub"),
+        plain.cache_basename("/fonts/sub"),
+        "the remapping below an already-listed directory should not apply"
+    );
+}
+
+/// The prefix has to end on a separator: a sibling directory whose name
+/// merely starts the same way is not inside it.
+#[test]
+fn a_prefix_match_lands_on_a_separator() {
+    let salted = from_source("sep", "<dir salt=\"pepper\">/fonts</dir>");
+    let plain = from_source("sep-plain", "<dir>/fonts</dir>");
+    assert_eq!(
+        salted.cache_basename("/fonts-extra"),
+        plain.cache_basename("/fonts-extra"),
+        "/fonts-extra is not inside /fonts"
+    );
+    assert_ne!(salted.cache_basename("/fonts/x"), plain.cache_basename("/fonts/x"));
 }

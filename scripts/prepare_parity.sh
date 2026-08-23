@@ -11,7 +11,7 @@ set -uo pipefail
 cd /mnt/c/Work/play/fontconf
 export PATH="$HOME/.cargo/bin:$PATH"
 export CARGO_TARGET_DIR="$HOME/fct"
-cargo build -q --example fc_match || exit 1
+cargo build -q --release --example fc_match || exit 1
 
 CONF=${CONF:-/etc/fonts/fonts.conf}
 echo "config: $CONF"
@@ -34,7 +34,7 @@ total_ok=0; total_bad=0
 for field in file family style weight slant width spacing fontformat \
              foundry postscriptname fontversion index outline scalable \
              pixelsize size dpi hintstyle antialias fontvariations; do
-  cargo run -q --example fc_match -- --config "$CONF" --format "$field" --batch \
+  cargo run -q --release --example fc_match -- --config "$CONF" --format "$field" --batch \
     < $QUERIES > /tmp/prep-ours.txt 2>/dev/null
   : > /tmp/prep-theirs.txt
   while IFS= read -r q; do

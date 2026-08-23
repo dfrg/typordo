@@ -9,8 +9,59 @@ edition = "2021"
 # `agl` maps glyph names to Unicode, which is the only way a Type 1 font --
 # which has no cmap at all -- can report what it covers.
 read-fonts = { version = "0.43", optional = true, features = ["agl"] }
+# Mapping a cache instead of reading it. See the `mmap` feature.
+memmap2 = { version = "0.9", optional = true }
+# `statfs`, to recognise a filesystem whose timestamps cannot be trusted.
+libc = { version = "0.2", optional = true }
 
 [features]
 default = ["scan"]
+
 # Building cache entries from font files, rather than only reading them.
 scan = ["dep:read-fonts"]
+
+# Map a cache file instead of reading it into memory.
+#
+# Worth it when several processes read the same caches, which on a desktop is
+# every process that draws text: a mapping is shared, so one copy of
+# /var/cache/fontconfig serves all of them instead of one copy each. It also
+# makes opening a large cache O(1) rather than a read of the whole file.
+#
+# The cost is real, though. Mapping a file that another process can write is
+# unsound by construction -- `fc-cache` replaces a cache by rename, which is
+# safe, but nothing stops a program from writing one in place, and then the
+# bytes under a live `&[u8]` change. Every read in this crate is
+# bounds-checked and byte-wise, so a changed byte gives a wrong answer or an
+# Error rather than undefined behaviour in our own code; the undefinedness is
+# in the aliasing itself. Fontconfig maps caches over 1KiB and accepts the
+# same risk.
+#
+# This is the only feature that introduces `unsafe` anywhere in the build.
+mmap = ["dep:memmap2"]
+
+# Ask the filesystem whether its timestamps can be trusted.
+#
+# Fontconfig does not believe a directory mtime on FAT, and neither should
+# anyone: a cache there can stay stale indefinitely. Detecting that needs
+# `statfs`, which needs libc. Without this feature the mtime is trusted on
+# every Unix filesystem, which is right for all of them except the ones this
+# feature is for. Windows never trusts it -- see `directory_stamp`.
+statfs = ["dep:libc"]
+
+# Everything that makes this behave like fontconfig on the same machine, at
+# the cost of two dependencies and the `unsafe` inside `mmap`.
+full-fontconfig-compat = ["mmap", "statfs"]
+
+# The two examples that build caches rather than read them.
+[[example]]
+name = "fc_cache"
+required-features = ["scan"]
+
+[[example]]
+name = "fc_query"
+required-features = ["scan"]
+
+# Scanning has its own test file, which cannot compile without it.
+[[test]]
+name = "scan"
+required-features = ["scan"]

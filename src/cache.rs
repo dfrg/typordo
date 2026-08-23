@@ -48,29 +48,90 @@ const FS_FONTS: usize = 8;
 /// (`<hash>-le64.cache-9`). This reader handles 64-bit little-endian version
 /// 9 and rejects everything else rather than guessing.
 pub struct Cache {
-    bytes: Box<[u8]>,
+    storage: Storage,
 }
+
+/// How a cache holds its bytes.
+///
+/// Reading copies the file; mapping does not. Everything above this is
+/// written against `&[u8]` and does not care which it got.
+enum Storage {
+    /// Read into memory, which is the only way without the `mmap` feature.
+    Owned(Box<[u8]>),
+    /// Mapped, so that every process reading the same cache shares one copy.
+    #[cfg(feature = "mmap")]
+    Mapped(memmap2::Mmap),
+}
+
+impl Storage {
+    fn as_bytes(&self) -> &[u8] {
+        match self {
+            Self::Owned(bytes) => bytes,
+            #[cfg(feature = "mmap")]
+            Self::Mapped(map) => map,
+        }
+    }
+}
+
+/// The size at which fontconfig switches from reading to mapping,
+/// `FC_CACHE_MIN_MMAP`.
+///
+/// Below it the mapping costs more than the copy: a page of kernel bookkeeping
+/// against a kilobyte of memcpy.
+#[cfg(feature = "mmap")]
+const MIN_MMAP: u64 = 1024;
 
 impl Cache {
     /// Read a cache file and validate its header.
     ///
     /// Only the header is checked here. Use [`Cache::validate`] to walk every
     /// pattern before trusting the contents.
+    ///
+    /// With the `mmap` feature the file is mapped rather than read when it is
+    /// large enough to be worth it, which is what makes one copy of a cache
+    /// serve every process on the machine. See the feature's own
+    /// documentation for what that costs.
     pub fn open(path: impl AsRef<Path>) -> std::io::Result<Self> {
+        let path = path.as_ref();
+        #[cfg(feature = "mmap")]
+        {
+            let file = std::fs::File::open(path)?;
+            if file.metadata()?.len() >= MIN_MMAP {
+                // SAFETY: there is none to claim, and this is the whole cost
+                // of the feature. A cache is a file any process may rewrite,
+                // so the bytes under the returned slice can change while it
+                // is alive. Nothing in this crate reinterprets those bytes --
+                // every field is read byte-wise through a bounds-checked
+                // accessor -- so a change gives a wrong answer or an `Error`
+                // rather than undefined behaviour here; the undefinedness is
+                // in the aliasing itself. Fontconfig maps caches on the same
+                // terms.
+                #[allow(unsafe_code)]
+                let map = unsafe { memmap2::Mmap::map(&file) }?;
+                return Self::from_storage(Storage::Mapped(map));
+            }
+        }
         let bytes = std::fs::read(path)?;
-        Self::new(bytes.into_boxed_slice())
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))
+        Self::from_storage(Storage::Owned(bytes.into_boxed_slice()))
     }
 
     /// Validate an already-loaded cache file.
     pub fn new(bytes: Box<[u8]>) -> Result<Self> {
-        let cache = Self { bytes };
+        let cache = Self { storage: Storage::Owned(bytes) };
         cache.check_header()?;
         Ok(cache)
     }
 
+    fn from_storage(storage: Storage) -> std::io::Result<Self> {
+        let cache = Self { storage };
+        match cache.check_header() {
+            Ok(()) => Ok(cache),
+            Err(e) => Err(std::io::Error::new(std::io::ErrorKind::InvalidData, e)),
+        }
+    }
+
     fn data(&self) -> Bytes<'_> {
-        Bytes::new(&self.bytes)
+        Bytes::new(self.storage.as_bytes())
     }
 
     fn check_header(&self) -> Result<()> {
@@ -87,10 +148,10 @@ impl Cache {
         // is: it is written as an `intptr_t`, so a cache from a 32-bit build
         // fails here rather than being misread as valid.
         let declared = data.i64(SIZE)?;
-        if declared < 0 || declared as u64 != self.bytes.len() as u64 {
+        if declared < 0 || declared as u64 != self.storage.as_bytes().len() as u64 {
             return Err(Error::SizeMismatch {
                 declared: declared as u64,
-                actual: self.bytes.len(),
+                actual: self.storage.as_bytes().len(),
             });
         }
         // Prove the three top-level offsets land inside the file.
@@ -166,7 +227,7 @@ impl Cache {
 
     /// The raw file contents.
     pub fn as_bytes(&self) -> &[u8] {
-        &self.bytes
+        self.storage.as_bytes()
     }
 }
 
@@ -175,7 +236,7 @@ impl std::fmt::Debug for Cache {
         f.debug_struct("Cache")
             .field("dir", &self.dir().ok())
             .field("fonts", &self.fonts().map(|f| f.len).unwrap_or(0))
-            .field("bytes", &self.bytes.len())
+            .field("bytes", &self.storage.as_bytes().len())
             .finish()
     }
 }
@@ -251,5 +312,60 @@ impl<'a> Iterator for Fonts<'a> {
 
     fn size_hint(&self) -> (usize, Option<usize>) {
         (0, Some(self.len - self.index))
+    }
+}
+
+#[cfg(test)]
+mod storage_tests {
+    use super::Cache;
+
+    /// However a cache is held, it has to read back the same.
+    ///
+    /// With the `mmap` feature this exercises both paths at once: the small
+    /// cache is under the mapping threshold and gets read, the large one is
+    /// over it and gets mapped.
+    #[test]
+    fn small_and_large_caches_read_alike() {
+        let dir = std::env::temp_dir().join("fontconf-storage");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        for (name, fonts) in [("small", 0), ("large", 40)] {
+            let font = {
+                let mut font = crate::Query::new();
+                font.add(crate::Object::File, "/fonts/Test.ttf");
+                font.add(crate::Object::Family, "A Family With A Long Enough Name");
+                font
+            };
+            let mut writer = crate::CacheWriter::new("/fonts");
+            for _ in 0..fonts {
+                writer.font(&font);
+            }
+            let bytes = writer.finish();
+            let path = dir.join(name);
+            std::fs::write(&path, &bytes).unwrap();
+
+            let cache = Cache::open(&path).expect(name);
+            cache.validate().expect(name);
+            assert_eq!(cache.as_bytes(), bytes, "{name}");
+            assert_eq!(cache.dir().unwrap(), "/fonts");
+            assert_eq!(cache.fonts().unwrap().count(), fonts);
+        }
+
+        // The premise of the test: the two really are on opposite sides of
+        // the threshold, or it proves nothing.
+        assert!(std::fs::metadata(dir.join("small")).unwrap().len() < 1024);
+        assert!(std::fs::metadata(dir.join("large")).unwrap().len() >= 1024);
+    }
+
+    /// A file too short to hold a header is rejected, not mapped and trusted.
+    #[test]
+    fn a_truncated_file_is_rejected() {
+        let dir = std::env::temp_dir().join("fontconf-storage-short");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("stub");
+        std::fs::write(&path, b"not a cache").unwrap();
+        assert!(Cache::open(&path).is_err());
     }
 }

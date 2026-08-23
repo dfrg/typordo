@@ -29,7 +29,10 @@
 //!
 //! # Safety and trust
 //!
-//! There is no `unsafe` in this crate. The file is never transmuted or
+//! There is no `unsafe` in this crate unless one of the two optional features
+//! that need it is on, and then only for a single call each: mapping a file
+//! for `mmap`, and `statfs` for the feature of that name. The file is never
+//! transmuted or
 //! reinterpreted; every field is read byte-wise through a bounds-checked
 //! accessor, so the buffer needs no particular alignment and a corrupt file
 //! produces an [`Error`], never a crash. That matters because a cache is
@@ -50,7 +53,11 @@
 //! little-endian version 9, the format fontconfig 2.17 writes, and refuses
 //! anything else rather than misreading it.
 
-#![forbid(unsafe_code)]
+// Two optional features need `unsafe`, each for exactly one call: `mmap` to
+// map a cache file, and `statfs` to ask what kind of filesystem a directory
+// is on. With neither of them the ban is absolute.
+#![cfg_attr(not(any(feature = "mmap", feature = "statfs")), forbid(unsafe_code))]
+#![cfg_attr(any(feature = "mmap", feature = "statfs"), deny(unsafe_code))]
 #![warn(missing_docs)]
 
 #[cfg(feature = "scan")]

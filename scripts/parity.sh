@@ -7,8 +7,8 @@ export PATH="$HOME/.cargo/bin:$PATH"
 export CARGO_TARGET_DIR="$HOME/fct"   # never build into the Windows target/
 
 echo "=== building ==="
-cargo build -q --example fc_list || exit 1
-run() { cargo run -q --example fc_list -- "$@"; }
+cargo build -q --release --example fc_list || exit 1
+run() { cargo run -q --release --example fc_list -- "$@"; }
 
 echo "=== what the config found ==="
 run --dirs

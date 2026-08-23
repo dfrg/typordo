@@ -10,7 +10,7 @@ set -uo pipefail
 cd /mnt/c/Work/play/fontconf
 export PATH="$HOME/.cargo/bin:$PATH"
 export CARGO_TARGET_DIR="$HOME/fct"
-cargo build -q --example fc_match || exit 1
+cargo build -q --release --example fc_match || exit 1
 
 # REAL=1 runs against the system's own /etc/fonts, rules and all. Without it
 # the config is rule-free, which isolates scoring from substitution.
@@ -40,7 +40,7 @@ run_all() {
   echo
   echo "running $n queries"
   # Ours in one process: loading every cache costs far more than matching.
-  cargo run -q --example fc_match -- --config "$CONF" --batch < $QUERIES > /tmp/fc-ours.txt
+  cargo run -q --release --example fc_match -- --config "$CONF" --batch < $QUERIES > /tmp/fc-ours.txt
   # fc-match has no batch mode, so this is one process per query.
   : > /tmp/fc-theirs.txt
   while IFS= read -r q; do
@@ -78,8 +78,8 @@ run_all() {
     q=$(printf '%s' "$line" | cut -d$'' -f1)
     ours=$(printf '%s' "$line" | cut -d$'' -f2)
     theirs=$(printf '%s' "$line" | cut -d$'' -f3)
-    sa=$(cargo run -q --example fc_match -- --config "$CONF" --score-of "$ours" "$q" 2>/dev/null </dev/null)
-    sb=$(cargo run -q --example fc_match -- --config "$CONF" --score-of "$theirs" "$q" 2>/dev/null </dev/null)
+    sa=$(cargo run -q --release --example fc_match -- --config "$CONF" --score-of "$ours" "$q" 2>/dev/null </dev/null)
+    sb=$(cargo run -q --release --example fc_match -- --config "$CONF" --score-of "$theirs" "$q" 2>/dev/null </dev/null)
     if [ -n "$sa" ] && [ "$sa" = "$sb" ]; then
       tied=$((tied+1)); continue
     fi

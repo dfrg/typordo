@@ -13,7 +13,7 @@
 //! cargo run --features scan --example fc_cache -- --out /tmp/cache --rewrite
 //! ```
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use fontconf::{Builder, Cache, CacheWriter, Config, Query};
 
@@ -49,7 +49,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let (mut written, mut fonts) = (0, 0);
         for (dir, cache) in config.caches() {
             let (n, bytes) = rewrite_cache(&cache)?;
-            std::fs::write(out.join(Config::cache_basename(&dir)), bytes)?;
+            std::fs::write(out.join(config.cache_basename(&dir)), bytes)?;
             written += 1;
             fonts += n;
         }
@@ -63,7 +63,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         builder.cache_dir(out);
     }
 
-    let roots: Vec<PathBuf> = if dirs.is_empty() { config.font_dirs().to_vec() } else { dirs };
+    let roots: Vec<PathBuf> =
+        if dirs.is_empty() { config.font_dirs().map(Path::to_path_buf).collect() } else { dirs };
 
     let (mut scanned, mut kept, mut fonts) = (0, 0, 0);
     for root in &roots {

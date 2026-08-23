@@ -11,7 +11,7 @@ set -uo pipefail
 cd /mnt/c/Work/play/fontconf
 export PATH="$HOME/.cargo/bin:$PATH"
 export CARGO_TARGET_DIR="$HOME/fct"
-cargo build -q --example fc_match || exit 1
+cargo build -q --release --example fc_match || exit 1
 
 CONF=${CONF:-/etc/fonts/fonts.conf}
 echo "config: $CONF"
@@ -33,7 +33,7 @@ for mode in sort all; do
   ok=0; bad=0
   echo "=== $mode (fc-match $fcflag) ==="
   for q in "${QUERIES[@]}"; do
-    ours=$(cargo run -q --example fc_match -- --config "$CONF" $flag --format file "$q" 2>/dev/null </dev/null)
+    ours=$(cargo run -q --release --example fc_match -- --config "$CONF" $flag --format file "$q" 2>/dev/null </dev/null)
     theirs=$(FONTCONFIG_FILE="$CONF" fc-match $fcflag --format='%{file}\n' "$q" 2>/dev/null </dev/null)
     if [ "$ours" = "$theirs" ]; then
       ok=$((ok+1))

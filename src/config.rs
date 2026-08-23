@@ -75,11 +75,45 @@ impl std::error::Error for ConfigError {}
 /// The font and cache directories a system is configured to use.
 #[derive(Clone, Debug, Default)]
 pub struct Config {
-    font_dirs: Vec<PathBuf>,
+    font_dirs: Vec<FontDir>,
     cache_dirs: Vec<PathBuf>,
     files: Vec<PathBuf>,
     selectors: Selectors,
     rules: Vec<Rule>,
+}
+
+/// What a path-bearing element carries into [`Config::apply`].
+///
+/// Six arguments in a row, half of them optional strings, is a shape that
+/// invites getting two of them the wrong way round.
+struct Applied<'a> {
+    element: &'a str,
+    prefix: Option<&'a str>,
+    body: &'a str,
+    /// The `salt` attribute, appended to the path before it is hashed.
+    salt: Option<&'a str>,
+    /// The `as-path` attribute of a `<remap-dir>`.
+    as_path: Option<&'a str>,
+    from: &'a Path,
+    depth: usize,
+    seen: &'a mut HashSet<PathBuf>,
+}
+
+/// A font directory, and how its cache is named.
+///
+/// Fontconfig keeps these as a triple because two of them change the name of
+/// the cache file without changing where the fonts are. A `salt` is mixed
+/// into the hash so that the same path can have more than one cache; a
+/// `<remap-dir>` hashes a different path entirely, which is how a container
+/// reads caches built outside it -- the fonts are at `/run/host/fonts` and
+/// the cache is named for `/usr/share/fonts`.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+struct FontDir {
+    path: PathBuf,
+    /// `as-path` on a `<remap-dir>`: the path the cache is named for.
+    map: Option<PathBuf>,
+    /// The `salt` attribute, appended to the path before hashing.
+    salt: Option<String>,
 }
 
 /// One open XML element while a config file is being read.
@@ -367,6 +401,50 @@ fn charset_from(values: &[SelectorValue], strict: Strictness) -> SelectorValue {
     SelectorValue::CharSet(chars)
 }
 
+/// One attribute of an element, if it has it.
+fn attr<'a>(frame: &'a Frame, name: &str) -> Option<&'a str> {
+    frame.attrs.iter().find(|(k, _)| k == name).map(|(_, v)| v.as_str())
+}
+
+/// Whether `path` is `prefix` or sits inside it.
+///
+/// `FcConfigPathStartsWith`: the match has to land on a separator, so
+/// `/usr/share/fonts-extra` is not inside `/usr/share/fonts`.
+fn starts_with(path: &str, prefix: &Path) -> bool {
+    let prefix = prefix.to_string_lossy();
+    match path.strip_prefix(prefix.as_ref()) {
+        Some("") => true,
+        Some(rest) => rest.starts_with('/'),
+        None => false,
+    }
+}
+
+/// The hashed part of a cache file name, with the architecture and version.
+fn hashed_name(key: &str) -> String {
+    format!("{}-{ARCHITECTURE}.cache-{}", md5::hex(key.as_bytes()), crate::cache::VERSION)
+}
+
+/// The cache name a directory asks for through a `.uuid` file it contains.
+///
+/// A read-only image writes one so that its caches stay findable wherever the
+/// tree is mounted: the name comes from the file rather than from the path.
+/// Fontconfig does not do this on Windows and neither do we, so that the two
+/// look for the same set of names.
+fn uuid_name(dir: &Path) -> Option<String> {
+    if cfg!(windows) {
+        return None;
+    }
+    let text = std::fs::read_to_string(dir.join(".uuid")).ok()?;
+    // Exactly the first 36 bytes, which is one formatted UUID. Fontconfig
+    // reads that many and stops, so a file with a trailing newline works and
+    // a longer one is truncated rather than rejected.
+    let uuid: String = text.chars().take(36).collect();
+    if uuid.len() < 36 {
+        return None;
+    }
+    Some(format!("{uuid}-{ARCHITECTURE}.cache-{}", crate::cache::VERSION))
+}
+
 /// Add the locale's languages to a query that does not already name one.
 ///
 /// `FcConfigSubstituteWithPat` does this before any rule runs, for pattern
@@ -644,8 +722,8 @@ impl Config {
     /// These are the roots only. Fontconfig records subdirectories in each
     /// directory's own cache rather than in the configuration, so the full
     /// set is what [`Config::caches`] walks.
-    pub fn font_dirs(&self) -> &[PathBuf] {
-        &self.font_dirs
+    pub fn font_dirs(&self) -> impl ExactSizeIterator<Item = &Path> + '_ {
+        self.font_dirs.iter().map(|dir| dir.path.as_path())
     }
 
     /// The directories that may hold caches, in the order to search them.
@@ -735,23 +813,70 @@ impl Config {
 
     /// The file name fontconfig gives the cache for `dir`.
     ///
-    /// This is the MD5 of the directory path, then the architecture tag and
-    /// the format version: `<hash>-le64.cache-9`.
-    pub fn cache_basename(dir: &str) -> String {
-        format!(
-            "{}-{ARCHITECTURE}.cache-{}",
-            md5::hex(dir.as_bytes()),
-            crate::cache::VERSION
-        )
+    /// The MD5 of the directory path, then the architecture tag and the
+    /// format version: `<hash>-le64.cache-9`.
+    ///
+    /// The path that gets hashed is not always the one passed in. A
+    /// `<remap-dir>` covering `dir` substitutes its `as-path`, and a `salt`
+    /// is appended to whatever is left. Both exist so that a cache built on
+    /// one machine can be found from another where the same fonts sit
+    /// somewhere else.
+    pub fn cache_basename(&self, dir: &str) -> String {
+        let mut key = String::new();
+        let salt = match self.enclosing_dir(dir) {
+            Some(entry) => {
+                match &entry.map {
+                    // The mapped path, then whatever `dir` added to the
+                    // prefix. Fontconfig maps the prefix only.
+                    Some(map) => {
+                        key.push_str(&map.to_string_lossy());
+                        let rest = dir[entry.path.to_string_lossy().len()..].trim_start_matches('/');
+                        if !rest.is_empty() {
+                            key.push('/');
+                            key.push_str(rest);
+                        }
+                    }
+                    None => key.push_str(dir),
+                }
+                entry.salt.as_deref()
+            }
+            None => {
+                key.push_str(dir);
+                None
+            }
+        };
+        if let Some(salt) = salt {
+            key.push_str(salt);
+        }
+        hashed_name(&key)
+    }
+
+    /// The first configured font directory that `dir` is inside.
+    ///
+    /// In configuration order, and the *first* match wins even if a later one
+    /// is a longer prefix: fontconfig walks its own list the same way, so a
+    /// plain `<dir>` listed before a `<remap-dir>` beneath it shadows the
+    /// remapping entirely.
+    fn enclosing_dir(&self, dir: &str) -> Option<&FontDir> {
+        self.font_dirs.iter().find(|entry| starts_with(dir, &entry.path))
     }
 
     /// Where `dir`'s cache actually is, searching the cache directories in
     /// order the way fontconfig does.
+    ///
+    /// Two names are tried per directory. The hashed one is what everything
+    /// writes; the other comes from a `.uuid` file in the font directory
+    /// itself, which is how a read-only image keeps its caches findable after
+    /// the tree has been mounted somewhere else. Fontconfig falls back to it
+    /// the same way, and only on Unix.
     pub fn cache_path(&self, dir: &str) -> Option<PathBuf> {
-        let base = Self::cache_basename(dir);
+        let mut names = vec![self.cache_basename(dir)];
+        if let Some(uuid) = uuid_name(Path::new(dir)) {
+            names.push(uuid);
+        }
         self.cache_dirs
             .iter()
-            .map(|cache_dir| cache_dir.join(&base))
+            .flat_map(|cache_dir| names.iter().map(move |name| cache_dir.join(name)))
             .find(|path| path.is_file())
     }
 
@@ -763,7 +888,7 @@ impl Config {
     pub fn caches(&self) -> Caches<'_> {
         Caches {
             config: self,
-            pending: self.font_dirs.iter().filter_map(|d| path_to_string(d)).collect(),
+            pending: self.font_dirs().filter_map(path_to_string).collect(),
             seen: HashSet::new(),
         }
     }
@@ -841,8 +966,25 @@ impl Config {
     ) -> Result<(), ConfigError> {
         let body = frame.text.trim();
         match frame.name.as_str() {
-            "dir" | "cachedir" | "include" => {
-                self.apply(&frame.name, frame.prefix.as_deref(), body, path, depth, seen)?;
+            "dir" | "cachedir" | "include" | "remap-dir" => {
+                let salt = attr(&frame, "salt");
+                let as_path = attr(&frame, "as-path");
+                // A `<remap-dir>` without an `as-path` says nothing, and
+                // fontconfig warns and drops it rather than treating it as a
+                // plain directory.
+                if frame.name == "remap-dir" && as_path.is_none() {
+                    return Ok(());
+                }
+                self.apply(Applied {
+                    element: &frame.name,
+                    prefix: frame.prefix.as_deref(),
+                    body,
+                    salt,
+                    as_path,
+                    from: path,
+                    depth,
+                    seen,
+                })?;
             }
             "glob" if !body.is_empty() => {
                 // A glob is used as written, except for a leading `~`.
@@ -1035,15 +1177,8 @@ impl Config {
         Ok(())
     }
 
-    fn apply(
-        &mut self,
-        element: &str,
-        prefix: Option<&str>,
-        body: &str,
-        from: &Path,
-        depth: usize,
-        seen: &mut HashSet<PathBuf>,
-    ) -> Result<(), ConfigError> {
+    fn apply(&mut self, a: Applied<'_>) -> Result<(), ConfigError> {
+        let Applied { element, prefix, body, salt, as_path, from, depth, seen } = a;
         if body.is_empty() {
             return Ok(());
         }
@@ -1057,7 +1192,7 @@ impl Config {
         // The bases differ per element: a font directory can also come from
         // the shared XDG data directories, while the cache has a single home.
         let bases = match (element, prefix) {
-            ("dir", Some("xdg")) => {
+            ("dir" | "remap-dir", Some("xdg")) => {
                 let mut bases = vec![xdg_data_home()];
                 bases.extend(xdg_data_dirs());
                 bases
@@ -1072,7 +1207,16 @@ impl Config {
                 continue;
             };
             match element {
-                "dir" => push_unique(&mut self.font_dirs, path),
+                "dir" | "remap-dir" => {
+                    let entry = FontDir {
+                        path,
+                        map: as_path.map(PathBuf::from),
+                        salt: salt.map(str::to_string),
+                    };
+                    if !self.font_dirs.iter().any(|d| d.path == entry.path) {
+                        self.font_dirs.push(entry);
+                    }
+                }
                 "cachedir" => push_unique(&mut self.cache_dirs, path),
                 _ => {}
             }
@@ -1274,11 +1418,11 @@ mod tests {
     #[test]
     fn cache_basenames_match_fontconfigs_own() {
         assert_eq!(
-            Config::cache_basename("/usr/share/fonts"),
+            Config::default().cache_basename("/usr/share/fonts"),
             "3830d5c3ddfd5cd38a049b759396e72e-le64.cache-9"
         );
         assert_eq!(
-            Config::cache_basename("/usr/share/fonts/abattis-cantarell-vf-fonts"),
+            Config::default().cache_basename("/usr/share/fonts/abattis-cantarell-vf-fonts"),
             "18f520a508f13854f77176faf7889ae9-le64.cache-9"
         );
     }
@@ -1298,5 +1442,67 @@ mod tests {
         let base = Some(Path::new("/x/share"));
         assert_eq!(resolve("fonts", base, None), Some("/x/share/fonts".into()));
         assert_eq!(resolve("/usr/share/fonts", None, None), Some("/usr/share/fonts".into()));
+    }
+}
+
+#[cfg(test)]
+mod uuid_tests {
+    use super::uuid_name;
+    use std::path::Path;
+
+    fn dir(name: &str, contents: Option<&str>) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("fontconf-uuid-{name}"));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        if let Some(text) = contents {
+            std::fs::write(dir.join(".uuid"), text).unwrap();
+        }
+        dir
+    }
+
+    #[test]
+    fn a_directory_without_a_uuid_asks_for_no_name() {
+        assert_eq!(uuid_name(&dir("none", None)), None);
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn a_uuid_names_the_cache_after_itself() {
+        let path = dir("good", Some("4b5a9f2e-8c31-4d7a-9e0f-1a2b3c4d5e6f"));
+        assert_eq!(
+            uuid_name(&path).as_deref(),
+            Some("4b5a9f2e-8c31-4d7a-9e0f-1a2b3c4d5e6f-le64.cache-9")
+        );
+    }
+
+    /// Fontconfig does not look for a `.uuid` on Windows, so neither do we:
+    /// the point of the name is that both find the same file.
+    #[cfg(windows)]
+    #[test]
+    fn windows_does_not_use_uuid_names() {
+        let path = dir("good", Some("4b5a9f2e-8c31-4d7a-9e0f-1a2b3c4d5e6f"));
+        assert_eq!(uuid_name(&path), None);
+    }
+
+    /// Fontconfig reads exactly 36 bytes and stops, so the trailing newline a
+    /// text editor leaves behind is not part of the name.
+    #[cfg(not(windows))]
+    #[test]
+    fn a_trailing_newline_is_not_part_of_the_name() {
+        let with = dir("newline", Some("4b5a9f2e-8c31-4d7a-9e0f-1a2b3c4d5e6f\n"));
+        let without = dir("bare", Some("4b5a9f2e-8c31-4d7a-9e0f-1a2b3c4d5e6f"));
+        assert_eq!(uuid_name(&with), uuid_name(&without));
+    }
+
+    /// Anything shorter than a formatted UUID is not one.
+    #[cfg(not(windows))]
+    #[test]
+    fn a_short_uuid_is_refused() {
+        assert_eq!(uuid_name(&dir("short", Some("4b5a9f2e"))), None);
+    }
+
+    #[test]
+    fn a_missing_directory_is_not_an_error() {
+        assert_eq!(uuid_name(Path::new("/no/such/directory/anywhere")), None);
     }
 }

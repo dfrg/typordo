@@ -11,9 +11,9 @@ set -uo pipefail
 cd /mnt/c/Work/play/fontconf
 export PATH="$HOME/.cargo/bin:$PATH"
 export CARGO_TARGET_DIR="$HOME/fct"
-cargo build -q --example langs || exit 1
+cargo build -q --release --example langs || exit 1
 
-cargo run -q --example langs 2>/dev/null | sort > /tmp/lang_ours.txt
+cargo run -q --release --example langs 2>/dev/null | sort > /tmp/lang_ours.txt
 fc-list --format='%{file}\t%{lang}\n' | sort > /tmp/lang_theirs.txt
 
 echo "ours   $(wc -l < /tmp/lang_ours.txt) lines"

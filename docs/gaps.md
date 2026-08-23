@@ -14,29 +14,20 @@ files producing 819 patterns, `/etc/fonts` with 51 configuration files.
 Broad -- CJK collections, Type 1, variable fonts, bitmap fonts, a Dingbats
 clone -- but one machine.
 
+Three things need a dependency or an `unsafe` block to do properly, so they
+are behind features rather than gone: `mmap`, `statfs`, and
+`full-fontconfig-compat` which is both. Without them the crate has one
+optional dependency and no `unsafe` at all; the feature documentation in
+`Cargo.toml` says what each one buys and costs.
+
 ## Open
 
 ### Cache reading and writing
 
-- **mmap.** A cache is read by copying the whole file into memory. Fontconfig
-  maps anything over `FC_CACHE_MIN_MMAP` and shares the mapping between
-  processes. Costs memory per process, changes no answer.
 - **32-bit and big-endian caches.** Rejected rather than misread: the
   architecture is part of the file name (`-le64`), and the header's `size`
   field is written as an `intptr_t`, so a 32-bit cache fails the length check.
   Reading one would mean a second set of field offsets.
-- **UUID cache names.** Fontconfig also looks for a cache named by a `.uuid`
-  file in the font directory, which is how a read-only image keeps caches
-  valid across a path change. We only do the MD5-of-path name.
-- **`remap-dir` and `salt`.** Both change the string that gets hashed into
-  the cache file name. A configuration using either would send us to the
-  wrong file name -- silently, because a missing cache is not an error.
-- **Broken-mtime filesystems on Unix.** On FAT and some network filesystems
-  fontconfig does not trust the directory mtime and hashes the directory
-  listing instead (`FcIsFsMtimeBroken`). On Unix we always trust the mtime,
-  so on such a filesystem a cache could stay stale. Windows already takes the
-  checksum route -- see below -- so the machinery exists; what is missing is
-  detecting *which* Unix filesystems need it.
 - **A font replaced in place.** Neither the mtime nor the listing checksum
   changes when a font file is overwritten under the same name, so the cache
   keeps describing the old one until something forces a rescan. Fontconfig
@@ -57,13 +48,27 @@ clone -- but one machine.
   while adding a *subdirectory* does. Fontconfig documents the same thing in
   `fcstat.c` and reaches for a different Win32 call. Rather than take a
   dependency for one call, the cache records an Adler-32 of the directory
-  listing there instead, which is what fontconfig itself puts in that field
-  for filesystems whose timestamps it does not trust.
+  listing there instead -- the same fallback the `statfs` feature reaches for
+  on a Unix filesystem whose timestamps cannot be trusted, and the same one
+  fontconfig puts in that field for FAT.
 
   The consequence: the number in a cache written on Windows is not an mtime
   and means nothing to any other fontconfig. That costs nothing today, since
   the absolute paths inside a cache already tie it to one machine, but it
   would matter if a cache were ever shipped between them.
+
+### Features, not gaps
+
+- **`mmap`.** A mapped cache is shared between every process that reads it,
+  which on a desktop is every process that draws text. It needs one `unsafe`
+  call and a dependency, and mapping a file another process can rewrite is
+  unsound by construction -- fontconfig accepts the same risk for caches over
+  1KiB. Off by default.
+- **`statfs`.** FAT does not record a directory time fontconfig will trust,
+  and neither should anyone: a cache there can stay stale indefinitely.
+  Asking needs libc. Without the feature the timestamp is trusted on every
+  Unix filesystem, which is right for all of them except the ones the feature
+  is for. Windows never trusts it, feature or not.
 
 ## Divergences we chose
 
@@ -107,3 +112,12 @@ Places where matching fontconfig exactly would be worse.
 - **`SOURCE_DATE_EPOCH`**, including the two details that are easy to miss:
   the nanoseconds go whenever the variable is set at all, even to something
   unparseable, and the seconds are clamped rather than overwritten.
+- **Cache file names** -- `salt`, `<remap-dir>` and `.uuid`. All three change
+  which file a cache lives in without changing anything visible, so getting
+  one wrong means a silent rescan forever rather than an error. Checked
+  against the file fontconfig actually writes, in `scripts/name_parity.sh`.
+  The rule that is easy to get backwards: fontconfig takes the *first*
+  configured directory containing a path, not the longest, so a plain `<dir>`
+  listed before a `<remap-dir>` beneath it shadows the remapping entirely.
+- **Mapping a cache instead of reading it**, behind the `mmap` feature.
+- **Recognising a filesystem whose timestamps lie**, behind `statfs`.

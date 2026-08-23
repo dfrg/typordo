@@ -195,7 +195,7 @@ impl<'a> Builder<'a> {
     fn existing(&self, name: &str) -> Option<PathBuf> {
         match &self.cache_dir {
             Some(dir) => {
-                let path = dir.join(Config::cache_basename(name));
+                let path = dir.join(self.config.cache_basename(name));
                 path.is_file().then_some(path)
             }
             None => self.config.cache_path(name),
@@ -211,7 +211,7 @@ impl<'a> Builder<'a> {
     /// exactly the check fontconfig uses to reject a corrupt cache.
     fn write(&self, name: &str, bytes: &[u8]) -> io::Result<PathBuf> {
         let dir = self.destination()?;
-        let path = dir.join(Config::cache_basename(name));
+        let path = dir.join(self.config.cache_basename(name));
         let temp = path.with_extension("NEW");
         std::fs::write(&temp, bytes)?;
         // Rename over an existing file is atomic on Unix and, since Windows
@@ -294,6 +294,9 @@ fn entries(dir: &Path) -> io::Result<(Vec<PathBuf>, Vec<PathBuf>)> {
 /// 2038; fontconfig 2.18 widens it by claiming the padding word that follows.
 #[cfg(not(windows))]
 fn directory_stamp(dir: &Path) -> io::Result<(i32, i64)> {
+    if mtime_is_broken(dir) {
+        return Ok((listing_checksum(dir)?, 0));
+    }
     let modified = std::fs::metadata(dir)?.modified()?;
     let (seconds, nanoseconds) = match modified.duration_since(std::time::UNIX_EPOCH) {
         Ok(since) => (since.as_secs() as i32, i64::from(since.subsec_nanos())),
@@ -323,6 +326,62 @@ fn directory_stamp(dir: &Path) -> io::Result<(i32, i64)> {
     Ok((clamped, 0))
 }
 
+/// Whether this directory sits on a filesystem whose timestamps lie.
+///
+/// FAT records a directory time too coarsely for fontconfig to trust, so it
+/// asks `statfs` and falls back to hashing the listing. Answering the
+/// question needs a libc call, which is why it is behind a feature; without
+/// it the timestamp is trusted everywhere, which is right for every
+/// filesystem except the ones this exists for.
+#[cfg(all(not(windows), feature = "statfs"))]
+fn mtime_is_broken(dir: &Path) -> bool {
+    use std::os::unix::ffi::OsStrExt;
+
+    /// `MSDOS_SUPER_MAGIC`, the one type fontconfig singles out.
+    #[cfg(target_os = "linux")]
+    const MSDOS: i64 = 0x4d44;
+
+    let Ok(path) = std::ffi::CString::new(dir.as_os_str().as_bytes()) else {
+        return false;
+    };
+    // SAFETY: `statfs` fills the struct it is given and reads only the path,
+    // which is NUL-terminated by CString. A failure leaves the struct
+    // untouched, which is why the return value is checked before it is read.
+    #[allow(unsafe_code)]
+    unsafe {
+        let mut buf = std::mem::zeroed::<libc::statfs>();
+        if libc::statfs(path.as_ptr(), &mut buf) != 0 {
+            return false;
+        }
+        #[cfg(target_os = "linux")]
+        {
+            // `f_type` is `__fsword_t`: 64-bit on some targets, 32-bit and
+            // unsigned on others, so the cast is what makes the comparison
+            // compile everywhere rather than a conversion that does work.
+            buf.f_type as i64 == MSDOS
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            let name = std::ffi::CStr::from_ptr(buf.f_fstypename.as_ptr());
+            matches!(name.to_bytes(), b"msdosfs" | b"pcfs")
+        }
+    }
+}
+
+/// Without the `statfs` feature, every Unix filesystem is trusted.
+#[cfg(all(not(windows), not(feature = "statfs")))]
+fn mtime_is_broken(_dir: &Path) -> bool {
+    false
+}
+
+/// An Adler-32 of the directory listing, for when the timestamp cannot be
+/// used. See the Windows [`directory_stamp`] for why this is the fallback
+/// fontconfig also reaches for.
+#[cfg(not(windows))]
+fn listing_checksum(dir: &Path) -> io::Result<i32> {
+    listing_adler32(dir)
+}
+
 /// The same, for Windows, where the modification time cannot be used.
 ///
 /// Adding a *file* to a directory does not update that directory's recorded
@@ -343,6 +402,16 @@ fn directory_stamp(dir: &Path) -> io::Result<(i32, i64)> {
 /// renamed, and does not notice a font edited in place under the same name.
 #[cfg(windows)]
 fn directory_stamp(dir: &Path) -> io::Result<(i32, i64)> {
+    Ok((listing_adler32(dir)?, 0))
+}
+
+/// An Adler-32 over the sorted directory listing.
+///
+/// Notices a file appearing, disappearing or being renamed; does not notice
+/// one edited in place under the same name. That is exactly what fontconfig
+/// records in the same field for filesystems whose timestamps it does not
+/// trust, and it has the same blind spot.
+fn listing_adler32(dir: &Path) -> io::Result<i32> {
     let mut names: Vec<(bool, std::ffi::OsString)> = Vec::new();
     for entry in std::fs::read_dir(dir)? {
         let entry = entry?;
@@ -368,7 +437,7 @@ fn directory_stamp(dir: &Path) -> io::Result<(i32, i64)> {
     // has no timestamp and its cache never expires, which is not what an
     // unlucky checksum should mean.
     let sum = a | (b << 16);
-    Ok((if sum == 0 { 1 } else { sum } as i32, 0))
+    Ok(if sum == 0 { 1 } else { sum as i32 })
 }
 
 #[cfg(test)]
@@ -490,8 +559,10 @@ mod tests {
         let cache = Cache::open(&built.cache).unwrap();
         cache.validate().unwrap();
         assert_eq!(cache.dir().unwrap(), fonts.to_string_lossy());
-        assert_eq!(built.cache.file_name().unwrap().to_string_lossy(),
-                   Config::cache_basename(&fonts.to_string_lossy()));
+        assert_eq!(
+            built.cache.file_name().unwrap().to_string_lossy(),
+            config.cache_basename(&fonts.to_string_lossy())
+        );
     }
 
     #[test]
