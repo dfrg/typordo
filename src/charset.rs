@@ -183,31 +183,79 @@ impl<'a> CharSet<'a> {
             // for is missing.
             return chars.count();
         };
-        chars.filter(|c| !self.covers(pages, numbers, leaves, *c)).count()
+
+        // Characters arrive in ascending order -- a charset yields them that
+        // way -- and the handful a fallback query carries are sampled from
+        // one script, so they share a page or two. Remembering the last page
+        // located turns a binary search per character into one search and a
+        // comparison for the rest, which is worth most against a CJK font
+        // whose page array is thousands long.
+        //
+        // Order is an optimisation, not an assumption: a character that goes
+        // backwards reopens the window rather than being missed.
+        let mut missing = 0usize;
+        let mut low = 0usize;
+        let mut last: Option<(u16, Option<usize>)> = None;
+
+        for c in chars {
+            let Ok(page) = u16::try_from(c as u32 / PAGE) else {
+                missing += 1;
+                continue;
+            };
+            let index = match last {
+                Some((seen, index)) if seen == page => index,
+                other => {
+                    if other.is_some_and(|(seen, _)| page < seen) {
+                        low = 0;
+                    }
+                    let (index, next) = match self.page_index(pages, numbers, page, low) {
+                        Ok(at) => (Some(at), at),
+                        Err(at) => (None, at),
+                    };
+                    low = next;
+                    last = Some((page, index));
+                    index
+                }
+            };
+            match index {
+                Some(index) if self.bit_set(leaves, index, c) => {}
+                _ => missing += 1,
+            }
+        }
+        missing
     }
 
-    /// Whether `c` is covered, with the page arrays already resolved.
-    fn covers(&self, pages: usize, numbers: usize, leaves: usize, c: char) -> bool {
-        let Ok(page) = u16::try_from(c as u32 / PAGE) else { return false };
-        let (mut low, mut high) = (0usize, pages);
+    /// Where `page` sits in the page array, or where it would be inserted.
+    ///
+    /// `low` bounds the search from below, which is what lets a run of
+    /// ascending characters keep narrowing it.
+    fn page_index(
+        &self,
+        pages: usize,
+        numbers: usize,
+        page: u16,
+        low: usize,
+    ) -> std::result::Result<usize, usize> {
+        let (mut low, mut high) = (low.min(pages), pages);
         while low < high {
-            let mid = (low + high) / 2;
-            let Ok(at) = self.data.u16(numbers + mid * 2) else { return false };
+            let mid = low + (high - low) / 2;
+            let Ok(at) = self.data.u16(numbers + mid * 2) else { return Err(low) };
             match at.cmp(&page) {
                 std::cmp::Ordering::Less => low = mid + 1,
                 std::cmp::Ordering::Greater => high = mid,
-                std::cmp::Ordering::Equal => {
-                    let Ok(delta) = self.data.offset(leaves + mid * layout::PTR) else {
-                        return false;
-                    };
-                    let Ok(leaf) = self.data.resolve(leaves, delta) else { return false };
-                    let word = ((c as u32 % PAGE) / 32) as usize;
-                    let Ok(bits) = self.data.u32(leaf + word * 4) else { return false };
-                    return bits & (1 << (c as u32 % 32)) != 0;
-                }
+                std::cmp::Ordering::Equal => return Ok(mid),
             }
         }
-        false
+        Err(low)
+    }
+
+    /// Whether the leaf at `index` has the bit for `c`.
+    fn bit_set(&self, leaves: usize, index: usize, c: char) -> bool {
+        let Ok(delta) = self.data.offset(leaves + index * layout::PTR) else { return false };
+        let Ok(leaf) = self.data.resolve(leaves, delta) else { return false };
+        let word = ((c as u32 % PAGE) / 32) as usize;
+        let Ok(bits) = self.data.u32(leaf + word * 4) else { return false };
+        bits & (1 << (c as u32 % 32)) != 0
     }
 
     /// A whole leaf.
@@ -829,5 +877,59 @@ mod page_tests {
         assert!(base.merge_chars(&crate::Chars::Owned(&han)), "a new page is new");
         assert_eq!(base.leaves().len(), 2);
         assert!(base.contains('a') && base.contains('\u{4e00}'));
+    }
+}
+
+/// The page cursor in [`CharSet::missing_count`], against the search it
+/// replaced.
+#[cfg(test)]
+mod cursor_tests {
+    use crate::{Cache, Object, Value};
+
+    fn cantarell() -> Cache {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/cantarell-le64.cache-9");
+        Cache::open(&path).expect("fixture cache")
+    }
+
+    /// `missing_count` walks with a cursor, which only pays because a charset
+    /// yields characters in ascending order. Order is an optimisation, not a
+    /// precondition, so the answer has to be the same however they arrive.
+    ///
+    /// `contains` is the reference: it searches from scratch every time.
+    #[test]
+    fn missing_count_agrees_with_contains_in_any_order() {
+        let cache = cantarell();
+        let font = cache.fonts().unwrap().next().expect("a font");
+        let Some(Value::CharSet(set)) = font.value(Object::Charset) else {
+            panic!("expected a charset");
+        };
+        let crate::charset::Chars::Cached(set) = set else {
+            panic!("expected a cached charset");
+        };
+
+        // Covered and uncovered, adjacent pages and distant ones.
+        let mut probes: Vec<char> =
+            "Az ~\u{7f}\u{a0}\u{131}\u{4e00}\u{2020}\u{ffff}".chars().collect();
+        probes.push('\u{10fffd}');
+
+        let mut ascending = probes.clone();
+        ascending.sort_unstable();
+        let mut descending = ascending.clone();
+        descending.reverse();
+        // Each character twice, so a repeated page is exercised as well.
+        let mut doubled = ascending.clone();
+        doubled.extend(ascending.iter().copied());
+
+        for (name, order) in [
+            ("ascending", &ascending),
+            ("descending", &descending),
+            ("as written", &probes),
+            ("doubled", &doubled),
+        ] {
+            let want = order.iter().filter(|c| !set.contains(**c)).count();
+            let got = set.missing_count(order.iter().copied());
+            assert_eq!(got, want, "{name}: {order:?}");
+        }
     }
 }
