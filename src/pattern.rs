@@ -86,7 +86,8 @@ impl<'a> Pattern<'a> {
 
     /// The object id of the element at `index`.
     ///
-    /// The merge join in scoring asks this for most of a font's properties
+    /// Scoring walks a font's properties against a query's and asks this for
+    /// most of them
     /// and then moves on, so it reads the one field rather than building a
     /// cursor to read it through.
     pub(crate) fn element_id(&self, index: usize) -> i32 {

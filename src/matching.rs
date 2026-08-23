@@ -629,7 +629,7 @@ type LangRank = std::result::Result<usize, usize>;
 
 /// One property of the query, ready to score against.
 struct Prepped<'q> {
-    /// The object id, so the merge join compares integers.
+    /// The object id, so the walk over properties compares integers.
     id: i32,
     element: &'q Element,
     how: How,
@@ -702,10 +702,13 @@ impl<'q> Prepared<'q> {
 fn score_prepared(query: &Prepared<'_>, font: &Pattern<'_>) -> Option<Score> {
     let mut score = Score::zero();
 
-    // Both sides are sorted by object id, so this is a merge join: only
-    // properties they share are scored. Nothing is copied out of either --
-    // this runs once per font per match, and a `Vec` here was the difference
-    // between microseconds and tens of them.
+    // Both sides are sorted by object id, so the two are walked in lockstep
+    // and only properties they share are scored -- a merge join, in the
+    // database sense, and nothing to do with the set union in `charset`.
+    //
+    // Nothing is copied out of either side: this runs once per font per
+    // match, and a `Vec` here was the difference between microseconds and
+    // tens of them.
     //
     // Walked by index rather than with iterators, because the skipped
     // elements are the common case and constructing a cursor for each one
