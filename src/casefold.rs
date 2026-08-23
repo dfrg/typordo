@@ -527,6 +527,28 @@ pub fn eq_ignoring_blanks(a: &str, b: &str) -> bool {
     nonblank(a).eq(nonblank(b))
 }
 
+/// A hash of `s` in the same terms [`eq_ignoring_blanks`] compares it.
+///
+/// Two strings that compare equal hash equal, which is all a lookup table
+/// needs; the reverse is not promised, so a table keyed by this has to
+/// confirm a hit with [`eq_ignoring_blanks`]. Fontconfig keys its family
+/// table the same way, with `FcStrHashIgnoreBlanksAndCase`.
+///
+/// Nothing is allocated: the folded characters are consumed as they come.
+pub fn hash_ignoring_blanks(s: &str) -> u64 {
+    // FNV-1a. The table is a few hundred entries at most and the keys are
+    // short, so what matters is that this does not allocate.
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for c in nonblank(s) {
+        let mut buffer = [0u8; 4];
+        for byte in c.encode_utf8(&mut buffer).as_bytes() {
+            hash ^= u64::from(*byte);
+            hash = hash.wrapping_mul(0x100_0000_01b3);
+        }
+    }
+    hash
+}
+
 /// The folded characters of `s`, with blanks dropped first.
 fn nonblank(s: &str) -> impl Iterator<Item = char> + '_ {
     s.chars().filter(|c| *c != BLANK).flat_map(fold)

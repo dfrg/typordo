@@ -115,6 +115,14 @@ main (int argc, char **argv)
 		return 0;
 	}
 
+	if (!strcmp (op, "info")) {
+		FcConfig  *config = FcInitLoadConfigAndFonts ();
+		FcFontSet *sys = FcConfigGetFonts (config, FcSetSystem);
+		FcFontSet *app = FcConfigGetFonts (config, FcSetApplication);
+		printf ("system=%d application=%d\n", sys ? sys->nfont : -1, app ? app->nfont : -1);
+		return 0;
+	}
+
 	/* Everything below loads once and then loops, which is what both
 	 * libraries do in a running program. The load is not timed. */
 	FcConfig *config = FcInitLoadConfigAndFonts ();

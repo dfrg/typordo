@@ -78,6 +78,9 @@ def show(ns):
 ratio = theirs / ours if ours else 0.0
 print(f"{op:<8} {iters:>6}  ours {show(per(ours))}  +mmap {show(per(mm))}  "
       f"fontconfig {show(per(theirs))}   {ratio:5.2f}x")
+# Every number printed is per operation: the totals are divided by the
+# iteration count before they get here. Dividing again is a mistake that has
+# already been made once.
 PY
 }
 

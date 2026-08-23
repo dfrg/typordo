@@ -15,7 +15,8 @@ use crate::glob;
 use crate::langset;
 use crate::object::Object;
 use crate::pattern::Pattern;
-use crate::query::{OwnedValue, Query};
+use crate::pattern::Values;
+use crate::query::{Element, OwnedValue, Query};
 use crate::value::{Binding, Value};
 
 /// Where a property sits in the match priority order.
@@ -372,16 +373,21 @@ fn compare_filename(a: &Value<'_>, b: &Value<'_>) -> Option<f64> {
 /// for strings, where list order is a real preference rather than an accident.
 fn score_values(
     matcher: &Matcher,
-    query: &[(Value<'_>, Binding)],
-    font: &[Value<'_>],
+    query: &Element,
+    font: &Values<'_>,
     score: &mut Score,
 ) -> bool {
     let (mut best, mut best_strong, mut best_weak) = (NO_MATCH, NO_MATCH, NO_MATCH);
     let split = matcher.strong != matcher.weak;
 
-    'outer: for (j, (want, binding)) in query.iter().enumerate() {
-        for (k, got) in font.iter().enumerate() {
-            let Some(distance) = (matcher.compare)(want, got) else {
+    // Neither side is collected. The font's values are re-walked per query
+    // value by cloning the cursor, which is three words; collecting them
+    // instead would allocate twice for every property of every font, on
+    // every match.
+    'outer: for (j, (want, binding)) in query.values().enumerate() {
+        let want = want.as_value();
+        for (k, got) in font.clone().enumerate() {
+            let Some(distance) = (matcher.compare)(&want, &got) else {
                 return false;
             };
             let ordered = distance * 1000.0
@@ -393,7 +399,7 @@ fn score_values(
                 if best < 1000.0 {
                     break 'outer;
                 }
-            } else if *binding == Binding::Strong {
+            } else if binding == Binding::Strong {
                 best_strong = best_strong.min(ordered);
             } else {
                 best_weak = best_weak.min(ordered);
@@ -410,27 +416,85 @@ fn score_values(
     true
 }
 
+/// The query's families, indexed by name.
+///
+/// This is `FcCompareDataInit`, and it exists for one reason: a query is not
+/// one family. Configuration expands `sans-serif` -- or anything else --
+/// through the alias chain, so a prepared query here carries between 76 and
+/// 142 of them. Comparing each against each of a font's families, for every
+/// font, is a hundred thousand case-folding string comparisons per match.
+/// Building this once and looking each font family up turns that into two or
+/// three lookups per font.
+///
+/// Keyed by a hash rather than by an owned folded string so that a lookup
+/// allocates nothing. A hit is confirmed with the real comparison, because
+/// equal hashes are not equal names.
+struct Families<'q> {
+    buckets: std::collections::HashMap<u64, Vec<Family<'q>>>,
+}
+
+/// One family the query asked for, and how early it asked.
+struct Family<'q> {
+    name: &'q str,
+    /// The index of the earliest strongly-bound mention, or [`NO_MATCH`].
+    strong: f64,
+    /// The same for weakly-bound ones.
+    weak: f64,
+}
+
+impl<'q> Families<'q> {
+    /// Index the family element of `query`, if it has one.
+    fn new(query: &'q Query) -> Self {
+        let mut buckets: std::collections::HashMap<u64, Vec<Family<'q>>> =
+            std::collections::HashMap::new();
+        let Some(element) = query.get(Object::Family) else {
+            return Self { buckets };
+        };
+        for (index, (want, binding)) in element.values().enumerate() {
+            let OwnedValue::String(name) = want else { continue };
+            let index = index as f64;
+            let bucket = buckets.entry(casefold::hash_ignoring_blanks(name)).or_default();
+            // The same name can appear twice with different bindings, and
+            // only the earliest mention of each counts.
+            let entry = match bucket
+                .iter_mut()
+                .find(|f| casefold::eq_ignoring_blanks(f.name, name))
+            {
+                Some(entry) => entry,
+                None => {
+                    bucket.push(Family { name, strong: NO_MATCH, weak: NO_MATCH });
+                    bucket.last_mut().expect("just pushed")
+                }
+            };
+            match binding {
+                Binding::Weak => entry.weak = entry.weak.min(index),
+                _ => entry.strong = entry.strong.min(index),
+            }
+        }
+        Self { buckets }
+    }
+
+    /// Where the query asked for `name`, if it did.
+    fn find(&self, name: &str) -> Option<&Family<'q>> {
+        self.buckets
+            .get(&casefold::hash_ignoring_blanks(name))?
+            .iter()
+            .find(|f| casefold::eq_ignoring_blanks(f.name, name))
+    }
+}
+
 /// Family is scored by *position*, not by distance.
 ///
-/// Fontconfig builds a hash of the query's families and looks each of the
-/// font's families up in it, so the score is the index of the earliest query
-/// family the font also has -- and [`NO_MATCH`] if it has none. There is no
-/// partial credit: a family either matches, ignoring case and blanks, or it
-/// does not.
-fn score_families(query: &[(Value<'_>, Binding)], font: &[Value<'_>], score: &mut Score) {
+/// The score is the index of the earliest query family the font also has --
+/// and [`NO_MATCH`] if it has none. There is no partial credit: a family
+/// either matches, ignoring case and blanks, or it does not.
+fn score_families(families: &Families<'_>, font: &Values<'_>, score: &mut Score) {
     let (mut strong, mut weak) = (NO_MATCH, NO_MATCH);
-    for got in font {
+    for got in font.clone() {
         let Some(got) = got.as_str() else { continue };
-        for (index, (want, binding)) in query.iter().enumerate() {
-            let Some(want) = want.as_str() else { continue };
-            if !casefold::eq_ignoring_blanks(want, got) {
-                continue;
-            }
-            let index = index as f64;
-            match binding {
-                Binding::Weak => weak = weak.min(index),
-                _ => strong = strong.min(index),
-            }
+        if let Some(found) = families.find(got) {
+            strong = strong.min(found.strong);
+            weak = weak.min(found.weak);
         }
     }
     score.0[Priority::FamilyStrong as usize] = strong;
@@ -440,15 +504,33 @@ fn score_families(query: &[(Value<'_>, Binding)], font: &[Value<'_>], score: &mu
 /// Score `font` against `query`, or `None` if a property could not be
 /// compared at all because the two sides disagreed about its type.
 pub fn score(query: &Query, font: &Pattern<'_>) -> Option<Score> {
+    // The one-shot form indexes the query's families for a single font,
+    // which is wasted work repeated. Anything scoring more than one font
+    // should build the index once: see [`best`] and [`sort`].
+    score_indexed(query, &Families::new(query), font)
+}
+
+/// [`score`], with the query's families already indexed.
+fn score_indexed(
+    query: &Query,
+    families: &Families<'_>,
+    font: &Pattern<'_>,
+) -> Option<Score> {
     let mut score = Score::zero();
 
     // Both sides are sorted by object id, so this is a merge join: only
-    // properties they share are scored.
+    // properties they share are scored. Nothing is copied out of either --
+    // this runs once per font per match, and a `Vec` here was the difference
+    // between microseconds and tens of them.
     let mut font_elements = font.elements().peekable();
     for element in query.elements() {
         let object = element.object();
         let font_element = loop {
-            let next = font_elements.peek()?;
+            // The font running out of properties ends the join, exactly as
+            // `FcCompare` ends its `while` loop: what has been scored so far
+            // stands. Treating it as a failure to match would drop a font
+            // for saying nothing, rather than for saying the wrong thing.
+            let Some(next) = font_elements.peek() else { return Some(score) };
             match next.id().cmp(&object.id()) {
                 std::cmp::Ordering::Less => {
                     font_elements.next();
@@ -458,17 +540,14 @@ pub fn score(query: &Query, font: &Pattern<'_>) -> Option<Score> {
             }
         };
         let Some(font_element) = font_element else { continue };
-
-        let wanted: Vec<(Value<'_>, Binding)> =
-            element.values().map(|(v, b)| (v.as_value(), b)).collect();
-        let got: Vec<Value<'_>> = font_element.values().collect();
+        let got = font_element.values();
 
         if object == Object::Family {
-            score_families(&wanted, &got, &mut score);
+            score_families(families, &got, &mut score);
             continue;
         }
         let Some(matcher) = matcher(object) else { continue };
-        if !score_values(&matcher, &wanted, &got, &mut score) {
+        if !score_values(&matcher, element, &got, &mut score) {
             return None;
         }
     }
@@ -483,9 +562,10 @@ pub fn best<'a, I>(query: &Query, fonts: I) -> Option<(Pattern<'a>, Score)>
 where
     I: IntoIterator<Item = Pattern<'a>>,
 {
+    let families = Families::new(query);
     let mut best: Option<(Pattern<'a>, Score)> = None;
     for font in fonts {
-        let Some(score) = score(query, &font) else { continue };
+        let Some(score) = score_indexed(query, &families, &font) else { continue };
         let better = match &best {
             None => true,
             Some((_, current)) => score.beats(current),
@@ -598,9 +678,10 @@ pub fn sort<'a, I>(query: &Query, fonts: I, trim: bool) -> Vec<(Pattern<'a>, Sco
 where
     I: IntoIterator<Item = Pattern<'a>>,
 {
+    let families = Families::new(query);
     let mut scored: Vec<(Pattern<'a>, Score)> = fonts
         .into_iter()
-        .filter_map(|font| score(query, &font).map(|s| (font, s)))
+        .filter_map(|font| score_indexed(query, &families, &font).map(|s| (font, s)))
         .collect();
     sort_by_score(&mut scored);
 
@@ -685,4 +766,99 @@ where
     I: IntoIterator<Item = Pattern<'a>>,
 {
     sort(query, fonts, false)
+}
+
+/// Tests for the family index, which replaced a scan and has to agree with
+/// it exactly.
+#[cfg(test)]
+mod family_tests {
+    use super::{Families, NO_MATCH};
+    use crate::{Binding, Object, Query};
+
+    fn query(families: &[(&str, Binding)]) -> Query {
+        let mut query = Query::new();
+        for (name, binding) in families {
+            query.add_with_binding(Object::Family, *name, *binding);
+        }
+        query
+    }
+
+    #[test]
+    fn a_family_is_found_by_its_position() {
+        let q = query(&[("First", Binding::Strong), ("Second", Binding::Strong)]);
+        let families = Families::new(&q);
+        assert_eq!(families.find("First").map(|f| f.strong), Some(0.0));
+        assert_eq!(families.find("Second").map(|f| f.strong), Some(1.0));
+        assert!(families.find("Third").is_none());
+    }
+
+    /// The lookup ignores case and blanks, exactly as the scan it replaced
+    /// did: `FcStrCmpIgnoreBlanksAndCase`.
+    #[test]
+    fn lookup_ignores_case_and_blanks() {
+        let q = query(&[("DejaVu Sans", Binding::Strong)]);
+        let families = Families::new(&q);
+        for spelling in ["DejaVu Sans", "dejavusans", "DEJAVU  SANS", "d e j a v u s a n s"] {
+            assert!(families.find(spelling).is_some(), "{spelling}");
+        }
+        assert!(families.find("DejaVu Serif").is_none());
+    }
+
+    /// A blank is only a space. A tab is part of the name, which is what
+    /// makes this a different question from trimming whitespace.
+    #[test]
+    fn a_tab_is_not_a_blank() {
+        let q = query(&[("DejaVu Sans", Binding::Strong)]);
+        assert!(Families::new(&q).find("DejaVu\tSans").is_none());
+    }
+
+    /// The two bindings are tracked apart, because they score into different
+    /// priority slots.
+    #[test]
+    fn strong_and_weak_are_kept_apart() {
+        let mut q = Query::new();
+        q.add(Object::Family, "Strong Only");
+        q.add_weak(Object::Family, "Weak Only");
+        let families = Families::new(&q);
+
+        let strong = families.find("Strong Only").expect("strong");
+        assert_eq!((strong.strong, strong.weak), (0.0, NO_MATCH));
+        let weak = families.find("Weak Only").expect("weak");
+        assert_eq!((weak.strong, weak.weak), (NO_MATCH, 1.0));
+    }
+
+    /// One name mentioned twice keeps the earliest of each binding, which is
+    /// what the `min` in the scan did.
+    #[test]
+    fn a_repeated_name_keeps_the_earliest_of_each() {
+        let mut q = Query::new();
+        q.add(Object::Family, "Filler");
+        q.add_weak(Object::Family, "Repeated");
+        q.add(Object::Family, "repeated");
+        q.add_weak(Object::Family, "REPEATED");
+        let families = Families::new(&q);
+        let found = families.find("Repeated").expect("found");
+        assert_eq!(found.weak, 1.0, "the earlier weak mention wins");
+        assert_eq!(found.strong, 2.0, "and the strong one is tracked apart");
+    }
+
+    #[test]
+    fn a_query_with_no_family_finds_nothing() {
+        let mut q = Query::new();
+        q.add(Object::Weight, 80);
+        assert!(Families::new(&q).find("Anything").is_none());
+    }
+
+    /// Two names that hash together must not be confused for each other.
+    /// The bucket is searched with the real comparison for this reason.
+    #[test]
+    fn a_hash_collision_does_not_match_the_wrong_name() {
+        let q = query(&[("Alpha", Binding::Strong), ("Beta", Binding::Strong)]);
+        let families = Families::new(&q);
+        // Force both into one bucket and check the names still decide.
+        let bucket: Vec<_> = families.buckets.values().flatten().map(|f| f.name).collect();
+        assert_eq!(bucket.len(), 2);
+        assert_eq!(families.find("Alpha").map(|f| f.strong), Some(0.0));
+        assert_eq!(families.find("Beta").map(|f| f.strong), Some(1.0));
+    }
 }

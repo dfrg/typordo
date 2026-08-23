@@ -136,6 +136,36 @@ fn run(op: &str, iterations: u32) -> Result<u64, Box<dyn std::error::Error>> {
             Ok(n)
         }
 
+        // One query, repeated, so the cost of each kind can be seen apart.
+        // Set QUERY to choose it.
+        "matchq" => {
+            let (config, caches) = loaded()?;
+            let fonts = fonts(&config, &caches)?;
+            let name = std::env::var("QUERY").unwrap_or_else(|_| "DejaVu Sans".into());
+            let mut n = 0u64;
+            for _ in 0..iterations {
+                let query = prepared(&config, &name);
+                if let Some((font, _score)) = best(&query, fonts.iter().copied()) {
+                    n += font.string(Object::File).map_or(0, |s| s.len()) as u64;
+                }
+            }
+            Ok(n)
+        }
+
+        // How many families and languages a prepared query carries, which is
+        // what the scoring loop multiplies by the font count.
+        "shape" => {
+            let (config, _caches) = loaded()?;
+            for name in QUERIES {
+                let query = prepared(&config, name);
+                let families = query.get(Object::Family).map_or(0, |e| e.values().count());
+                let langs = query.get(Object::Lang).map_or(0, |e| e.values().count());
+                let elements = query.len();
+                eprintln!("  {name:<32} families={families:<4} langs={langs:<4} elements={elements}");
+            }
+            Ok(0)
+        }
+
         other => Err(format!("unknown operation {other}").into()),
     }
 }
