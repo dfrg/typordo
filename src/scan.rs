@@ -205,20 +205,24 @@ fn is_decorative(pattern: &Query) -> bool {
 /// Nothing is scored against this -- it has no priority slot -- but callers
 /// read it to decide whether a font can shape a script at all.
 fn capability(font: &FontRef<'_>) -> Option<String> {
+    use read_fonts::tables::layout::ScriptList;
     use read_fonts::types::Tag;
+    use read_fonts::ReadError;
 
     // Fontconfig reads this only from a font that has an OS/2 table.
     font.os2().ok()?;
 
-    let scripts = |tag: Tag| -> Vec<Tag> {
-        use read_fonts::FontRead;
-        let Some(data) = font.table_data(tag) else { return Vec::new() };
-        let Ok(layout) = read_fonts::tables::gsub::Gsub::read(data) else { return Vec::new() };
-        let Ok(list) = layout.script_list() else { return Vec::new() };
+    // Substitution and positioning each name the scripts they know how to
+    // shape, and the two lists have the same shape -- but they are separate
+    // tables, so each is read as itself. Their headers happen to agree on
+    // where the script list lives, which makes reading one through the other
+    // work today and a silent misread the day either header grows.
+    fn script_tags(list: Result<ScriptList<'_>, ReadError>) -> Vec<Tag> {
+        let Ok(list) = list else { return Vec::new() };
         list.script_records().iter().map(|record| record.script_tag()).collect()
-    };
-    let gsub = scripts(Tag::new(b"GSUB"));
-    let gpos = scripts(Tag::new(b"GPOS"));
+    }
+    let gsub = font.gsub().map(|table| script_tags(table.script_list())).unwrap_or_default();
+    let gpos = font.gpos().map(|table| script_tags(table.script_list())).unwrap_or_default();
 
     let mut out = String::new();
     if font.table_data(Tag::new(b"Silf")).is_some() {
