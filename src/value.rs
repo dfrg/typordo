@@ -114,15 +114,10 @@ pub enum Binding {
     Same,
 }
 
-const UNION: usize = 8;
-
-/// `FcValueList` is `next` (8), `value` (16), `binding` (4), padded to 32.
-pub(crate) const NODE_SIZE: usize = 32;
-pub(crate) const NODE_VALUE: usize = 8;
-const NODE_BINDING: usize = 24;
+use crate::layout::NATIVE as L;
 
 pub(crate) fn binding_at(data: Bytes<'_>, node: usize) -> Result<Binding> {
-    Ok(match data.i32(node + NODE_BINDING)? {
+    Ok(match data.i32(node + L.binding)? {
         1 => Binding::Weak,
         2 => Binding::Same,
         _ => Binding::Strong,
@@ -135,7 +130,7 @@ pub(crate) fn binding_at(data: Bytes<'_>, node: usize) -> Result<Binding> {
 /// holding them — `FcValueString` in `fcint.h` passes the whole `FcValue` as
 /// the base.
 pub(crate) fn value_at<'a>(data: Bytes<'a>, at: usize) -> Result<Value<'a>> {
-    let union = at + UNION;
+    let union = at + L.union;
     Ok(match data.i32(at)? {
         0 => Value::Void,
         1 => Value::Int(data.i32(union)?),

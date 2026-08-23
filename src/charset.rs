@@ -8,10 +8,7 @@
 use crate::bytes::Bytes;
 use crate::error::{Error, Result};
 
-/// `FcCharSet` is `ref` (4), `num` (4), `leaves_offset` (8), `numbers_offset` (8).
-const NUM: usize = 4;
-const LEAVES: usize = 8;
-const NUMBERS: usize = 16;
+use crate::layout::{self, NATIVE as L};
 
 /// A leaf covers 256 codepoints as eight 32-bit words.
 pub(crate) const LEAF_WORDS: usize = 8;
@@ -116,7 +113,7 @@ impl<'a> CharSet<'a> {
         let numbers = self.numbers_base()?;
         self.data.array(numbers, pages, 2)?;
         let leaves = self.leaves_base()?;
-        self.data.array(leaves, pages, 8)?;
+        self.data.array(leaves, pages, layout::PTR)?;
         let mut previous = None;
         for index in 0..pages {
             let page = self.page_number(index)?;
@@ -134,21 +131,23 @@ impl<'a> CharSet<'a> {
     }
 
     fn checked_pages(&self) -> Result<usize> {
-        self.data.count(self.at + NUM)
+        self.data.count(self.at + L.charset_num)
     }
 
     fn numbers_base(&self) -> Result<usize> {
-        self.data.resolve(self.at, self.data.i64(self.at + NUMBERS)?)
+        self.data.resolve(self.at, self.data.offset(self.at + L.numbers)?)
     }
 
     fn leaves_base(&self) -> Result<usize> {
-        self.data.resolve(self.at, self.data.i64(self.at + LEAVES)?)
+        self.data.resolve(self.at, self.data.offset(self.at + L.leaves)?)
     }
 
     /// The page number stored at `index`.
     pub(crate) fn page_number(&self, index: usize) -> Result<u16> {
         let at = self.numbers_base()? + index * 2;
-        Ok(u16::try_from(self.data.u32(at)? & 0xffff).unwrap_or(0))
+        // Two bytes, read as two: masking a four-byte read would take the
+        // wrong half of it on a big-endian machine.
+        self.data.u16(at)
     }
 
     /// One 32-bit word of leaf `index`.
@@ -157,7 +156,7 @@ impl<'a> CharSet<'a> {
     /// convention the cache's subdirectory list uses.
     pub(crate) fn leaf_word(&self, index: usize, word: usize) -> Result<u32> {
         let leaves = self.leaves_base()?;
-        let delta = self.data.i64(leaves + index * 8)?;
+        let delta = self.data.offset(leaves + index * layout::PTR)?;
         let leaf = self.data.resolve(leaves, delta)?;
         if word >= LEAF_WORDS {
             return Err(Error::Truncated { at: leaf, len: LEAF_BYTES });

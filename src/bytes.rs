@@ -1,10 +1,19 @@
 use crate::error::{Error, Result};
+use crate::layout;
 
 /// A bounds-checked view over the whole cache file.
 ///
 /// Every read in the crate goes through here. Reads are done byte-wise from
 /// subslices, so the buffer needs no particular alignment and no `unsafe` is
 /// involved anywhere in the crate.
+///
+/// # Byte order
+///
+/// Numbers are read in the machine's own order, because a cache is only ever
+/// written in it. Fontconfig puts the endianness in the file name -- a
+/// big-endian machine writes `be64` and asks for `be64` -- so a cache of the
+/// wrong order is not one this crate rejects, it is one this crate never
+/// looks for. See [`ARCHITECTURE`](crate::ARCHITECTURE).
 #[derive(Clone, Copy)]
 pub(crate) struct Bytes<'a>(&'a [u8]);
 
@@ -24,20 +33,36 @@ impl<'a> Bytes<'a> {
             .ok_or(Error::Truncated { at, len: N })
     }
 
+    pub fn u16(&self, at: usize) -> Result<u16> {
+        self.chunk::<2>(at).map(u16::from_ne_bytes)
+    }
+
     pub fn u32(&self, at: usize) -> Result<u32> {
-        self.chunk::<4>(at).map(u32::from_le_bytes)
+        self.chunk::<4>(at).map(u32::from_ne_bytes)
     }
 
     pub fn i32(&self, at: usize) -> Result<i32> {
-        self.chunk::<4>(at).map(i32::from_le_bytes)
+        self.chunk::<4>(at).map(i32::from_ne_bytes)
     }
 
     pub fn i64(&self, at: usize) -> Result<i64> {
-        self.chunk::<8>(at).map(i64::from_le_bytes)
+        self.chunk::<8>(at).map(i64::from_ne_bytes)
     }
 
     pub fn f64(&self, at: usize) -> Result<f64> {
-        self.chunk::<8>(at).map(f64::from_le_bytes)
+        self.chunk::<8>(at).map(f64::from_ne_bytes)
+    }
+
+    /// A serialized pointer: four bytes or eight, depending on the target.
+    ///
+    /// Everything that follows a link in a cache goes through here rather
+    /// than reading a fixed width, because an `intptr_t` is the one field
+    /// whose size changes between the formats fontconfig writes.
+    pub fn offset(&self, at: usize) -> Result<i64> {
+        match layout::PTR {
+            4 => self.i32(at).map(i64::from),
+            _ => self.i64(at),
+        }
     }
 
     /// A count that the format requires to be non-negative.
@@ -96,7 +121,7 @@ impl<'a> Bytes<'a> {
     ///
     /// Returns `None` for a null field, which is how chains terminate.
     pub fn follow(&self, base: usize, at: usize) -> Result<Option<usize>> {
-        match self.i64(at)? {
+        match self.offset(at)? {
             0 => Ok(None),
             raw if raw & 1 == 0 => Err(Error::NotAnOffset(raw)),
             raw => self.resolve(base, raw & !1).map(Some),

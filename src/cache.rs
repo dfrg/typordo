@@ -1,6 +1,7 @@
 use std::path::Path;
 
 use crate::bytes::Bytes;
+use crate::layout;
 use crate::error::{Error, Result};
 use crate::pattern::Pattern;
 
@@ -19,21 +20,9 @@ pub const MAGIC_ALLOC: u32 = 0xFC02_FC05;
 /// set of structures.
 pub const VERSION: i32 = 9;
 
-// Field offsets in `FcCache` for a 64-bit little-endian build. The header is
-// exactly 64 bytes and the directory name follows immediately.
-const MAGIC: usize = 0;
-const VERSION_AT: usize = 4;
-const SIZE: usize = 8;
-const DIR: usize = 16;
-const DIRS: usize = 24;
-const DIRS_COUNT: usize = 32;
-const SET: usize = 40;
-const CHECKSUM: usize = 48;
-const CHECKSUM_NANO: usize = 56;
-
-/// `FcFontSet` is `nfont` (4), `sfont` (4), `fonts` (8).
-const FS_NFONT: usize = 0;
-const FS_FONTS: usize = 8;
+// Field offsets in `FcCache` and `FcFontSet`, for whichever shape this was
+// built for: see [`crate::layout`].
+use crate::layout::NATIVE as L;
 
 /// One directory worth of scanned fonts, as fontconfig left it.
 ///
@@ -136,18 +125,18 @@ impl Cache {
 
     fn check_header(&self) -> Result<()> {
         let data = self.data();
-        match data.u32(MAGIC)? {
+        match data.u32(L.magic)? {
             MAGIC_MMAP => {}
             other => return Err(Error::BadMagic(other)),
         }
-        match data.i32(VERSION_AT)? {
+        match data.i32(L.version)? {
             VERSION => {}
             other => return Err(Error::UnsupportedVersion(other)),
         }
         // The header's own length field is the strongest cheap check there
         // is: it is written as an `intptr_t`, so a cache from a 32-bit build
         // fails here rather than being misread as valid.
-        let declared = data.i64(SIZE)?;
+        let declared = data.offset(L.size)?;
         if declared < 0 || declared as u64 != self.storage.as_bytes().len() as u64 {
             return Err(Error::SizeMismatch {
                 declared: declared as u64,
@@ -155,17 +144,17 @@ impl Cache {
             });
         }
         // Prove the three top-level offsets land inside the file.
-        data.resolve(0, data.i64(DIR)?)?;
-        data.resolve(0, data.i64(DIRS)?)?;
-        data.resolve(0, data.i64(SET)?)?;
-        data.count(DIRS_COUNT)?;
+        data.resolve(0, data.offset(L.dir)?)?;
+        data.resolve(0, data.offset(L.dirs)?)?;
+        data.resolve(0, data.offset(L.set)?)?;
+        data.count(L.dirs_count)?;
         Ok(())
     }
 
     /// The directory this cache describes.
     pub fn dir(&self) -> Result<&str> {
         let data = self.data();
-        data.str(data.resolve(0, data.i64(DIR)?)?)
+        data.str(data.resolve(0, data.offset(L.dir)?)?)
     }
 
     /// The subdirectories fontconfig found beneath [`Cache::dir`].
@@ -174,8 +163,8 @@ impl Cache {
     /// fontconfig does not flatten a tree into one cache.
     pub fn subdirs(&self) -> Result<Subdirs<'_>> {
         let data = self.data();
-        let base = data.resolve(0, data.i64(DIRS)?)?;
-        let len = data.array(base, data.count(DIRS_COUNT)?, 8)?;
+        let base = data.resolve(0, data.offset(L.dirs)?)?;
+        let len = data.array(base, data.count(L.dirs_count)?, layout::PTR)?;
         Ok(Subdirs { data, base, index: 0, len })
     }
 
@@ -188,7 +177,7 @@ impl Cache {
     /// by claiming the padding word that follows.
     pub fn mtime(&self) -> Result<(i32, i64)> {
         let data = self.data();
-        Ok((data.i32(CHECKSUM)?, data.i64(CHECKSUM_NANO)?))
+        Ok((data.i32(L.checksum)?, data.i64(L.checksum_nano)?))
     }
 
     /// The fonts in this directory.
@@ -197,14 +186,14 @@ impl Cache {
     /// one per named instance.
     pub fn fonts(&self) -> Result<Fonts<'_>> {
         let data = self.data();
-        let set = data.resolve(0, data.i64(SET)?)?;
-        let count = data.count(set + FS_NFONT)?;
+        let set = data.resolve(0, data.offset(L.set)?)?;
+        let count = data.count(set + L.nfont)?;
         // The array of patterns is itself an encoded offset from the set. A
         // directory with no fonts stores a null array rather than an empty one.
-        let Some(array) = data.follow(set, set + FS_FONTS)? else {
+        let Some(array) = data.follow(set, set + L.fonts)? else {
             return Ok(Fonts { data, set, array: 0, index: 0, len: 0 });
         };
-        let len = data.array(array, count, 8)?;
+        let len = data.array(array, count, layout::PTR)?;
         Ok(Fonts { data, set, array, index: 0, len })
     }
 
@@ -256,13 +245,13 @@ impl<'a> Iterator for Subdirs<'a> {
         if self.index >= self.len {
             return None;
         }
-        let at = self.base + self.index * 8;
+        let at = self.base + self.index * layout::PTR;
         self.index += 1;
         // Subdirectory offsets are relative to the start of the array, not to
         // their own slot: see `FcCacheSubdir` in `fcint.h`.
         Some(
             self.data
-                .i64(at)
+                .offset(at)
                 .and_then(|delta| self.data.resolve(self.base, delta))
                 .and_then(|at| self.data.str(at)),
         )
@@ -288,7 +277,7 @@ pub struct Fonts<'a> {
 
 impl<'a> Fonts<'a> {
     fn pattern_at(&self, index: usize) -> Result<Pattern<'a>> {
-        let slot = self.array + index * 8;
+        let slot = self.array + index * layout::PTR;
         // Pattern offsets are encoded relative to the font set, not to the
         // slot holding them: see `FcFontSetFont` in `fcint.h`.
         let at = self.data.follow(self.set, slot)?.ok_or(Error::NotAnOffset(0))?;

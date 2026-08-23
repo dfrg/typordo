@@ -1,13 +1,9 @@
 use crate::bytes::Bytes;
 use crate::error::{Error, Result};
 use crate::object::Object;
-use crate::value::{self, Binding, Value, NODE_SIZE, NODE_VALUE};
+use crate::value::{self, Binding, Value};
 
-/// `FcPattern` is `num` (4), `size` (4), `elts_offset` (8), `ref` (8).
-const PATTERN_ELTS: usize = 8;
-/// `FcPatternElt` is `object` (4), padding (4), `values` (8).
-const ELT_SIZE: usize = 16;
-const ELT_VALUES: usize = 8;
+use crate::layout::NATIVE as L;
 
 /// The properties of a single font face, as the cache recorded them.
 ///
@@ -26,8 +22,8 @@ impl<'a> Pattern<'a> {
     /// Read the pattern at `at`, checking its element array fits in the file.
     pub(crate) fn read(data: Bytes<'a>, at: usize) -> Result<Self> {
         let count = data.count(at)?;
-        let elts = data.resolve(at, data.i64(at + PATTERN_ELTS)?)?;
-        let len = data.array(elts, count, ELT_SIZE)?;
+        let elts = data.resolve(at, data.offset(at + L.elts)?)?;
+        let len = data.array(elts, count, L.elt)?;
         Ok(Self { data, elts, len })
     }
 
@@ -85,7 +81,7 @@ impl<'a> Pattern<'a> {
     /// Infallible: [`Pattern::read`] already proved the whole array is inside
     /// the file, so the header of every element is readable.
     fn element_at(&self, index: usize) -> Element<'a> {
-        Element { data: self.data, at: self.elts + index * ELT_SIZE }
+        Element { data: self.data, at: self.elts + index * L.elt }
     }
 }
 
@@ -169,7 +165,7 @@ impl<'a> Element<'a> {
         let mut budget = self.budget();
         while let Some(at) = node {
             budget = budget.checked_sub(1).ok_or(Error::ChainTooLong)?;
-            value::value_at(self.data, at + NODE_VALUE)?;
+            value::value_at(self.data, at + L.node_value)?;
             value::binding_at(self.data, at)?;
             node = self.data.follow(at, at)?;
         }
@@ -177,7 +173,7 @@ impl<'a> Element<'a> {
     }
 
     fn head(&self) -> Result<Option<usize>> {
-        self.data.follow(self.at, self.at + ELT_VALUES)
+        self.data.follow(self.at, self.at + L.values)
     }
 
     /// The most nodes a chain could have without revisiting one.
@@ -186,7 +182,7 @@ impl<'a> Element<'a> {
     /// file can be trusted to say how long a chain is, but the file's own
     /// length caps how many distinct nodes can fit in it.
     fn budget(&self) -> usize {
-        self.data.len() / NODE_SIZE + 1
+        self.data.len() / L.node + 1
     }
 }
 
@@ -219,7 +215,7 @@ impl<'a> Values<'a> {
     fn step(&mut self) -> Option<(usize, Value<'a>)> {
         let at = self.next?;
         self.budget = self.budget.checked_sub(1)?;
-        let value = value::value_at(self.data, at + NODE_VALUE).ok()?;
+        let value = value::value_at(self.data, at + L.node_value).ok()?;
         self.next = self.data.follow(at, at).ok().flatten();
         Some((at, value))
     }

@@ -9,9 +9,7 @@ use crate::bytes::Bytes;
 use crate::error::Result;
 use crate::langs::{self, LANGS};
 
-/// `FcLangSet` is `extra` (8, never serialized), `map_size` (4), `map[]`.
-const MAP_SIZE: usize = 8;
-const MAP: usize = 12;
+use crate::layout::NATIVE as L;
 
 /// How close two languages are, fontconfig's `FcLangResult`.
 ///
@@ -40,7 +38,7 @@ impl<'a> LangSet<'a> {
     /// Compare against [`langs::MAP_WORDS`] to see whether the writer sized
     /// its language list the same way we do.
     pub fn map_words(&self) -> usize {
-        self.data.u32(self.at + MAP_SIZE).unwrap_or(0) as usize
+        self.data.u32(self.at + L.map_size).unwrap_or(0) as usize
     }
 
     /// Whether bit `index` is set.
@@ -49,7 +47,7 @@ impl<'a> LangSet<'a> {
         if word >= self.map_words() {
             return false;
         }
-        let Ok(bits) = self.data.u32(self.at + MAP + word * 4) else {
+        let Ok(bits) = self.data.u32(self.at + L.map + word * 4) else {
             return false;
         };
         bits & (1 << (index % 32)) != 0
@@ -136,8 +134,8 @@ impl<'a> LangSet<'a> {
     pub fn compare(&self, other: &LangSet<'_>) -> LangResult {
         let words = self.map_words().min(other.map_words()).min(langs::MAP_WORDS);
         for word in 0..words {
-            let ours = self.data.u32(self.at + MAP + word * 4).unwrap_or(0);
-            let theirs = other.data.u32(other.at + MAP + word * 4).unwrap_or(0);
+            let ours = self.data.u32(self.at + L.map + word * 4).unwrap_or(0);
+            let theirs = other.data.u32(other.at + L.map + word * 4).unwrap_or(0);
             if ours & theirs != 0 {
                 return LangResult::Equal;
             }
@@ -160,8 +158,8 @@ impl<'a> LangSet<'a> {
 
     /// Check the bitmap is readable.
     pub fn validate(&self) -> Result<()> {
-        let words = self.data.u32(self.at + MAP_SIZE)? as usize;
-        self.data.array(self.at + MAP, words, 4)?;
+        let words = self.data.u32(self.at + L.map_size)? as usize;
+        self.data.array(self.at + L.map, words, 4)?;
         Ok(())
     }
 }

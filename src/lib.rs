@@ -47,11 +47,39 @@
 //! # Format compatibility
 //!
 //! Cache files are memory images of fontconfig's internal structures, not a
-//! portable serialization. A file is only meaningful to a build with the same
-//! format version, word size and byte order, which is why fontconfig puts all
-//! three in the name: `<hash>-le64.cache-9`. This crate reads 64-bit
-//! little-endian version 9, the format fontconfig 2.17 writes, and refuses
-//! anything else rather than misreading it.
+//! portable serialization. A file is only meaningful to a build laid out the
+//! same way, which is why fontconfig puts the shape in the name:
+//! `<hash>-le64.cache-9`.
+//!
+//! This crate derives its layout from the target it is compiled for, so a
+//! build for a 32-bit machine reads and writes what that machine's own
+//! fontconfig does -- `le32d4` on i386, `le32d8` on 32-bit ARM, where the
+//! difference is whether a `double` is aligned to one word or two. See
+//! [`ARCHITECTURE`] and the `layout` module.
+//!
+//! Byte order is the one axis not translated. A cache written on a
+//! big-endian machine is not something this crate rejects, it is something
+//! it never looks for: the name it asks for carries its own endianness, so
+//! the two never meet. Reading a foreign-endian cache would mean byte
+//! swapping every field for no benefit, since a cache is written by the
+//! machine that uses it.
+//!
+//! Only format version 9 is read, which is what fontconfig 2.17 writes.
+//!
+//! # What has been verified where
+//!
+//! Every claim about fontconfig in this crate is checked against fontconfig
+//! itself -- `fc-list`, `fc-match`, `fc-query`, `fc-cache` -- on one machine:
+//! Fedora 44, x86_64, 695 font files. That is the only place an oracle
+//! exists. Windows runs the test suite and the parity harnesses that do not
+//! need fontconfig.
+//!
+//! The 32-bit layouts are derived rather than measured. They are checked
+//! against the five closed forms `fcarch.c` states, for every pointer and
+//! alignment pair, and the crate compiles for `i686` and `armv7` with those
+//! assertions live -- but no cache written by a 32-bit fontconfig has ever
+//! been read by this code. Treat those targets as untested rather than
+//! unsupported.
 
 // Two optional features need `unsafe`, each for exactly one call: `mmap` to
 // map a cache file, and `statfs` to ask what kind of filesystem a directory
@@ -71,6 +99,7 @@ mod error;
 mod glob;
 pub mod langs;
 mod langset;
+mod layout;
 pub mod orth;
 mod matching;
 mod md5;

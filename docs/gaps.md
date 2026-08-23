@@ -24,14 +24,27 @@ optional dependency and no `unsafe` at all; the feature documentation in
 
 ### Cache reading and writing
 
-- **32-bit and big-endian caches.** Rejected rather than misread: the
-  architecture is part of the file name (`-le64`), and the header's `size`
-  field is written as an `intptr_t`, so a 32-bit cache fails the length check.
-  Reading one would mean a second set of field offsets.
+- **The 32-bit layouts are derived, not measured.** `le32d4` and `le32d8`
+  are computed from the target rather than written down, checked against the
+  five closed forms in `fcarch.c` for every shape, and the crate compiles for
+  `i686` and `armv7` with those assertions live. But no cache written by a
+  32-bit fontconfig has ever been read by this code, and there is no oracle
+  for it here. Closing this means qemu: `cross` plus a Fedora container for
+  `i686` and `armv7`, running the existing parity harnesses. Until then those
+  targets are untested rather than unsupported.
 - **A font replaced in place.** Neither the mtime nor the listing checksum
   changes when a font file is overwritten under the same name, so the cache
   keeps describing the old one until something forces a rescan. Fontconfig
   has the same hole, so closing it here would be a divergence, not a fix.
+
+### Testing
+
+- **One machine is the whole corpus.** Every claim about fontconfig is
+  checked against fontconfig itself, on Fedora 44 x86_64 with 695 font files.
+  That is the only place an oracle exists; Windows runs the test suite and
+  the harnesses that do not need fontconfig. Anything platform-specific --
+  the 32-bit layouts, the `statfs` filesystem check, the Windows listing
+  checksum -- rests on reading the source rather than on measurement.
 
 ### Configuration
 
@@ -120,4 +133,8 @@ Places where matching fontconfig exactly would be worse.
   configured directory containing a path, not the longest, so a plain `<dir>`
   listed before a `<remap-dir>` beneath it shadows the remapping entirely.
 - **Mapping a cache instead of reading it**, behind the `mmap` feature.
+- **Every layout fontconfig has a name for, at our own endianness.** The
+  offsets are a function of pointer size and double alignment rather than a
+  table, so the two 32-bit shapes can be checked on a 64-bit machine. Byte
+  order is deliberately not translated: see the note in `lib.rs`.
 - **Recognising a filesystem whose timestamps lie**, behind `statfs`.

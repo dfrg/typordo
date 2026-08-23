@@ -16,6 +16,9 @@
 //! satisfies all of that by construction, which is why the writer works in
 //! that order rather than, say, pooling all the strings at the end.
 //!
+//! The structures are laid out for the machine writing them, which is the
+//! layout its own fontconfig reads: see [`layout`](crate::layout).
+//!
 //! Character sets are the exception: fontconfig freezes them into a shared
 //! table while serializing, so its own validator allows a charset to sit
 //! anywhere. That is what lets this writer share one copy between every font
@@ -24,13 +27,10 @@
 
 use std::collections::HashMap;
 
-use crate::charset::{Coverage, LEAF_WORDS};
+use crate::charset::Coverage;
 use crate::langset::Langs;
 use crate::query::{OwnedValue, Query};
 use crate::value::{Binding, Matrix, Range};
-
-/// What every serialized structure is padded to, fontconfig's `FcAlign`.
-const ALIGN: usize = 8;
 
 /// `FcRef` for a structure that is not reference counted, `FC_REF_CONSTANT`.
 ///
@@ -38,54 +38,10 @@ const ALIGN: usize = 8;
 /// pattern read out of a mapped file must never be freed.
 const REF_CONSTANT: i32 = -1;
 
-// Sizes of the structures, for a 64-bit little-endian build.
-const HEADER: usize = 64;
-const FONTSET: usize = 16;
-const PATTERN: usize = 24;
-const ELT: usize = 16;
-const NODE: usize = 32;
-const CHARSET: usize = 24;
-const LEAF: usize = LEAF_WORDS * 4;
-const MATRIX: usize = 32;
-const RANGE: usize = 16;
-
-// Field offsets, matching the reader's.
-const H_MAGIC: usize = 0;
-const H_VERSION: usize = 4;
-const H_SIZE: usize = 8;
-const H_DIR: usize = 16;
-const H_DIRS: usize = 24;
-const H_DIRS_COUNT: usize = 32;
-const H_SET: usize = 40;
-const H_CHECKSUM: usize = 48;
-const H_CHECKSUM_NANO: usize = 56;
-
-const FS_NFONT: usize = 0;
-const FS_SFONT: usize = 4;
-const FS_FONTS: usize = 8;
-
-const P_NUM: usize = 0;
-const P_SIZE: usize = 4;
-const P_ELTS: usize = 8;
-const P_REF: usize = 16;
-
-const E_OBJECT: usize = 0;
-const E_VALUES: usize = 8;
-
-const N_NEXT: usize = 0;
-const N_VALUE: usize = 8;
-const N_BINDING: usize = 24;
-
-const V_TYPE: usize = 0;
-const V_UNION: usize = 8;
-
-const CS_REF: usize = 0;
-const CS_NUM: usize = 4;
-const CS_LEAVES: usize = 8;
-const CS_NUMBERS: usize = 16;
-
-const LS_MAP_SIZE: usize = 8;
-const LS_MAP: usize = 12;
+/// Where every field of every structure sits, for the shape this was built
+/// for. A cache is written in the layout the machine writing it uses, which
+/// is the layout its own fontconfig reads.
+use crate::layout::{self, LEAF, MATRIX, NATIVE as L, RANGE};
 
 /// A cache being assembled for one directory.
 ///
@@ -150,39 +106,39 @@ impl<'a> CacheWriter<'a> {
     /// Lay the whole cache out and return the bytes to write.
     pub fn finish(&self) -> Vec<u8> {
         let mut buf = Buffer::default();
-        let header = buf.reserve(HEADER);
+        let header = buf.reserve(L.header);
 
         let dir = buf.string(self.dir);
-        buf.plain(header + H_DIR, header, dir);
+        buf.plain(header + L.dir, header, dir);
 
-        let dirs = buf.reserve(self.subdirs.len() * 8);
-        buf.plain(header + H_DIRS, header, dirs);
-        buf.i32(header + H_DIRS_COUNT, self.subdirs.len() as i32);
+        let dirs = buf.reserve(self.subdirs.len() * layout::PTR);
+        buf.plain(header + L.dirs, header, dirs);
+        buf.i32(header + L.dirs_count, self.subdirs.len() as i32);
         for (index, path) in self.subdirs.iter().enumerate() {
             let at = buf.string(path);
             // Relative to the array, not to the slot: `FcCacheSubdir`.
-            buf.plain(dirs + index * 8, dirs, at);
+            buf.plain(dirs + index * layout::PTR, dirs, at);
         }
 
-        let set = buf.reserve(FONTSET);
-        buf.plain(header + H_SET, header, set);
-        buf.i32(set + FS_NFONT, self.fonts.len() as i32);
-        buf.i32(set + FS_SFONT, self.fonts.len() as i32);
-        let array = buf.reserve(self.fonts.len() * 8);
-        buf.encoded(set + FS_FONTS, set, array);
+        let set = buf.reserve(L.fontset);
+        buf.plain(header + L.set, header, set);
+        buf.i32(set + L.nfont, self.fonts.len() as i32);
+        buf.i32(set + L.sfont, self.fonts.len() as i32);
+        let array = buf.reserve(self.fonts.len() * layout::PTR);
+        buf.encoded(set + L.fonts, set, array);
 
         let mut charsets = CharSets::new();
         for (index, font) in self.fonts.iter().enumerate() {
             let at = pattern(&mut buf, font, &mut charsets);
             // Relative to the font set, not to the array: `FcFontSetFont`.
-            buf.encoded(array + index * 8, set, at);
+            buf.encoded(array + index * layout::PTR, set, at);
         }
 
-        buf.u32(header + H_MAGIC, crate::cache::MAGIC_MMAP);
-        buf.i32(header + H_VERSION, crate::cache::VERSION);
-        buf.i64(header + H_SIZE, buf.bytes.len() as i64);
-        buf.i32(header + H_CHECKSUM, self.seconds);
-        buf.i64(header + H_CHECKSUM_NANO, self.nanoseconds);
+        buf.u32(header + L.magic, crate::cache::MAGIC_MMAP);
+        buf.i32(header + L.version, crate::cache::VERSION);
+        buf.offset_at(header + L.size, buf.bytes.len() as i64);
+        buf.i32(header + L.checksum, self.seconds);
+        buf.i64(header + L.checksum_nano, self.nanoseconds);
         buf.bytes
     }
 }
@@ -199,27 +155,27 @@ type CharSets = HashMap<Vec<u8>, usize>;
 /// the file, so writing them would record noise.
 fn pattern(buf: &mut Buffer, query: &Query, charsets: &mut CharSets) -> usize {
     let count = query.len();
-    let at = buf.reserve(PATTERN);
-    buf.i32(at + P_NUM, count as i32);
-    buf.i32(at + P_SIZE, count as i32);
-    buf.i32(at + P_REF, REF_CONSTANT);
+    let at = buf.reserve(L.pattern);
+    buf.i32(at + L.num, count as i32);
+    buf.i32(at + L.pattern_size, count as i32);
+    buf.i32(at + L.pattern_ref, REF_CONSTANT);
 
-    let elts = buf.reserve(count * ELT);
-    buf.plain(at + P_ELTS, at, elts);
+    let elts = buf.reserve(count * L.elt);
+    buf.plain(at + L.elts, at, elts);
 
     for (index, element) in query.elements().enumerate() {
-        let elt = elts + index * ELT;
-        buf.i32(elt + E_OBJECT, element.object().id());
+        let elt = elts + index * L.elt;
+        buf.i32(elt + L.object, element.object().id());
         let mut previous: Option<usize> = None;
         for (value, binding) in element.values() {
-            let node = buf.reserve(NODE);
+            let node = buf.reserve(L.node);
             match previous {
-                Some(before) => buf.encoded(before + N_NEXT, before, node),
+                Some(before) => buf.encoded(before + L.next, before, node),
                 // Relative to the element, not to the array: `FcPatternElt`.
-                None => buf.encoded(elt + E_VALUES, elt, node),
+                None => buf.encoded(elt + L.values, elt, node),
             }
-            buf.i32(node + N_BINDING, code(binding));
-            write_value(buf, node + N_VALUE, value, charsets);
+            buf.i32(node + L.binding, code(binding));
+            write_value(buf, node + L.node_value, value, charsets);
             previous = Some(node);
         }
     }
@@ -232,44 +188,44 @@ fn pattern(buf: &mut Buffer, query: &Query, charsets: &mut CharSets) -> usize {
 /// holding them.
 fn write_value(buf: &mut Buffer, at: usize, value: &OwnedValue, charsets: &mut CharSets) {
     match value {
-        OwnedValue::Void => buf.i32(at + V_TYPE, 0),
+        OwnedValue::Void => buf.i32(at + L.value_type, 0),
         OwnedValue::Int(v) => {
-            buf.i32(at + V_TYPE, 1);
-            buf.i32(at + V_UNION, *v);
+            buf.i32(at + L.value_type, 1);
+            buf.i32(at + L.union, *v);
         }
         OwnedValue::Double(v) => {
-            buf.i32(at + V_TYPE, 2);
-            buf.f64(at + V_UNION, *v);
+            buf.i32(at + L.value_type, 2);
+            buf.f64(at + L.union, *v);
         }
         OwnedValue::String(v) => {
-            buf.i32(at + V_TYPE, 3);
+            buf.i32(at + L.value_type, 3);
             let text = buf.string(v);
-            buf.encoded(at + V_UNION, at, text);
+            buf.encoded(at + L.union, at, text);
         }
         OwnedValue::Bool(v) => {
-            buf.i32(at + V_TYPE, 4);
-            buf.i32(at + V_UNION, i32::from(*v));
+            buf.i32(at + L.value_type, 4);
+            buf.i32(at + L.union, i32::from(*v));
         }
         OwnedValue::Matrix(v) => {
-            buf.i32(at + V_TYPE, 5);
+            buf.i32(at + L.value_type, 5);
             let matrix = write_matrix(buf, v);
-            buf.encoded(at + V_UNION, at, matrix);
+            buf.encoded(at + L.union, at, matrix);
         }
         OwnedValue::CharSet(v) => {
-            buf.i32(at + V_TYPE, 6);
+            buf.i32(at + L.value_type, 6);
             let set = write_charset(buf, v, charsets);
-            buf.encoded(at + V_UNION, at, set);
+            buf.encoded(at + L.union, at, set);
         }
         // 7 is `FcTypeFTFace`, a live pointer that cannot be serialized.
         OwnedValue::LangSet(v) => {
-            buf.i32(at + V_TYPE, 8);
+            buf.i32(at + L.value_type, 8);
             let set = write_langset(buf, v);
-            buf.encoded(at + V_UNION, at, set);
+            buf.encoded(at + L.union, at, set);
         }
         OwnedValue::Range(v) => {
-            buf.i32(at + V_TYPE, 9);
+            buf.i32(at + L.value_type, 9);
             let range = write_range(buf, v);
-            buf.encoded(at + V_UNION, at, range);
+            buf.encoded(at + L.union, at, range);
         }
     }
 }
@@ -307,13 +263,13 @@ fn write_charset(buf: &mut Buffer, coverage: &Coverage, charsets: &mut CharSets)
         return *at;
     }
 
-    let at = buf.reserve(CHARSET);
-    buf.i32(at + CS_REF, REF_CONSTANT);
-    buf.i32(at + CS_NUM, leaves.len() as i32);
-    let array = buf.reserve(leaves.len() * 8);
-    buf.plain(at + CS_LEAVES, at, array);
+    let at = buf.reserve(L.charset);
+    buf.i32(at + L.charset_ref, REF_CONSTANT);
+    buf.i32(at + L.charset_num, leaves.len() as i32);
+    let array = buf.reserve(leaves.len() * layout::PTR);
+    buf.plain(at + L.leaves, at, array);
     let numbers = buf.reserve(leaves.len() * 2);
-    buf.plain(at + CS_NUMBERS, at, numbers);
+    buf.plain(at + L.numbers, at, numbers);
     for (index, (page, leaf)) in leaves.iter().enumerate() {
         buf.u16(numbers + index * 2, *page);
         let bits = buf.reserve(LEAF);
@@ -321,7 +277,7 @@ fn write_charset(buf: &mut Buffer, coverage: &Coverage, charsets: &mut CharSets)
             buf.u32(bits + word * 4, *value);
         }
         // Relative to the array, not to the slot: `FcCharSetLeaf`.
-        buf.plain(array + index * 8, array, bits);
+        buf.plain(array + index * layout::PTR, array, bits);
     }
 
     charsets.insert(key, at);
@@ -335,10 +291,10 @@ fn write_charset(buf: &mut Buffer, coverage: &Coverage, charsets: &mut CharSets)
 /// rejects a cache where it is anything else.
 fn write_langset(buf: &mut Buffer, set: &Langs) -> usize {
     let words = set.words();
-    let at = buf.reserve(LS_MAP + words.len() * 4);
-    buf.u32(at + LS_MAP_SIZE, words.len() as u32);
+    let at = buf.reserve(L.map + words.len() * 4);
+    buf.u32(at + L.map_size, words.len() as u32);
     for (index, word) in words.iter().enumerate() {
-        buf.u32(at + LS_MAP + index * 4, *word);
+        buf.u32(at + L.map + index * 4, *word);
     }
     at
 }
@@ -365,8 +321,8 @@ impl Buffer {
     /// Zeroed, aligned space for `len` bytes, at the end.
     fn reserve(&mut self, len: usize) -> usize {
         let at = self.bytes.len();
-        debug_assert_eq!(at % ALIGN, 0, "the buffer should always stay aligned");
-        self.bytes.resize(at + len.next_multiple_of(ALIGN), 0);
+        debug_assert_eq!(at % L.align, 0, "the buffer should always stay aligned");
+        self.bytes.resize(at + len.next_multiple_of(L.align), 0);
         at
     }
 
@@ -378,28 +334,36 @@ impl Buffer {
     }
 
     fn u16(&mut self, at: usize, value: u16) {
-        self.bytes[at..at + 2].copy_from_slice(&value.to_le_bytes());
+        self.bytes[at..at + 2].copy_from_slice(&value.to_ne_bytes());
     }
 
     fn u32(&mut self, at: usize, value: u32) {
-        self.bytes[at..at + 4].copy_from_slice(&value.to_le_bytes());
+        self.bytes[at..at + 4].copy_from_slice(&value.to_ne_bytes());
     }
 
     fn i32(&mut self, at: usize, value: i32) {
-        self.bytes[at..at + 4].copy_from_slice(&value.to_le_bytes());
+        self.bytes[at..at + 4].copy_from_slice(&value.to_ne_bytes());
     }
 
     fn i64(&mut self, at: usize, value: i64) {
-        self.bytes[at..at + 8].copy_from_slice(&value.to_le_bytes());
+        self.bytes[at..at + 8].copy_from_slice(&value.to_ne_bytes());
     }
 
     fn f64(&mut self, at: usize, value: f64) {
-        self.bytes[at..at + 8].copy_from_slice(&value.to_le_bytes());
+        self.bytes[at..at + 8].copy_from_slice(&value.to_ne_bytes());
+    }
+
+    /// A serialized pointer: four bytes or eight, depending on the target.
+    fn offset_at(&mut self, at: usize, value: i64) {
+        match layout::PTR {
+            4 => self.i32(at, value as i32),
+            _ => self.i64(at, value),
+        }
     }
 
     /// An offset from `base` to `target`, stored plainly.
     fn plain(&mut self, at: usize, base: usize, target: usize) {
-        self.i64(at, target as i64 - base as i64);
+        self.offset_at(at, target as i64 - base as i64);
     }
 
     /// An offset from `base` to `target`, tagged as one.
@@ -407,7 +371,7 @@ impl Buffer {
     /// Fontconfig marks a relocated pointer by setting its low bit, so a
     /// field that was never relocated can be told apart from one that was.
     fn encoded(&mut self, at: usize, base: usize, target: usize) {
-        self.i64(at, (target as i64 - base as i64) | 1);
+        self.offset_at(at, (target as i64 - base as i64) | 1);
     }
 }
 

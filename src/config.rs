@@ -39,9 +39,10 @@ use crate::xml::{Event, Reader, XmlError};
 
 /// The architecture tag fontconfig builds into a cache file name.
 ///
-/// It records the layout the cache was written for. This crate reads one
-/// layout, so it also only looks for one tag.
-pub const ARCHITECTURE: &str = "le64";
+/// It records the layout the cache was written for, and this build asks for
+/// the one it was compiled for: see [`layout`](crate::layout) for how the
+/// six formats differ and which of them this is.
+pub const ARCHITECTURE: &str = crate::layout::ARCHITECTURE;
 
 /// The configuration directory compiled into fontconfig on Unix.
 const CONFIG_DIR: &str = "/etc/fonts";
