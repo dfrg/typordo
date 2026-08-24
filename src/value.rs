@@ -1,7 +1,12 @@
+//! The values a pattern holds, owned and borrowed.
+//!
+//! [`Value`] owns its strings and sets; [`ValueRef`] is the same shapes read
+//! out of a cache, borrowing from its buffer.
+
 use crate::bytes::Bytes;
-use crate::charset::{AnyCharSet, CharSetRef};
+use crate::charset::{AnyCharSet, CharSet, CharSetRef};
 use crate::error::{Error, Result};
-use crate::langset::{AnyLangSet, LangSetRef};
+use crate::langset::{AnyLangSet, LangSet, LangSetRef};
 
 /// A 2x2 transform, fontconfig's `FcMatrix`.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -165,4 +170,98 @@ pub(crate) fn value_at<'a>(data: Bytes<'a>, at: usize) -> Result<ValueRef<'a>> {
         }
         other => return Err(Error::BadCount(other)),
     })
+}
+
+/// A value a pattern holds.
+///
+/// The same shapes as [`ValueRef`], owning what that one borrows: its
+/// strings, and its character and language sets.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Value {
+    /// Present but empty.
+    Void,
+    /// A whole number.
+    Int(i32),
+    /// A real number.
+    Double(f64),
+    /// Owned text.
+    String(String),
+    /// A flag.
+    Bool(bool),
+    /// A 2x2 transform.
+    Matrix(Matrix),
+    /// A span of numbers.
+    Range(Range),
+    /// The characters a font covers, built by scanning it.
+    CharSet(CharSet),
+    /// The languages a font can write, built by scanning it.
+    LangSet(LangSet),
+}
+
+impl Value {
+    /// Borrow this as a [`ValueRef`], so query and font values compare uniformly.
+    pub fn as_value(&self) -> ValueRef<'_> {
+        match self {
+            Self::Void => ValueRef::Void,
+            Self::Int(i) => ValueRef::Int(*i),
+            Self::Double(d) => ValueRef::Double(*d),
+            Self::String(s) => ValueRef::String(s),
+            Self::Bool(b) => ValueRef::Bool(*b),
+            Self::Matrix(m) => ValueRef::Matrix(*m),
+            Self::Range(r) => ValueRef::Range(*r),
+            Self::CharSet(c) => ValueRef::CharSet(AnyCharSet::Owned(c)),
+            Self::LangSet(l) => ValueRef::LangSet(AnyLangSet::Owned(l)),
+        }
+    }
+}
+
+impl Value {
+    /// Copy a borrowed value, so it outlives the cache it came from.
+    pub fn from_value(value: &ValueRef<'_>) -> Self {
+        match value {
+            ValueRef::Void => Self::Void,
+            ValueRef::Int(i) => Self::Int(*i),
+            ValueRef::Double(d) => Self::Double(*d),
+            ValueRef::String(s) => Self::String(s.to_string()),
+            ValueRef::Bool(b) => Self::Bool(*b),
+            ValueRef::Matrix(m) => Self::Matrix(*m),
+            ValueRef::Range(r) => Self::Range(*r),
+            ValueRef::CharSet(c) => {
+                let mut coverage = CharSet::new();
+                coverage.merge_chars(c);
+                Self::CharSet(coverage)
+            }
+            ValueRef::LangSet(l) => Self::LangSet(LangSet::from_languages(l)),
+        }
+    }
+}
+
+impl From<i32> for Value {
+    fn from(v: i32) -> Self {
+        Self::Int(v)
+    }
+}
+
+impl From<f64> for Value {
+    fn from(v: f64) -> Self {
+        Self::Double(v)
+    }
+}
+
+impl From<bool> for Value {
+    fn from(v: bool) -> Self {
+        Self::Bool(v)
+    }
+}
+
+impl From<&str> for Value {
+    fn from(v: &str) -> Self {
+        Self::String(v.to_string())
+    }
+}
+
+impl From<String> for Value {
+    fn from(v: String) -> Self {
+        Self::String(v)
+    }
 }

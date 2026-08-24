@@ -11,7 +11,9 @@ use std::collections::HashMap;
 use crate::casefold;
 use crate::fnv::BuildPassthrough;
 use crate::object::Object;
-use crate::query::{Pattern, Property, Value};
+use crate::object::Property;
+use crate::pattern::Pattern;
+use crate::value::Value;
 use crate::value::{Binding, Matrix};
 
 /// Which pattern a rule set applies to.

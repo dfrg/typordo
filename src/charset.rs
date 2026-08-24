@@ -787,7 +787,7 @@ impl std::fmt::Display for AnyCharSet<'_> {
 mod set_tests {
     use super::CharSet;
 
-    fn coverage(chars: &str) -> CharSet {
+    fn char_set(chars: &str) -> CharSet {
         let mut set = CharSet::new();
         for c in chars.chars() {
             set.insert(c);
@@ -797,13 +797,13 @@ mod set_tests {
 
     #[test]
     fn union_takes_everything_from_both() {
-        let joined = coverage("abc").union(&coverage("cde"));
+        let joined = char_set("abc").union(&char_set("cde"));
         assert_eq!(joined.chars().collect::<String>(), "abcde");
     }
 
     #[test]
     fn subtract_takes_only_what_the_other_has() {
-        let left = coverage("abcde").subtract(&coverage("bd"));
+        let left = char_set("abcde").subtract(&char_set("bd"));
         assert_eq!(left.chars().collect::<String>(), "ace");
     }
 
@@ -812,8 +812,8 @@ mod set_tests {
     /// difference no character accounts for.
     #[test]
     fn an_emptied_page_is_dropped() {
-        let latin = coverage("abc");
-        let han = coverage("\u{4e00}");
+        let latin = char_set("abc");
+        let han = char_set("\u{4e00}");
         let both = latin.union(&han);
         assert_eq!(both.subtract(&han), latin);
         assert_eq!(both.subtract(&han).len(), 3);
@@ -821,15 +821,15 @@ mod set_tests {
 
     #[test]
     fn union_spans_pages() {
-        let joined = coverage("a").union(&coverage("\u{4e00}\u{10000}"));
+        let joined = char_set("a").union(&char_set("\u{4e00}\u{10000}"));
         assert_eq!(joined.len(), 3);
         assert!(joined.contains('\u{10000}'));
     }
 
     #[test]
     fn neither_operation_changes_its_operands() {
-        let a = coverage("abc");
-        let b = coverage("bcd");
+        let a = char_set("abc");
+        let b = char_set("bcd");
         a.union(&b);
         a.subtract(&b);
         assert_eq!(a.chars().collect::<String>(), "abc");

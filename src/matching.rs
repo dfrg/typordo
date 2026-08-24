@@ -17,7 +17,8 @@ use crate::langset;
 use crate::object::Object;
 use crate::pattern::PatternRef;
 use crate::pattern::Values;
-use crate::query::{Element, Pattern, Value};
+use crate::pattern::{Element, Pattern};
+use crate::value::Value;
 use crate::value::{Binding, ValueRef};
 use std::collections::HashMap;
 

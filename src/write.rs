@@ -29,7 +29,8 @@ use std::collections::HashMap;
 
 use crate::charset::CharSet;
 use crate::langset::LangSet;
-use crate::query::{Pattern, Value};
+use crate::pattern::Pattern;
+use crate::value::Value;
 use crate::value::{Binding, Matrix, Range};
 
 /// `FcRef` for a structure that is not reference counted, `FC_REF_CONSTANT`.

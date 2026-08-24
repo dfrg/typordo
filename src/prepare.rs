@@ -9,9 +9,10 @@
 use crate::config::Config;
 use crate::matching;
 use crate::object::Object;
+use crate::pattern::Pattern;
 use crate::pattern::PatternRef;
-use crate::query::{Pattern, Value};
 use crate::rules::MatchKind;
+use crate::value::Value;
 use crate::value::{Binding, ValueRef};
 
 /// The three name properties that travel with a parallel language list.

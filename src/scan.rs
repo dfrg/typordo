@@ -18,7 +18,8 @@ use crate::casefold;
 use crate::charset::CharSet;
 use crate::langset::LangSet;
 use crate::object::Object;
-use crate::query::{Pattern, Value};
+use crate::pattern::Pattern;
+use crate::value::Value;
 use crate::weight;
 
 /// Why a font file could not be scanned.
@@ -183,7 +184,7 @@ fn is_decorative(pattern: &Pattern) -> bool {
     const WORDS: [&str; 6] = ["shadow", "caps", "antiqua", "romansc", "embosed", "dunhill"];
     let Some(element) = pattern.get(Object::Style) else { return false };
     element.values().any(|(value, _)| {
-        let crate::query::Value::String(style) = value else { return false };
+        let crate::value::Value::String(style) = value else { return false };
         let lowered = style.to_lowercase();
         WORDS.iter().any(|word| lowered.contains(word))
     })
@@ -563,7 +564,7 @@ fn add_variable_attributes(font: &FontRef<'_>, pattern: &mut Pattern) {
             end: convert(axis.max_value().to_f64()),
         };
         pattern.remove(object);
-        pattern.add(object, crate::query::Value::Range(range));
+        pattern.add(object, crate::value::Value::Range(range));
     }
 }
 
@@ -769,7 +770,7 @@ fn approximately_equal(a: u16, b: u16) -> bool {
 fn slant(font: &FontRef<'_>, pattern: &Pattern) -> i32 {
     if let Some(element) = pattern.get(Object::Style) {
         for (value, _) in element.values() {
-            let crate::query::Value::String(style) = value else {
+            let crate::value::Value::String(style) = value else {
                 continue;
             };
             let lowered = style.to_lowercase();

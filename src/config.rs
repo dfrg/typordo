@@ -31,11 +31,13 @@ use crate::glob;
 use crate::langset::LangSet;
 use crate::md5;
 use crate::object::Object;
+use crate::object::Property;
+use crate::pattern::Pattern;
 use crate::pattern::PatternRef;
-use crate::query::{Pattern, Property, Value};
 use crate::rules::{
     BinaryOp, Compare, Edit, EditMode, Expr, MatchKind, Qual, Rule, Step, Test, UnaryOp,
 };
+use crate::value::Value;
 use crate::value::{Binding, Matrix, Range, ValueRef};
 use crate::xml::{Event, Reader, XmlError};
 
@@ -460,7 +462,7 @@ fn uuid_name(dir: &Path) -> Option<String> {
 /// is left alone entirely -- fontconfig stops at the first such value rather
 /// than skipping just that one language.
 fn add_default_langs(query: &mut Pattern) {
-    let langs = crate::query::default_langs();
+    let langs = crate::locale::default_langs();
     for lang in langs {
         if let Some(element) = query.get(Object::Lang) {
             let already = element.values().any(|(value, _)| match value {

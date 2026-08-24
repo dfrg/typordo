@@ -273,3 +273,43 @@ impl std::fmt::Display for Object {
         f.write_str(self.name())
     }
 }
+
+/// A property key: one of the built-in [`Object`]s, or a name a configuration
+/// file invented.
+///
+/// Fontconfig lets a config assign to any name; unknown ones get ids above the
+/// built-in range and act as scratch variables that rules pass between
+/// themselves. `10-scale-bitmap-fonts.conf` computes `pixelsizefixupfactor`
+/// this way and reads it back two rules later.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub enum Property {
+    /// One of the properties fontconfig defines.
+    Known(Object),
+    /// A name only this configuration knows.
+    Custom(String),
+}
+
+impl Property {
+    /// Resolve a name, preferring the built-in meaning.
+    pub fn parse(name: &str) -> Self {
+        match Object::from_name(name) {
+            Some(object) => Self::Known(object),
+            None => Self::Custom(name.to_string()),
+        }
+    }
+}
+
+impl From<Object> for Property {
+    fn from(object: Object) -> Self {
+        Self::Known(object)
+    }
+}
+
+impl std::fmt::Display for Property {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Known(object) => object.fmt(f),
+            Self::Custom(name) => f.write_str(name),
+        }
+    }
+}

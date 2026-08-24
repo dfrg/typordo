@@ -113,6 +113,7 @@ mod glob;
 pub mod langs;
 mod langset;
 mod layout;
+mod locale;
 mod matching;
 mod md5;
 #[cfg(feature = "scan")]
@@ -121,7 +122,6 @@ mod object;
 mod orth;
 mod pattern;
 mod prepare;
-mod query;
 mod rules;
 #[cfg(feature = "scan")]
 mod scan;
@@ -141,13 +141,13 @@ pub use config::{
 };
 pub use error::{Error, Result};
 pub use langset::{AnyLangSet, LangResult, LangSet, LangSetRef};
+pub use locale::default_langs;
 pub use matching::{best, best_value, score, sort, sorted, BestValue, Priority, Score, PRIORITIES};
-pub use object::Object;
-pub use pattern::{Bindings, ElementRef, Elements, PatternRef, Values};
+pub use object::{Object, Property};
+pub use pattern::{Bindings, Element, ElementRef, Elements, Pattern, PatternRef, Values};
 pub use prepare::render_prepare;
-pub use query::{default_langs, Element, Pattern, Value};
 pub use rules::MatchKind;
 #[cfg(feature = "scan")]
 pub use scan::{scan_bytes, scan_file, ScanError};
-pub use value::{Binding, Matrix, Range, ValueRef};
+pub use value::{Binding, Matrix, Range, Value, ValueRef};
 pub use write::CacheWriter;
