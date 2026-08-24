@@ -3,6 +3,11 @@ name = "typordo"
 version = "0.1.0"
 edition = "2021"
 license = "MIT"
+# Leads with the word people search for. The name does not contain "font" or
+# "config", so nothing but this and the keywords will lead anyone here.
+description = "Fontconfig without libfontconfig: reads and writes its cache format, parses its configuration, and matches fonts the way it does."
+keywords = ["fontconfig", "font", "fonts", "font-matching", "font-fallback"]
+categories = ["text-processing", "graphics"]
 # Data generated into src/ comes from upstream sources; see NOTICE.
 #
 # The generator inputs stay in the repository but not in the published
