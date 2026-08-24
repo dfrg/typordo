@@ -4,7 +4,7 @@
 //! cargo run --example fc_query -- --format family /path/to/font.ttf
 //! ```
 
-use fontconf::{Object, OwnedValue, Query};
+use typordo::{Object, Pattern, Value};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut format = "family".to_string();
@@ -35,7 +35,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         for line in std::io::stdin().lock().lines() {
             let file = line?;
             let file = file.trim_end();
-            match fontconf::scan_file(std::path::Path::new(file)) {
+            match typordo::scan_file(std::path::Path::new(file)) {
                 Ok(patterns) => {
                     // A marker per file, so a harness can split the stream
                     // back into per-file answers.
@@ -54,7 +54,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     for file in &files {
-        match fontconf::scan_file(std::path::Path::new(file)) {
+        match typordo::scan_file(std::path::Path::new(file)) {
             Ok(patterns) => {
                 for pattern in patterns {
                     println!("{}", show(&pattern, field));
@@ -68,7 +68,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-fn show(pattern: &Query, field: Option<Object>) -> String {
+fn show(pattern: &Pattern, field: Option<Object>) -> String {
     let Some(field) = field else {
         // The property names, in the order the pattern holds them.
         return pattern
@@ -83,15 +83,15 @@ fn show(pattern: &Query, field: Option<Object>) -> String {
     element
         .values()
         .map(|(value, _)| match value {
-            OwnedValue::String(s) => s.clone(),
-            OwnedValue::Int(i) => i.to_string(),
-            OwnedValue::Double(d) => format_g(*d),
-            OwnedValue::Bool(b) => if *b { "True" } else { "False" }.to_string(),
-            OwnedValue::Range(r) => format!("[{} {}]", format_g(r.begin), format_g(r.end)),
-            OwnedValue::Matrix(m) => format!("[{} {}; {} {}]", m.xx, m.xy, m.yx, m.yy),
-            OwnedValue::CharSet(c) => fontconf::CharSetRef::Owned(c).to_string(),
-            OwnedValue::LangSet(l) => fontconf::LangSetRef::Owned(l).to_string(),
-            OwnedValue::Void => String::new(),
+            Value::String(s) => s.clone(),
+            Value::Int(i) => i.to_string(),
+            Value::Double(d) => format_g(*d),
+            Value::Bool(b) => if *b { "True" } else { "False" }.to_string(),
+            Value::Range(r) => format!("[{} {}]", format_g(r.begin), format_g(r.end)),
+            Value::Matrix(m) => format!("[{} {}; {} {}]", m.xx, m.xy, m.yx, m.yy),
+            Value::CharSet(c) => typordo::AnyCharSet::Owned(c).to_string(),
+            Value::LangSet(l) => typordo::AnyLangSet::Owned(l).to_string(),
+            Value::Void => String::new(),
         })
         .collect::<Vec<_>>()
         .join(",")

@@ -12,7 +12,7 @@ export PATH="$HOME/.cargo/bin:$PATH"
 export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$PWD/target}"
 cargo build -q --release --example fc_list || exit 1
 
-CONF=/tmp/fontconf-select
+CONF=/tmp/typordo-select
 mkdir -p $CONF
 
 write_conf() {

@@ -7,8 +7,8 @@
 
 use std::path::{Path, PathBuf};
 
-use fontconf::CachePolicy;
-use fontconf::Config;
+use typordo::CachePolicy;
+use typordo::Config;
 
 fn fixture_dir() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/config")
@@ -63,7 +63,7 @@ fn a_missing_include_is_not_an_error() {
 #[test]
 fn a_missing_config_file_is_an_error() {
     let result = Config::load_from(&fixture_dir().join("no-such-file.conf"));
-    assert!(matches!(result, Err(fontconf::ConfigError::NotFound(_))));
+    assert!(matches!(result, Err(typordo::ConfigError::NotFound(_))));
 }
 
 #[test]
@@ -103,7 +103,7 @@ fn walking_caches_with_none_present_yields_nothing() {
 /// A config written to a temporary file, since these all turn on attributes
 /// no checked-in fixture carries.
 fn from_source(name: &str, body: &str) -> Config {
-    let dir = std::env::temp_dir().join("fontconf-naming");
+    let dir = std::env::temp_dir().join("typordo-naming");
     std::fs::create_dir_all(&dir).unwrap();
     let path = dir.join(format!("{name}.conf"));
     std::fs::write(
@@ -201,7 +201,7 @@ fn a_prefix_match_lands_on_a_separator() {
 
 /// A font directory and a cache directory, with a config naming both.
 fn policy_fixture(name: &str) -> (PathBuf, Config) {
-    let root = std::env::temp_dir().join(format!("fontconf-policy-{name}"));
+    let root = std::env::temp_dir().join(format!("typordo-policy-{name}"));
     let _ = std::fs::remove_dir_all(&root);
     let fonts = root.join("fonts");
     let caches = root.join("caches");
@@ -233,7 +233,7 @@ fn a_missing_cache_is_reported_rather_than_hidden() {
     assert_eq!(caches.by_ref().count(), 0);
     let skipped = caches.skipped();
     assert_eq!(skipped.len(), 1, "{skipped:?}");
-    assert_eq!(skipped[0].reason, fontconf::SkipReason::Missing);
+    assert_eq!(skipped[0].reason, typordo::SkipReason::Missing);
 }
 
 #[cfg(feature = "scan")]
@@ -277,16 +277,16 @@ fn a_stale_cache_is_used_or_skipped_as_asked() {
 
     // Skipped: nothing comes back, and the reason is recorded.
     let mut skipping = config
-        .caches(CachePolicy { missing: fontconf::IfMissing::Skip, stale: fontconf::IfStale::Skip });
+        .caches(CachePolicy { missing: typordo::IfMissing::Skip, stale: typordo::IfStale::Skip });
     assert_eq!(skipping.by_ref().count(), 0, "Skip should drop a stale cache");
     assert_eq!(skipping.skipped().len(), 1);
-    assert_eq!(skipping.skipped()[0].reason, fontconf::SkipReason::Stale);
+    assert_eq!(skipping.skipped()[0].reason, typordo::SkipReason::Stale);
 
     // Rebuilt: scanning brings it back up to date, and a plain read is then
     // no longer stale.
     assert_eq!(config.build_fonts().count(), 1);
     let mut after = config
-        .caches(CachePolicy { missing: fontconf::IfMissing::Skip, stale: fontconf::IfStale::Skip });
+        .caches(CachePolicy { missing: typordo::IfMissing::Skip, stale: typordo::IfStale::Skip });
     assert_eq!(after.by_ref().count(), 1, "a rebuilt cache should be current");
     assert!(after.skipped().is_empty(), "{:?}", after.skipped());
 }

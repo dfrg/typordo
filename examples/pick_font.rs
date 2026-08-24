@@ -11,9 +11,9 @@
 
 use std::error::Error;
 
-use fontconf::{
-    best, render_prepare, CachePolicy, Config, Object, OwnedCharSet, OwnedValue, Pattern, Priority,
-    Query,
+use typordo::{
+    best, render_prepare, CachePolicy, CharSet, Config, Object, Pattern, PatternRef, Priority,
+    Value,
 };
 
 fn main() -> Result<(), Box<dyn Error>> {
@@ -35,7 +35,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     // have to outlive the fonts. `accepts` applies the config's <selectfont>
     // rules, which is how a system hides a font without uninstalling it.
     let caches: Vec<_> = config.caches(CachePolicy::read_only()).collect();
-    let fonts: Vec<Pattern<'_>> = caches
+    let fonts: Vec<PatternRef<'_>> = caches
         .iter()
         .filter_map(|(_, cache)| cache.fonts().ok())
         .flatten()
@@ -46,15 +46,15 @@ fn main() -> Result<(), Box<dyn Error>> {
     // What we want. A charset asks for coverage of specific characters, which
     // is what makes this a fallback query rather than a name lookup: no font
     // is called "こんにちは", but some font covers it.
-    let mut query = Query::new();
+    let mut query = Pattern::new();
     query.add(Object::Family, family);
     query.add(Object::Lang, lang);
 
-    let mut wanted = OwnedCharSet::new();
+    let mut wanted = CharSet::new();
     for c in text.chars() {
         wanted.insert(c);
     }
-    query.add(Object::Charset, OwnedValue::CharSet(wanted));
+    query.add(Object::Charset, Value::CharSet(wanted));
 
     // Both rewrites, in this order. The first resolves `sans-serif` into the
     // real families the configuration prefers; the second fills in the
@@ -86,7 +86,9 @@ fn main() -> Result<(), Box<dyn Error>> {
     // it does not reject them. Whether the answer is usable is a question
     // about coverage, and it is the caller's to ask.
     let missing: Vec<char> = match font.value(Object::Charset) {
-        Some(fontconf::Value::CharSet(set)) => text.chars().filter(|c| !set.contains(*c)).collect(),
+        Some(typordo::ValueRef::CharSet(set)) => {
+            text.chars().filter(|c| !set.contains(*c)).collect()
+        }
         _ => text.chars().collect(),
     };
     if missing.is_empty() {

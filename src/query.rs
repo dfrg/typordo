@@ -1,23 +1,23 @@
 //! A pattern you can build and modify: the query side of matching.
 //!
-//! [`Pattern`](crate::Pattern) is a cursor into a cache and is therefore
+//! [`PatternRef`](crate::PatternRef) is a cursor into a cache and is therefore
 //! read-only and borrowed. A query is the other thing fontconfig calls an
 //! `FcPattern`: something a caller assembles, that configuration rewrites,
 //! and that gets scored against every font.
 
 use std::fmt;
 
-use crate::charset::{CharSetRef, OwnedCharSet};
-use crate::langset::{LangSetRef, OwnedLangSet};
+use crate::charset::{AnyCharSet, CharSet};
+use crate::langset::{AnyLangSet, LangSet};
 use crate::object::Object;
-use crate::value::{Binding, Matrix, Range, Value};
+use crate::value::{Binding, Matrix, Range, ValueRef};
 
 /// A value a query can hold.
 ///
-/// The same shapes as [`Value`], but owning its strings. Character sets and
+/// The same shapes as [`ValueRef`], but owning its strings. Character sets and
 /// language sets are not representable yet, so a query cannot carry one.
 #[derive(Clone, Debug, PartialEq)]
-pub enum OwnedValue {
+pub enum Value {
     /// Present but empty.
     Void,
     /// A whole number.
@@ -33,74 +33,74 @@ pub enum OwnedValue {
     /// A span of numbers.
     Range(Range),
     /// The characters a font covers, built by scanning it.
-    CharSet(OwnedCharSet),
+    CharSet(CharSet),
     /// The languages a font can write, built by scanning it.
-    LangSet(OwnedLangSet),
+    LangSet(LangSet),
 }
 
-impl OwnedValue {
-    /// Borrow this as a [`Value`], so query and font values compare uniformly.
-    pub fn as_value(&self) -> Value<'_> {
+impl Value {
+    /// Borrow this as a [`ValueRef`], so query and font values compare uniformly.
+    pub fn as_value(&self) -> ValueRef<'_> {
         match self {
-            Self::Void => Value::Void,
-            Self::Int(i) => Value::Int(*i),
-            Self::Double(d) => Value::Double(*d),
-            Self::String(s) => Value::String(s),
-            Self::Bool(b) => Value::Bool(*b),
-            Self::Matrix(m) => Value::Matrix(*m),
-            Self::Range(r) => Value::Range(*r),
-            Self::CharSet(c) => Value::CharSet(CharSetRef::Owned(c)),
-            Self::LangSet(l) => Value::LangSet(LangSetRef::Owned(l)),
+            Self::Void => ValueRef::Void,
+            Self::Int(i) => ValueRef::Int(*i),
+            Self::Double(d) => ValueRef::Double(*d),
+            Self::String(s) => ValueRef::String(s),
+            Self::Bool(b) => ValueRef::Bool(*b),
+            Self::Matrix(m) => ValueRef::Matrix(*m),
+            Self::Range(r) => ValueRef::Range(*r),
+            Self::CharSet(c) => ValueRef::CharSet(AnyCharSet::Owned(c)),
+            Self::LangSet(l) => ValueRef::LangSet(AnyLangSet::Owned(l)),
         }
     }
 }
 
-impl OwnedValue {
+impl Value {
     /// Copy a borrowed value, so it outlives the cache it came from.
-    pub fn from_value(value: &Value<'_>) -> Self {
+    pub fn from_value(value: &ValueRef<'_>) -> Self {
         match value {
-            Value::Void => Self::Void,
-            Value::Int(i) => Self::Int(*i),
-            Value::Double(d) => Self::Double(*d),
-            Value::String(s) => Self::String(s.to_string()),
-            Value::Bool(b) => Self::Bool(*b),
-            Value::Matrix(m) => Self::Matrix(*m),
-            Value::Range(r) => Self::Range(*r),
-            Value::CharSet(c) => {
-                let mut coverage = OwnedCharSet::new();
+            ValueRef::Void => Self::Void,
+            ValueRef::Int(i) => Self::Int(*i),
+            ValueRef::Double(d) => Self::Double(*d),
+            ValueRef::String(s) => Self::String(s.to_string()),
+            ValueRef::Bool(b) => Self::Bool(*b),
+            ValueRef::Matrix(m) => Self::Matrix(*m),
+            ValueRef::Range(r) => Self::Range(*r),
+            ValueRef::CharSet(c) => {
+                let mut coverage = CharSet::new();
                 coverage.merge_chars(c);
                 Self::CharSet(coverage)
             }
-            Value::LangSet(l) => Self::LangSet(OwnedLangSet::from_languages(l)),
+            ValueRef::LangSet(l) => Self::LangSet(LangSet::from_languages(l)),
         }
     }
 }
 
-impl From<i32> for OwnedValue {
+impl From<i32> for Value {
     fn from(v: i32) -> Self {
         Self::Int(v)
     }
 }
 
-impl From<f64> for OwnedValue {
+impl From<f64> for Value {
     fn from(v: f64) -> Self {
         Self::Double(v)
     }
 }
 
-impl From<bool> for OwnedValue {
+impl From<bool> for Value {
     fn from(v: bool) -> Self {
         Self::Bool(v)
     }
 }
 
-impl From<&str> for OwnedValue {
+impl From<&str> for Value {
     fn from(v: &str) -> Self {
         Self::String(v.to_string())
     }
 }
 
-impl From<String> for OwnedValue {
+impl From<String> for Value {
     fn from(v: String) -> Self {
         Self::String(v)
     }
@@ -148,16 +148,16 @@ impl std::fmt::Display for Property {
 
 /// A pattern being built up and matched against.
 ///
-/// The owned counterpart to [`Pattern`](crate::Pattern), which borrows from a
+/// The owned counterpart to [`PatternRef`](crate::PatternRef), which borrows from a
 /// cache. This is what a caller constructs and what matching takes.
 ///
 /// Two rewrites have to happen between building one and matching it, in this
 /// order, because fontconfig does the same and its scoring assumes both ran:
 ///
 /// ```no_run
-/// # use fontconf::{Config, Object, Query};
+/// # use typordo::{Config, Object, Pattern};
 /// # let config = Config::load()?;
-/// let mut query = Query::new();
+/// let mut query = Pattern::new();
 /// query.add(Object::Family, "sans-serif");
 ///
 /// config.substitute(&mut query);   // apply the config's <match> rules
@@ -172,19 +172,19 @@ impl std::fmt::Display for Property {
 /// Properties are kept sorted by [`Object::id`], which is the order the cache
 /// stores them in and the order scoring walks them in.
 #[derive(Clone, Debug, Default, PartialEq)]
-pub struct Query {
+pub struct Pattern {
     elements: Vec<Element>,
     /// Properties a configuration invented, kept apart from the built-in ones
     /// because nothing scores against them: they exist only so rules can pass
     /// values to later rules.
-    custom: Vec<(String, Vec<(OwnedValue, Binding)>)>,
+    custom: Vec<(String, Vec<(Value, Binding)>)>,
 }
 
 /// One property of a query, with every value held against it.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Element {
     object: Object,
-    values: Vec<(OwnedValue, Binding)>,
+    values: Vec<(Value, Binding)>,
 }
 
 impl Element {
@@ -194,12 +194,12 @@ impl Element {
     }
 
     /// The values held against it, in order.
-    pub fn values(&self) -> impl Iterator<Item = (&OwnedValue, Binding)> {
+    pub fn values(&self) -> impl Iterator<Item = (&Value, Binding)> {
         self.values.iter().map(|(v, b)| (v, *b))
     }
 }
 
-impl Query {
+impl Pattern {
     /// An empty query.
     pub fn new() -> Self {
         Self::default()
@@ -209,12 +209,12 @@ impl Query {
     ///
     /// A strong value came from the caller and outranks anything a
     /// configuration rule contributes.
-    pub fn add(&mut self, object: Object, value: impl Into<OwnedValue>) -> &mut Self {
+    pub fn add(&mut self, object: Object, value: impl Into<Value>) -> &mut Self {
         self.add_with_binding(object, value, Binding::Strong)
     }
 
     /// Append a weakly-bound value.
-    pub fn add_weak(&mut self, object: Object, value: impl Into<OwnedValue>) -> &mut Self {
+    pub fn add_weak(&mut self, object: Object, value: impl Into<Value>) -> &mut Self {
         self.add_with_binding(object, value, Binding::Weak)
     }
 
@@ -222,7 +222,7 @@ impl Query {
     pub fn add_with_binding(
         &mut self,
         object: Object,
-        value: impl Into<OwnedValue>,
+        value: impl Into<Value>,
         binding: Binding,
     ) -> &mut Self {
         let value = value.into();
@@ -255,14 +255,14 @@ impl Query {
     }
 
     /// The first value of `object`.
-    pub fn value(&self, object: Object) -> Option<&OwnedValue> {
+    pub fn value(&self, object: Object) -> Option<&Value> {
         self.get(object)?.values.first().map(|(v, _)| v)
     }
 
     /// The first value of `object` as a string.
     pub fn string(&self, object: Object) -> Option<&str> {
         match self.value(object)? {
-            OwnedValue::String(s) => Some(s),
+            Value::String(s) => Some(s),
             _ => None,
         }
     }
@@ -270,9 +270,9 @@ impl Query {
     /// The first value of `object` as a number, whatever it is stored as.
     pub fn number(&self, object: Object) -> Option<f64> {
         match self.value(object)? {
-            OwnedValue::Int(i) => Some(f64::from(*i)),
-            OwnedValue::Double(d) => Some(*d),
-            OwnedValue::Range(r) => Some((r.begin + r.end) * 0.5),
+            Value::Int(i) => Some(f64::from(*i)),
+            Value::Double(d) => Some(*d),
+            Value::Range(r) => Some((r.begin + r.end) * 0.5),
             _ => None,
         }
     }
@@ -294,7 +294,7 @@ impl Query {
 
     /// Copy a pattern out of a cache, so it can be edited or written back.
     ///
-    /// The reverse of writing one: [`Pattern`](crate::Pattern) borrows from a
+    /// The reverse of writing one: [`PatternRef`](crate::PatternRef) borrows from a
     /// cache file and cannot outlive it, and this is how you take one with
     /// you. It copies -- strings, coverage and all -- which is exactly what
     /// the borrowed form exists to avoid, so do it deliberately.
@@ -302,12 +302,12 @@ impl Query {
     /// Properties the cache identifies only by a runtime id are skipped:
     /// those ids were minted by whichever process wrote the file and mean
     /// nothing here.
-    pub fn from_pattern(pattern: &crate::Pattern<'_>) -> Self {
+    pub fn from_pattern(pattern: &crate::PatternRef<'_>) -> Self {
         let mut query = Self::new();
         for element in pattern.elements() {
             let Some(object) = element.object() else { continue };
             for (value, binding) in element.values().bindings() {
-                query.add_with_binding(object, OwnedValue::from_value(&value), binding);
+                query.add_with_binding(object, Value::from_value(&value), binding);
             }
         }
         query
@@ -320,12 +320,12 @@ impl Query {
     // --- properties a configuration invented -----------------------------
 
     /// The values held against a custom property.
-    pub fn custom(&self, name: &str) -> Option<&[(OwnedValue, Binding)]> {
+    pub fn custom(&self, name: &str) -> Option<&[(Value, Binding)]> {
         self.custom.iter().find(|(n, _)| n == name).map(|(_, v)| v.as_slice())
     }
 
     /// The value list for `property`, creating it if needed.
-    pub(crate) fn values_mut(&mut self, property: &Property) -> &mut Vec<(OwnedValue, Binding)> {
+    pub(crate) fn values_mut(&mut self, property: &Property) -> &mut Vec<(Value, Binding)> {
         match property {
             Property::Known(object) => {
                 let at = match self.position(*object) {
@@ -349,7 +349,7 @@ impl Query {
     }
 
     /// The values held against `property`, if it has any.
-    pub(crate) fn values_of(&self, property: &Property) -> Option<&[(OwnedValue, Binding)]> {
+    pub(crate) fn values_of(&self, property: &Property) -> Option<&[(Value, Binding)]> {
         match property {
             Property::Known(object) => self.get(*object).map(|e| e.values.as_slice()),
             Property::Custom(name) => self.custom(name),
@@ -374,7 +374,7 @@ impl Query {
     }
 
     /// Set `object` to exactly this one value, replacing anything there.
-    fn set(&mut self, object: Object, value: impl Into<OwnedValue>) {
+    fn set(&mut self, object: Object, value: impl Into<Value>) {
         self.remove(object);
         self.add(object, value);
     }
@@ -573,7 +573,7 @@ fn default_lang() -> String {
     default_langs().into_iter().next().unwrap_or_else(|| "en".to_string())
 }
 
-impl fmt::Display for Query {
+impl fmt::Display for Pattern {
     /// Roughly the form `fc-match` accepts, for diagnostics.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let mut first = true;
@@ -586,10 +586,10 @@ impl fmt::Display for Query {
                 }
                 write!(f, "{}=", element.object)?;
                 match value {
-                    OwnedValue::String(s) => write!(f, "{s}")?,
-                    OwnedValue::Int(i) => write!(f, "{i}")?,
-                    OwnedValue::Double(d) => write!(f, "{d}")?,
-                    OwnedValue::Bool(b) => write!(f, "{b}")?,
+                    Value::String(s) => write!(f, "{s}")?,
+                    Value::Int(i) => write!(f, "{i}")?,
+                    Value::Double(d) => write!(f, "{d}")?,
+                    Value::Bool(b) => write!(f, "{b}")?,
                     other => write!(f, "{other:?}")?,
                 }
             }

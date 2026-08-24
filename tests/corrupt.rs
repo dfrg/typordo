@@ -17,7 +17,7 @@
 
 use std::path::Path;
 
-use fontconf::{Cache, Object};
+use typordo::{Cache, Object};
 
 fn fixture(name: &str) -> Vec<u8> {
     let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures").join(name);
@@ -64,12 +64,12 @@ fn walk(cache: &Cache) -> usize {
             seen = seen.wrapping_add(element.id() as usize);
             for value in element.values() {
                 seen = seen.wrapping_add(match value {
-                    fontconf::Value::String(s) => s.len(),
-                    fontconf::Value::CharSet(chars) => {
+                    typordo::ValueRef::String(s) => s.len(),
+                    typordo::ValueRef::CharSet(chars) => {
                         let _ = chars.validate();
                         chars.chars().take(64).count() + chars.ranges().take(64).count()
                     }
-                    fontconf::Value::LangSet(langs) => {
+                    typordo::ValueRef::LangSet(langs) => {
                         let _ = langs.validate();
                         langs.langs().take(64).count()
                     }

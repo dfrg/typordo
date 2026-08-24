@@ -27,9 +27,9 @@
 
 use std::collections::HashMap;
 
-use crate::charset::OwnedCharSet;
-use crate::langset::OwnedLangSet;
-use crate::query::{OwnedValue, Query};
+use crate::charset::CharSet;
+use crate::langset::LangSet;
+use crate::query::{Pattern, Value};
 use crate::value::{Binding, Matrix, Range};
 
 /// `FcRef` for a structure that is not reference counted, `FC_REF_CONSTANT`.
@@ -49,8 +49,8 @@ use crate::layout::{self, LEAF, MATRIX, NATIVE as L, RANGE};
 /// is the only point anything is copied.
 ///
 /// ```no_run
-/// # use fontconf::{CacheWriter, Query};
-/// # let fonts: Vec<Query> = Vec::new();
+/// # use typordo::{CacheWriter, Pattern};
+/// # let fonts: Vec<Pattern> = Vec::new();
 /// let mut writer = CacheWriter::new("/usr/share/fonts/dejavu");
 /// writer.mtime(1_700_000_000, 0);
 /// for font in &fonts {
@@ -62,7 +62,7 @@ use crate::layout::{self, LEAF, MATRIX, NATIVE as L, RANGE};
 pub struct CacheWriter<'a> {
     dir: &'a str,
     subdirs: Vec<&'a str>,
-    fonts: Vec<&'a Query>,
+    fonts: Vec<&'a Pattern>,
     seconds: i32,
     nanoseconds: i64,
 }
@@ -98,7 +98,7 @@ impl<'a> CacheWriter<'a> {
     ///
     /// One face can contribute several patterns; a variable font adds one
     /// per named instance.
-    pub fn font(&mut self, pattern: &'a Query) -> &mut Self {
+    pub fn font(&mut self, pattern: &'a Pattern) -> &mut Self {
         self.fonts.push(pattern);
         self
     }
@@ -153,7 +153,7 @@ type CharSets = HashMap<Vec<u8>, usize>;
 /// Properties a configuration invented are skipped. Fontconfig gives those
 /// ids it mints at runtime, which mean nothing to the next process to read
 /// the file, so writing them would record noise.
-fn pattern(buf: &mut Buffer, query: &Query, charsets: &mut CharSets) -> usize {
+fn pattern(buf: &mut Buffer, query: &Pattern, charsets: &mut CharSets) -> usize {
     let count = query.len();
     let at = buf.reserve(L.pattern);
     buf.i32(at + L.num, count as i32);
@@ -186,43 +186,43 @@ fn pattern(buf: &mut Buffer, query: &Query, charsets: &mut CharSets) -> usize {
 ///
 /// Offsets inside a value are relative to the value, not to the field
 /// holding them.
-fn write_value(buf: &mut Buffer, at: usize, value: &OwnedValue, charsets: &mut CharSets) {
+fn write_value(buf: &mut Buffer, at: usize, value: &Value, charsets: &mut CharSets) {
     match value {
-        OwnedValue::Void => buf.i32(at + L.value_type, 0),
-        OwnedValue::Int(v) => {
+        Value::Void => buf.i32(at + L.value_type, 0),
+        Value::Int(v) => {
             buf.i32(at + L.value_type, 1);
             buf.i32(at + L.union, *v);
         }
-        OwnedValue::Double(v) => {
+        Value::Double(v) => {
             buf.i32(at + L.value_type, 2);
             buf.f64(at + L.union, *v);
         }
-        OwnedValue::String(v) => {
+        Value::String(v) => {
             buf.i32(at + L.value_type, 3);
             let text = buf.string(v);
             buf.encoded(at + L.union, at, text);
         }
-        OwnedValue::Bool(v) => {
+        Value::Bool(v) => {
             buf.i32(at + L.value_type, 4);
             buf.i32(at + L.union, i32::from(*v));
         }
-        OwnedValue::Matrix(v) => {
+        Value::Matrix(v) => {
             buf.i32(at + L.value_type, 5);
             let matrix = write_matrix(buf, v);
             buf.encoded(at + L.union, at, matrix);
         }
-        OwnedValue::CharSet(v) => {
+        Value::CharSet(v) => {
             buf.i32(at + L.value_type, 6);
             let set = write_charset(buf, v, charsets);
             buf.encoded(at + L.union, at, set);
         }
         // 7 is `FcTypeFTFace`, a live pointer that cannot be serialized.
-        OwnedValue::LangSet(v) => {
+        Value::LangSet(v) => {
             buf.i32(at + L.value_type, 8);
             let set = write_langset(buf, v);
             buf.encoded(at + L.union, at, set);
         }
-        OwnedValue::Range(v) => {
+        Value::Range(v) => {
             buf.i32(at + L.value_type, 9);
             let range = write_range(buf, v);
             buf.encoded(at + L.union, at, range);
@@ -250,7 +250,7 @@ fn write_range(buf: &mut Buffer, range: &Range) -> usize {
 ///
 /// The sharing is worth doing: a family with nine weights usually has nine
 /// identical coverages, and a leaf costs 32 bytes per 256 codepoints.
-fn write_charset(buf: &mut Buffer, coverage: &OwnedCharSet, charsets: &mut CharSets) -> usize {
+fn write_charset(buf: &mut Buffer, coverage: &CharSet, charsets: &mut CharSets) -> usize {
     let leaves = coverage.leaves();
     let mut key = Vec::with_capacity(leaves.len() * (2 + LEAF));
     for (page, leaf) in leaves {
@@ -289,7 +289,7 @@ fn write_charset(buf: &mut Buffer, coverage: &OwnedCharSet, charsets: &mut CharS
 /// The `extra` field holds languages that are not on that list, and is
 /// deliberately left null -- fontconfig does not serialize it either, and
 /// rejects a cache where it is anything else.
-fn write_langset(buf: &mut Buffer, set: &OwnedLangSet) -> usize {
+fn write_langset(buf: &mut Buffer, set: &LangSet) -> usize {
     let words = set.words();
     let at = buf.reserve(L.map + words.len() * 4);
     buf.u32(at + L.map_size, words.len() as u32);
@@ -378,9 +378,7 @@ impl Buffer {
 #[cfg(test)]
 mod tests {
     use super::CacheWriter;
-    use crate::{
-        Binding, Cache, Matrix, Object, OwnedCharSet, OwnedLangSet, OwnedValue, Query, Range,
-    };
+    use crate::{Binding, Cache, CharSet, LangSet, Matrix, Object, Pattern, Range, Value};
 
     /// Write a cache and read it straight back, strictly.
     fn round_trip(writer: &CacheWriter<'_>) -> Cache {
@@ -415,16 +413,16 @@ mod tests {
     }
 
     /// One font carrying every value type the format has.
-    fn kitchen_sink() -> Query {
-        let mut coverage = OwnedCharSet::new();
+    fn kitchen_sink() -> Pattern {
+        let mut coverage = CharSet::new();
         for c in ['A', 'B', 'Z', 'a', '\u{4e00}', '\u{10000}'] {
             coverage.insert(c);
         }
-        let mut langs = OwnedLangSet::new();
+        let mut langs = LangSet::new();
         langs.insert_index(crate::langs::index_of("en").unwrap());
         langs.insert_index(crate::langs::index_of("ja").unwrap());
 
-        let mut font = Query::new();
+        let mut font = Pattern::new();
         font.add(Object::File, "/fonts/Test.ttf");
         font.add(Object::Family, "Test");
         font.add(Object::Family, "Test Extra");
@@ -432,12 +430,12 @@ mod tests {
         font.add(Object::Slant, 0);
         font.add(Object::Outline, true);
         font.add(Object::Scalable, false);
-        font.add(Object::Size, OwnedValue::Double(12.5));
-        font.add(Object::Weight, OwnedValue::Range(Range { begin: 40.0, end: 210.0 }));
-        font.add(Object::Matrix, OwnedValue::Matrix(Matrix { xx: 1.0, xy: 0.2, yx: 0.0, yy: 1.0 }));
-        font.add(Object::Charset, OwnedValue::CharSet(coverage));
-        font.add(Object::Lang, OwnedValue::LangSet(langs));
-        font.add(Object::Foundry, OwnedValue::Void);
+        font.add(Object::Size, Value::Double(12.5));
+        font.add(Object::Weight, Value::Range(Range { begin: 40.0, end: 210.0 }));
+        font.add(Object::Matrix, Value::Matrix(Matrix { xx: 1.0, xy: 0.2, yx: 0.0, yy: 1.0 }));
+        font.add(Object::Charset, Value::CharSet(coverage));
+        font.add(Object::Lang, Value::LangSet(langs));
+        font.add(Object::Foundry, Value::Void);
         font
     }
 
@@ -449,12 +447,12 @@ mod tests {
         let cache = round_trip(&writer);
 
         let read = cache.fonts().unwrap().next().expect("one font");
-        assert_eq!(Query::from_pattern(&read), font);
+        assert_eq!(Pattern::from_pattern(&read), font);
     }
 
     #[test]
     fn bindings_round_trip() {
-        let mut font = Query::new();
+        let mut font = Pattern::new();
         font.add(Object::Family, "Strong");
         font.add_weak(Object::Family, "Weak");
         font.add_with_binding(Object::Family, "Same", Binding::Same);
@@ -484,7 +482,7 @@ mod tests {
     /// family as the primary one, so a reordered chain is a different font.
     #[test]
     fn value_order_is_preserved() {
-        let mut font = Query::new();
+        let mut font = Pattern::new();
         for name in ["First", "Second", "Third", "Fourth"] {
             font.add(Object::Family, name);
         }
@@ -517,7 +515,7 @@ mod tests {
         let cache = round_trip(&many);
         assert_eq!(cache.fonts().unwrap().count(), 10);
         for read in cache.fonts().unwrap() {
-            assert_eq!(Query::from_pattern(&read), font);
+            assert_eq!(Pattern::from_pattern(&read), font);
         }
     }
 
@@ -526,7 +524,7 @@ mod tests {
     /// which is the one case the offset encoding cannot express.
     #[test]
     fn an_empty_pattern_round_trips() {
-        let font = Query::new();
+        let font = Pattern::new();
         let mut writer = CacheWriter::new("/fonts");
         writer.font(&font);
         let cache = round_trip(&writer);

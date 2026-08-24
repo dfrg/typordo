@@ -5,7 +5,7 @@
 //! Extra Bold 205). That is enough to exercise family matching, ranges,
 //! priority order and tie-breaking without a font system present.
 
-use fontconf::{Cache, Object, OwnedValue, Priority, Query, Score};
+use typordo::{Cache, Object, Pattern, Priority, Score, Value};
 
 fn cantarell() -> Cache {
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -14,14 +14,14 @@ fn cantarell() -> Cache {
 }
 
 /// The style of the font a query picks.
-fn best_style(cache: &Cache, query: &Query) -> Option<String> {
+fn best_style(cache: &Cache, query: &Pattern) -> Option<String> {
     let fonts: Vec<_> = cache.fonts().unwrap().collect();
-    let (font, _) = fontconf::best(query, fonts)?;
+    let (font, _) = typordo::best(query, fonts)?;
     Some(font.string(Object::Style).unwrap_or("<none>").to_string())
 }
 
-fn query(build: impl FnOnce(&mut Query)) -> Query {
-    let mut q = Query::new();
+fn query(build: impl FnOnce(&mut Pattern)) -> Pattern {
+    let mut q = Pattern::new();
     build(&mut q);
     q.default_substitute();
     q
@@ -86,7 +86,7 @@ fn family_matching_ignores_case_and_blanks() {
             q.add(Object::Family, name);
         });
         let fonts: Vec<_> = cache.fonts().unwrap().collect();
-        let (font, score) = fontconf::best(&q, fonts).expect("a match");
+        let (font, score) = typordo::best(&q, fonts).expect("a match");
         assert_eq!(font.string(Object::Family), Some("Cantarell"));
         assert_eq!(score.get(Priority::FamilyStrong), 0.0, "{name} should match exactly");
     }
@@ -101,7 +101,7 @@ fn an_unknown_family_still_returns_a_font() {
         q.add(Object::Family, "No Such Family");
     });
     let fonts: Vec<_> = cache.fonts().unwrap().collect();
-    let (_, score) = fontconf::best(&q, fonts).expect("fontconfig always answers");
+    let (_, score) = typordo::best(&q, fonts).expect("fontconfig always answers");
     assert!(score.get(Priority::FamilyStrong) > 1e90, "should be the no-match sentinel");
 }
 
@@ -120,8 +120,8 @@ fn family_order_is_the_score() {
         q.add(Object::Family, "Other");
         q.add(Object::Family, "Cantarell");
     });
-    let (_, a) = fontconf::best(&first, fonts.clone()).unwrap();
-    let (_, b) = fontconf::best(&second, fonts).unwrap();
+    let (_, a) = typordo::best(&first, fonts.clone()).unwrap();
+    let (_, b) = typordo::best(&second, fonts).unwrap();
     assert_eq!(a.get(Priority::FamilyStrong), 0.0);
     assert_eq!(b.get(Priority::FamilyStrong), 1.0);
     assert!(a.beats(&b));
@@ -134,11 +134,11 @@ fn binding_decides_which_family_slot_is_used() {
     let cache = cantarell();
     let fonts: Vec<_> = cache.fonts().unwrap().collect();
 
-    let mut weak = Query::new();
+    let mut weak = Pattern::new();
     weak.add_weak(Object::Family, "Cantarell");
     weak.default_substitute();
 
-    let (_, score) = fontconf::best(&weak, fonts).unwrap();
+    let (_, score) = typordo::best(&weak, fonts).unwrap();
     assert_eq!(score.get(Priority::FamilyWeak), 0.0);
     assert!(score.get(Priority::FamilyStrong) > 1e90);
     assert!(Priority::FamilyStrong < Priority::Lang);
@@ -160,8 +160,8 @@ fn an_earlier_priority_outranks_every_later_one() {
         q.add(Object::Family, "No Such Family");
         q.add(Object::Weight, 80);
     });
-    let (_, good) = fontconf::best(&right_family, fonts.clone()).unwrap();
-    let (_, bad) = fontconf::best(&wrong_family, fonts).unwrap();
+    let (_, good) = typordo::best(&right_family, fonts.clone()).unwrap();
+    let (_, bad) = typordo::best(&wrong_family, fonts).unwrap();
     assert!(good.get(Priority::Weight) > bad.get(Priority::Weight));
     assert!(good.beats(&bad), "family must outrank weight");
 }
@@ -174,21 +174,21 @@ fn a_range_contains_rather_than_approximates() {
     let variable = cache
         .fonts()
         .unwrap()
-        .find(|f| f.value(Object::Variable) == Some(fontconf::Value::Bool(true)))
+        .find(|f| f.value(Object::Variable) == Some(typordo::ValueRef::Bool(true)))
         .expect("the fixture has a variable pattern");
 
     let inside = query(|q| {
         q.add(Object::Family, "Cantarell");
         q.add(Object::Weight, 123); // within 0..205, but no instance has it
     });
-    let score = fontconf::score(&inside, &variable).unwrap();
+    let score = typordo::score(&inside, &variable).unwrap();
     assert_eq!(score.get(Priority::Weight), 0.0, "inside the range is an exact match");
 
     let outside = query(|q| {
         q.add(Object::Family, "Cantarell");
         q.add(Object::Weight, 255); // 50 past the end
     });
-    let score = fontconf::score(&outside, &variable).unwrap();
+    let score = typordo::score(&outside, &variable).unwrap();
     assert_eq!(score.get(Priority::Weight), 50_000.0, "distance, scaled by 1000");
 }
 
@@ -200,7 +200,7 @@ fn scores_compare_lexicographically() {
         q.add(Object::Family, "Cantarell");
         q.add(Object::Weight, 200);
     });
-    let ranked = fontconf::sorted(&q, fonts);
+    let ranked = typordo::sorted(&q, fonts);
     assert_eq!(ranked.len(), 6);
     assert_eq!(ranked[0].0.string(Object::Style), Some("Bold"));
     // Sorted really is sorted: each score is no worse than the next.
@@ -209,7 +209,7 @@ fn scores_compare_lexicographically() {
     }
     // And `best` agrees with the head of the ranking.
     let fonts: Vec<_> = cache.fonts().unwrap().collect();
-    let (best, _) = fontconf::best(&q, fonts).unwrap();
+    let (best, _) = typordo::best(&q, fonts).unwrap();
     assert_eq!(best.string(Object::Style), ranked[0].0.string(Object::Style));
 }
 
@@ -232,7 +232,7 @@ fn a_tie_keeps_the_earlier_font() {
     q.remove(Object::PixelSize);
     q.remove(Object::Fontversion);
 
-    let (best, _) = fontconf::best(&q, fonts).unwrap();
+    let (best, _) = typordo::best(&q, fonts).unwrap();
     assert_eq!(best.string(Object::Style).map(str::to_string), first_style);
 }
 
@@ -243,18 +243,18 @@ fn a_score_of_all_zeroes_beats_nothing_and_loses_to_nothing() {
     let q = query(|q| {
         q.add(Object::Family, "Cantarell");
     });
-    let score: Score = fontconf::score(&q, &fonts[0]).unwrap();
+    let score: Score = typordo::score(&q, &fonts[0]).unwrap();
     assert!(!score.beats(&score), "a score must not beat itself");
-    assert_eq!(score.as_slice().len(), fontconf::PRIORITIES);
+    assert_eq!(score.as_slice().len(), typordo::PRIORITIES);
 }
 
 // --- preparing the answer -------------------------------------------------
 
-fn plain_config() -> fontconf::Config {
+fn plain_config() -> typordo::Config {
     // A config with no rules at all, so prepare is tested on its own.
     let path =
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/config/fonts.conf");
-    fontconf::Config::load_from(&path).expect("fixture config")
+    typordo::Config::load_from(&path).expect("fixture config")
 }
 
 /// The answer is a merge, not the font's cache entry: properties both sides
@@ -270,8 +270,8 @@ fn preparing_merges_the_font_and_the_query() {
         q.add(Object::Dpi, 96.0);
     });
     let fonts: Vec<_> = cache.fonts().unwrap().collect();
-    let (best, _) = fontconf::best(&q, fonts).unwrap();
-    let prepared = fontconf::render_prepare(&config, &q, &best);
+    let (best, _) = typordo::best(&q, fonts).unwrap();
+    let prepared = typordo::render_prepare(&config, &q, &best);
 
     // From the font.
     assert_eq!(prepared.string(Object::Family), Some("Cantarell"));
@@ -292,14 +292,14 @@ fn preparing_pins_a_variable_axis() {
     let variable = cache
         .fonts()
         .unwrap()
-        .find(|f| f.value(Object::Variable) == Some(fontconf::Value::Bool(true)))
+        .find(|f| f.value(Object::Variable) == Some(typordo::ValueRef::Bool(true)))
         .expect("a variable pattern");
 
     let q = query(|q| {
         q.add(Object::Family, "Cantarell");
         q.add(Object::Weight, 123);
     });
-    let prepared = fontconf::render_prepare(&config, &q, &variable);
+    let prepared = typordo::render_prepare(&config, &q, &variable);
 
     // The range collapsed to the requested weight, not to an endpoint.
     assert_eq!(prepared.number(Object::Weight), Some(123.0));
@@ -318,13 +318,13 @@ fn a_request_outside_the_axis_clamps_to_it() {
     let variable = cache
         .fonts()
         .unwrap()
-        .find(|f| f.value(Object::Variable) == Some(fontconf::Value::Bool(true)))
+        .find(|f| f.value(Object::Variable) == Some(typordo::ValueRef::Bool(true)))
         .unwrap();
     let q = query(|q| {
         q.add(Object::Family, "Cantarell");
         q.add(Object::Weight, 255); // the font stops at 205
     });
-    let prepared = fontconf::render_prepare(&config, &q, &variable);
+    let prepared = typordo::render_prepare(&config, &q, &variable);
     assert_eq!(prepared.number(Object::Weight), Some(205.0));
 }
 
@@ -338,7 +338,7 @@ fn a_static_face_records_no_variations() {
     let q = query(|q| {
         q.add(Object::Family, "Cantarell");
     });
-    let prepared = fontconf::render_prepare(&config, &q, &regular);
+    let prepared = typordo::render_prepare(&config, &q, &regular);
     assert_eq!(prepared.string(Object::FontVariations), None);
 }
 
@@ -354,8 +354,8 @@ fn trimming_drops_fonts_that_add_no_coverage() {
     });
     let fonts: Vec<_> = cache.fonts().unwrap().collect();
 
-    let all = fontconf::sort(&q, fonts.clone(), false);
-    let trimmed = fontconf::sort(&q, fonts, true);
+    let all = typordo::sort(&q, fonts.clone(), false);
+    let trimmed = typordo::sort(&q, fonts, true);
 
     assert_eq!(all.len(), 6, "an untrimmed sort keeps everything");
     // Every instance of one variable font has identical coverage, so only the
@@ -377,8 +377,8 @@ fn sorting_agrees_with_best_on_the_winner() {
             q.add(Object::Weight, weight);
         });
         let fonts: Vec<_> = cache.fonts().unwrap().collect();
-        let ranked = fontconf::sort(&q, fonts.clone(), false);
-        let (best, _) = fontconf::best(&q, fonts).unwrap();
+        let ranked = typordo::sort(&q, fonts.clone(), false);
+        let (best, _) = typordo::best(&q, fonts).unwrap();
         assert_eq!(
             ranked[0].0.string(Object::Style),
             best.string(Object::Style),
@@ -391,14 +391,14 @@ fn sorting_agrees_with_best_on_the_winner() {
 /// time, which is exactly the signal trimming uses.
 #[test]
 fn coverage_reports_whether_a_font_contributed() {
-    use fontconf::{OwnedCharSet, Value};
+    use typordo::{CharSet, ValueRef};
     let cache = cantarell();
     let charset = match cache.fonts().unwrap().next().unwrap().value(Object::Charset) {
-        Some(Value::CharSet(c)) => c,
+        Some(ValueRef::CharSet(c)) => c,
         other => panic!("expected a charset, got {other:?}"),
     };
 
-    let mut coverage = OwnedCharSet::new();
+    let mut coverage = CharSet::new();
     assert!(coverage.merge_chars(&charset), "the first merge must contribute");
     assert!(!coverage.merge_chars(&charset), "the same set adds nothing twice");
     assert_eq!(coverage.len(), charset.len());
@@ -419,17 +419,17 @@ fn a_charset_value_of_the_wrong_type_does_not_score_as_perfect() {
     let font = cache.fonts().unwrap().next().expect("a font");
 
     // A character no Latin font covers, so a real charset scores a miss.
-    let mut uncovered = fontconf::OwnedCharSet::new();
+    let mut uncovered = typordo::CharSet::new();
     uncovered.insert('\u{4e00}');
-    let mut honest = Query::new();
-    honest.add(Object::Charset, OwnedValue::CharSet(uncovered));
+    let mut honest = Pattern::new();
+    honest.add(Object::Charset, Value::CharSet(uncovered));
 
     // The same slot, holding something that is not a charset at all.
-    let mut garbage = Query::new();
+    let mut garbage = Pattern::new();
     garbage.add(Object::Charset, "not a charset");
 
-    let honest = fontconf::score(&honest, &font).map(|s| s.get(Priority::CharSet));
-    let garbage = fontconf::score(&garbage, &font).map(|s| s.get(Priority::CharSet));
+    let honest = typordo::score(&honest, &font).map(|s| s.get(Priority::CharSet));
+    let garbage = typordo::score(&garbage, &font).map(|s| s.get(Priority::CharSet));
 
     // Nonsense must not outrank a real request the font genuinely fails.
     assert!(

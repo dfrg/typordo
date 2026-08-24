@@ -5,7 +5,7 @@
 
 use std::path::{Path, PathBuf};
 
-use fontconf::{Cache, Object, OwnedValue, Query};
+use typordo::{Cache, Object, Pattern, Value};
 
 fn fixture_font() -> Option<PathBuf> {
     // The font itself is not vendored -- only the cache fontconfig built from
@@ -19,9 +19,9 @@ fn cached() -> Cache {
     Cache::open(&path).expect("fixture cache")
 }
 
-fn string(pattern: &Query, object: Object) -> Option<String> {
+fn string(pattern: &Pattern, object: Object) -> Option<String> {
     match pattern.value(object)? {
-        OwnedValue::String(s) => Some(s.clone()),
+        Value::String(s) => Some(s.clone()),
         _ => None,
     }
 }
@@ -32,7 +32,7 @@ fn string(pattern: &Query, object: Object) -> Option<String> {
 #[test]
 fn a_variable_font_scans_to_the_faces_the_cache_recorded() {
     let Some(path) = fixture_font() else { return };
-    let scanned = fontconf::scan_file(&path).expect("scan");
+    let scanned = typordo::scan_file(&path).expect("scan");
     let cache = cached();
     let recorded: Vec<_> = cache.fonts().unwrap().collect();
 
@@ -47,7 +47,7 @@ fn a_variable_font_scans_to_the_faces_the_cache_recorded() {
     for (ours, theirs) in scanned.iter().zip(&recorded) {
         assert_eq!(string(ours, Object::Style).as_deref(), theirs.string(Object::Style), "style");
         let ours_index = match ours.value(Object::Index) {
-            Some(OwnedValue::Int(i)) => Some(*i),
+            Some(Value::Int(i)) => Some(*i),
             _ => None,
         };
         assert_eq!(
@@ -64,12 +64,12 @@ fn a_variable_font_scans_to_the_faces_the_cache_recorded() {
 #[test]
 fn the_index_identifies_the_named_instance() {
     let Some(path) = fixture_font() else { return };
-    let scanned = fontconf::scan_file(&path).expect("scan");
+    let scanned = typordo::scan_file(&path).expect("scan");
 
     let indices: Vec<i32> = scanned
         .iter()
         .filter_map(|p| match p.value(Object::Index)? {
-            OwnedValue::Int(i) => Some(*i),
+            Value::Int(i) => Some(*i),
             _ => None,
         })
         .collect();
@@ -85,28 +85,28 @@ fn the_index_identifies_the_named_instance() {
 #[test]
 fn the_variable_pattern_carries_ranges_and_the_others_do_not() {
     let Some(path) = fixture_font() else { return };
-    let scanned = fontconf::scan_file(&path).expect("scan");
+    let scanned = typordo::scan_file(&path).expect("scan");
 
     let variable = scanned
         .iter()
-        .find(|p| p.value(Object::Variable) == Some(&OwnedValue::Bool(true)))
+        .find(|p| p.value(Object::Variable) == Some(&Value::Bool(true)))
         .expect("one variable pattern");
     assert!(
-        matches!(variable.value(Object::Weight), Some(OwnedValue::Range(_))),
+        matches!(variable.value(Object::Weight), Some(Value::Range(_))),
         "the variable pattern's weight should be a range"
     );
     // A named instance pins a value instead.
     let instance = scanned
         .iter()
-        .find(|p| p.value(Object::NamedInstance) == Some(&OwnedValue::Bool(true)))
+        .find(|p| p.value(Object::NamedInstance) == Some(&Value::Bool(true)))
         .expect("a named instance");
-    assert!(matches!(instance.value(Object::Weight), Some(OwnedValue::Double(_))));
+    assert!(matches!(instance.value(Object::Weight), Some(Value::Double(_))));
 }
 
 #[test]
 fn unrecognized_bytes_are_rejected_rather_than_guessed_at() {
-    assert!(fontconf::scan_bytes(b"not a font at all", "x").is_err());
-    assert!(fontconf::scan_bytes(&[], "x").is_err());
+    assert!(typordo::scan_bytes(b"not a font at all", "x").is_err());
+    assert!(typordo::scan_bytes(&[], "x").is_err());
 }
 
 /// A `.otb` bitmap font carries an empty `glyf`, which is not outlines.
@@ -116,10 +116,10 @@ fn an_empty_glyf_table_is_not_an_outline_font() {
     if !path.exists() {
         return;
     }
-    let scanned = fontconf::scan_file(&path).expect("scan");
+    let scanned = typordo::scan_file(&path).expect("scan");
     let font = &scanned[0];
-    assert_eq!(font.value(Object::Outline), Some(&OwnedValue::Bool(false)));
-    assert_eq!(font.value(Object::Scalable), Some(&OwnedValue::Bool(false)));
+    assert_eq!(font.value(Object::Outline), Some(&Value::Bool(false)));
+    assert_eq!(font.value(Object::Scalable), Some(&Value::Bool(false)));
 }
 
 // --- coverage -------------------------------------------------------------
@@ -130,16 +130,16 @@ fn an_empty_glyf_table_is_not_an_outline_font() {
 #[test]
 fn languages_are_derived_from_the_characters_covered() {
     let Some(path) = fixture_font() else { return };
-    let scanned = fontconf::scan_file(&path).expect("scan");
+    let scanned = typordo::scan_file(&path).expect("scan");
     let cache = cached();
     let recorded = cache.fonts().unwrap().next().unwrap();
 
     let ours = match scanned[0].value(Object::Lang) {
-        Some(OwnedValue::LangSet(langs)) => fontconf::LangSetRef::Owned(langs),
+        Some(Value::LangSet(langs)) => typordo::AnyLangSet::Owned(langs),
         other => panic!("expected a langset, got {other:?}"),
     };
     let theirs = match recorded.value(Object::Lang) {
-        Some(fontconf::Value::LangSet(langs)) => langs,
+        Some(typordo::ValueRef::LangSet(langs)) => langs,
         other => panic!("expected a cached langset, got {other:?}"),
     };
     assert_eq!(
@@ -152,16 +152,16 @@ fn languages_are_derived_from_the_characters_covered() {
 #[test]
 fn coverage_matches_what_fontconfig_cached() {
     let Some(path) = fixture_font() else { return };
-    let scanned = fontconf::scan_file(&path).expect("scan");
+    let scanned = typordo::scan_file(&path).expect("scan");
     let cache = cached();
     let recorded = cache.fonts().unwrap().next().unwrap();
 
     let ours = match scanned[0].value(Object::Charset) {
-        Some(OwnedValue::CharSet(coverage)) => fontconf::CharSetRef::Owned(coverage),
+        Some(Value::CharSet(coverage)) => typordo::AnyCharSet::Owned(coverage),
         other => panic!("expected a charset, got {other:?}"),
     };
     let theirs = match recorded.value(Object::Charset) {
-        Some(fontconf::Value::CharSet(chars)) => chars,
+        Some(typordo::ValueRef::CharSet(chars)) => chars,
         other => panic!("expected a cached charset, got {other:?}"),
     };
     assert_eq!(ours.len(), theirs.len(), "coverage size");
@@ -174,9 +174,9 @@ fn coverage_matches_what_fontconfig_cached() {
 #[test]
 fn control_characters_are_not_counted_unless_they_draw() {
     let Some(path) = fixture_font() else { return };
-    let scanned = fontconf::scan_file(&path).expect("scan");
+    let scanned = typordo::scan_file(&path).expect("scan");
     let coverage = match scanned[0].value(Object::Charset) {
-        Some(OwnedValue::CharSet(c)) => c,
+        Some(Value::CharSet(c)) => c,
         other => panic!("expected a charset, got {other:?}"),
     };
     assert!(!coverage.contains('\u{0}'), "NUL should not be covered");
@@ -192,9 +192,9 @@ fn a_type1_font_reports_coverage_from_its_glyph_names() {
     if !path.exists() {
         return;
     }
-    let scanned = fontconf::scan_file(&path).expect("scan");
+    let scanned = typordo::scan_file(&path).expect("scan");
     let coverage = match scanned[0].value(Object::Charset) {
-        Some(OwnedValue::CharSet(c)) => c,
+        Some(Value::CharSet(c)) => c,
         other => panic!("expected a charset, got {other:?}"),
     };
     for c in ['A', 'z', '0', '!'] {
@@ -204,7 +204,7 @@ fn a_type1_font_reports_coverage_from_its_glyph_names() {
 
     // And that coverage is enough to name languages.
     let langs = match scanned[0].value(Object::Lang) {
-        Some(OwnedValue::LangSet(l)) => l,
+        Some(Value::LangSet(l)) => l,
         other => panic!("expected a langset, got {other:?}"),
     };
     assert!(langs.langs().any(|l| l == "en"), "should support English");
@@ -220,7 +220,7 @@ fn localized_names_are_tagged_and_english_leads() {
     if !path.exists() {
         return;
     }
-    let scanned = fontconf::scan_file(&path).expect("scan");
+    let scanned = typordo::scan_file(&path).expect("scan");
     let font = &scanned[0];
 
     let styles: Vec<String> = font
@@ -228,7 +228,7 @@ fn localized_names_are_tagged_and_english_leads() {
         .unwrap()
         .values()
         .filter_map(|(v, _)| match v {
-            OwnedValue::String(s) => Some(s.clone()),
+            Value::String(s) => Some(s.clone()),
             _ => None,
         })
         .collect();
@@ -241,7 +241,7 @@ fn localized_names_are_tagged_and_english_leads() {
 
     // The same word in two cases is one name, not two.
     let mut folded: Vec<String> =
-        styles.iter().map(|s| fontconf::casefold::fold_str(s).collect()).collect();
+        styles.iter().map(|s| typordo::casefold::fold_str(s).collect()).collect();
     folded.sort();
     let before = folded.len();
     folded.dedup();

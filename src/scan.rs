@@ -15,10 +15,10 @@ use read_fonts::{
 };
 
 use crate::casefold;
-use crate::charset::OwnedCharSet;
-use crate::langset::OwnedLangSet;
+use crate::charset::CharSet;
+use crate::langset::LangSet;
 use crate::object::Object;
-use crate::query::{OwnedValue, Query};
+use crate::query::{Pattern, Value};
 use crate::weight;
 
 /// Why a font file could not be scanned.
@@ -51,7 +51,7 @@ impl From<std::io::Error> for ScanError {
 }
 
 /// Scan a font file into one pattern per face.
-pub fn scan_file(path: &Path) -> Result<Vec<Query>, ScanError> {
+pub fn scan_file(path: &Path) -> Result<Vec<Pattern>, ScanError> {
     let data = std::fs::read(path)?;
     let name = path.to_string_lossy();
     scan_bytes(&data, &name)
@@ -60,7 +60,7 @@ pub fn scan_file(path: &Path) -> Result<Vec<Query>, ScanError> {
 /// Scan font bytes that came from `path`.
 ///
 /// `path` is recorded as the pattern's `file`; nothing is read from it.
-pub fn scan_bytes(data: &[u8], path: &str) -> Result<Vec<Query>, ScanError> {
+pub fn scan_bytes(data: &[u8], path: &str) -> Result<Vec<Pattern>, ScanError> {
     // Type 1 fonts are not SFNT and have to be recognised first: they begin
     // with `%!` for the plain text form, or the PFB segment marker.
     if is_type1(data) {
@@ -89,8 +89,8 @@ fn is_type1(data: &[u8]) -> bool {
 
 // --- SFNT ------------------------------------------------------------------
 
-fn base_pattern(font: &FontRef<'_>, path: &str, index: i32) -> Query {
-    let mut pattern = Query::new();
+fn base_pattern(font: &FontRef<'_>, path: &str, index: i32) -> Pattern {
+    let mut pattern = Pattern::new();
 
     // A `glyf` table that is present but empty means no outlines at all --
     // which is exactly how an OpenType bitmap font (.otb) is built.
@@ -136,12 +136,12 @@ fn base_pattern(font: &FontRef<'_>, path: &str, index: i32) -> Query {
 /// The language set is derived from the coverage rather than declared by the
 /// font: fontconfig asks, for each language it knows an orthography for,
 /// whether every codepoint that language needs is present.
-fn add_coverage(coverage: OwnedCharSet, pattern: &mut Query) {
+fn add_coverage(coverage: CharSet, pattern: &mut Pattern) {
     if coverage.is_empty() {
         return;
     }
-    let langs = OwnedLangSet::from_char_set(&coverage);
-    pattern.add(Object::Charset, OwnedValue::CharSet(coverage));
+    let langs = LangSet::from_char_set(&coverage);
+    pattern.add(Object::Charset, Value::CharSet(coverage));
     // Always, even when the set is empty. A font covering a script
     // fontconfig has no language for -- Adlam, and a dozen others -- gets an
     // empty language set rather than none at all, and the difference is not
@@ -150,7 +150,7 @@ fn add_coverage(coverage: OwnedCharSet, pattern: &mut Query) {
     // answers perfectly, while a font with an empty one is scored as
     // answering nothing. `fc-list` prints both as the empty string, which is
     // why this took a corpus with Adlam in it to notice.
-    pattern.add(Object::Lang, OwnedValue::LangSet(langs));
+    pattern.add(Object::Lang, Value::LangSet(langs));
 }
 
 /// Whether the font addresses its glyphs through a symbol encoding.
@@ -179,11 +179,11 @@ fn is_symbol(font: &FontRef<'_>) -> bool {
 /// A short list of words, matched anywhere in any style value and without
 /// regard to case. `embosed` is spelled that way in fontconfig; it is a typo
 /// there and copying it is the only way to agree with it.
-fn is_decorative(pattern: &Query) -> bool {
+fn is_decorative(pattern: &Pattern) -> bool {
     const WORDS: [&str; 6] = ["shadow", "caps", "antiqua", "romansc", "embosed", "dunhill"];
     let Some(element) = pattern.get(Object::Style) else { return false };
     element.values().any(|(value, _)| {
-        let crate::query::OwnedValue::String(style) = value else { return false };
+        let crate::query::Value::String(style) = value else { return false };
         let lowered = style.to_lowercase();
         WORDS.iter().any(|word| lowered.contains(word))
     })
@@ -274,8 +274,8 @@ fn capability(font: &FontRef<'_>) -> Option<String> {
 }
 
 /// Every character an SFNT font maps, from its Unicode `cmap` subtables.
-fn sfnt_coverage(font: &FontRef<'_>) -> OwnedCharSet {
-    let mut coverage = OwnedCharSet::new();
+fn sfnt_coverage(font: &FontRef<'_>) -> CharSet {
+    let mut coverage = CharSet::new();
     let empty = EmptyGlyphs::new(font);
     walk_mappings(font, |code, gid| {
         // A mapping to glyph 0 is a mapping to `.notdef`, the absence of a
@@ -400,7 +400,7 @@ fn walk_subtable(
 /// its own pattern with concrete values, plus one pattern for the variable
 /// font itself whose weight and width are *ranges* -- that last one is what
 /// lets a query for any weight in between match at all.
-fn scan_face(font: &FontRef<'_>, path: &str, index: i32) -> Vec<Query> {
+fn scan_face(font: &FontRef<'_>, path: &str, index: i32) -> Vec<Pattern> {
     let base = base_pattern(font, path, index);
     let Some(instances) = named_instances(font) else {
         let mut pattern = base;
@@ -548,7 +548,7 @@ fn named_instances(font: &FontRef<'_>) -> Option<Vec<Instance>> {
 }
 
 /// The weight and width axes as ranges, for the variable pattern.
-fn add_variable_attributes(font: &FontRef<'_>, pattern: &mut Query) {
+fn add_variable_attributes(font: &FontRef<'_>, pattern: &mut Pattern) {
     add_attributes(font, pattern, None);
     let Ok(fvar) = font.fvar() else { return };
     let Ok(axes) = fvar.axes() else { return };
@@ -563,7 +563,7 @@ fn add_variable_attributes(font: &FontRef<'_>, pattern: &mut Query) {
             end: convert(axis.max_value().to_f64()),
         };
         pattern.remove(object);
-        pattern.add(object, crate::query::OwnedValue::Range(range));
+        pattern.add(object, crate::query::Value::Range(range));
     }
 }
 
@@ -686,7 +686,7 @@ fn foundry(font: &FontRef<'_>) -> String {
 }
 
 /// Weight, width, slant and spacing, from `OS/2` and `post`.
-fn add_attributes(font: &FontRef<'_>, pattern: &mut Query, instance: Option<&Instance>) {
+fn add_attributes(font: &FontRef<'_>, pattern: &mut Pattern, instance: Option<&Instance>) {
     let os2 = font.os2().ok();
 
     // OS/2 weights are OpenType's 1..1000 scale, not fontconfig's.
@@ -766,10 +766,10 @@ fn approximately_equal(a: u16, b: u16) -> bool {
 /// Sans Bold Oblique sets the OS/2 italic bit *and* calls itself oblique, and
 /// fontconfig reports it oblique. The angle in `post` is not consulted at all
 /// -- the code that would have is `#if 0` in `fcfreetype.c`.
-fn slant(font: &FontRef<'_>, pattern: &Query) -> i32 {
+fn slant(font: &FontRef<'_>, pattern: &Pattern) -> i32 {
     if let Some(element) = pattern.get(Object::Style) {
         for (value, _) in element.values() {
-            let crate::query::OwnedValue::String(style) = value else {
+            let crate::query::Value::String(style) = value else {
                 continue;
             };
             let lowered = style.to_lowercase();
@@ -834,7 +834,7 @@ const INSTANCE_FULLNAME_IDS: [u16; 1] = [18];
 const PLATFORM_ORDER: [u16; 4] = [3, 0, 1, 2]; // Microsoft, Unicode, Mac, ISO
 
 /// Family, style, full name and PostScript name from the `name` table.
-fn add_names(font: &FontRef<'_>, pattern: &mut Query) {
+fn add_names(font: &FontRef<'_>, pattern: &mut Pattern) {
     for (ids, object, lang_object) in [
         (&FAMILY_IDS[..], Object::Family, Object::Familylang),
         (&STYLE_IDS[..], Object::Style, Object::Stylelang),
@@ -869,7 +869,7 @@ fn add_names(font: &FontRef<'_>, pattern: &mut Query) {
 /// trimming is one-sided on each: fontconfig strips the family's trailing
 /// space and the style's leading one, so that the single space it inserts
 /// between them is the only one.
-fn add_synthetic_fullname(pattern: &mut Query) {
+fn add_synthetic_fullname(pattern: &mut Pattern) {
     if pattern.contains(Object::Fullname) {
         return;
     }
@@ -885,7 +885,7 @@ fn add_synthetic_fullname(pattern: &mut Query) {
 }
 
 /// The value of `object` whose language is English, or the first one.
-fn english_value(pattern: &Query, object: Object, lang_object: Object) -> Option<String> {
+fn english_value(pattern: &Pattern, object: Object, lang_object: Object) -> Option<String> {
     let languages: Vec<&str> = pattern
         .get(lang_object)
         .map(|element| element.values().filter_map(|(v, _)| v.as_value().as_str()).collect())
@@ -976,11 +976,11 @@ fn language_tag(platform: u16, language: u16) -> Option<&'static str> {
 /// These predate SFNT entirely: no tables, no `OS/2`, no `name`. Everything
 /// comes from the PostScript dictionary at the head of the file, so the
 /// properties are derived rather than read.
-fn scan_type1(data: &[u8], path: &str) -> Result<Vec<Query>, ScanError> {
+fn scan_type1(data: &[u8], path: &str) -> Result<Vec<Pattern>, ScanError> {
     use read_fonts::ps::type1::Type1Font;
 
     let font = Type1Font::new(data).map_err(|_| ScanError::Unrecognized)?;
-    let mut pattern = Query::new();
+    let mut pattern = Pattern::new();
 
     pattern.add(Object::File, path);
     pattern.add(Object::Index, 0);
@@ -1038,7 +1038,7 @@ fn scan_type1(data: &[u8], path: &str) -> Result<Vec<Query>, ScanError> {
     // A Type 1 font has no cmap. Its coverage comes from glyph names mapped
     // through the Adobe Glyph List, which `unicode_charmap` does for us --
     // except for the dingbats, whose names have a list of their own.
-    let mut coverage = OwnedCharSet::new();
+    let mut coverage = CharSet::new();
     for (code, _) in font.unicode_charmap().iter() {
         if let Some(c) = char::from_u32(code) {
             coverage.insert(c);

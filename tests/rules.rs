@@ -2,7 +2,7 @@
 
 use std::path::Path;
 
-use fontconf::{Binding, Config, MatchKind, Object, OwnedValue, Query};
+use typordo::{Binding, Config, MatchKind, Object, Pattern, Value};
 
 fn config() -> Config {
     let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/rules/fonts.conf");
@@ -10,7 +10,7 @@ fn config() -> Config {
 }
 
 /// The family list after substitution, with each value's binding.
-fn families(config: &Config, query: &mut Query) -> Vec<(String, Binding)> {
+fn families(config: &Config, query: &mut Pattern) -> Vec<(String, Binding)> {
     config.substitute(query);
     query
         .get(Object::Family)
@@ -18,7 +18,7 @@ fn families(config: &Config, query: &mut Query) -> Vec<(String, Binding)> {
             element
                 .values()
                 .filter_map(|(value, binding)| match value {
-                    OwnedValue::String(s) => Some((s.clone(), binding)),
+                    Value::String(s) => Some((s.clone(), binding)),
                     _ => None,
                 })
                 .collect()
@@ -26,8 +26,8 @@ fn families(config: &Config, query: &mut Query) -> Vec<(String, Binding)> {
         .unwrap_or_default()
 }
 
-fn with_family(name: &str) -> Query {
-    let mut query = Query::new();
+fn with_family(name: &str) -> Pattern {
+    let mut query = Pattern::new();
     query.add(Object::Family, name);
     query
 }
@@ -123,7 +123,7 @@ fn delete_all_and_prepend_first() {
         .unwrap()
         .values()
         .filter_map(|(v, _)| match v {
-            OwnedValue::String(s) => Some(s.clone()),
+            Value::String(s) => Some(s.clone()),
             _ => None,
         })
         .collect();
@@ -167,18 +167,18 @@ fn substitution_injects_the_locale_languages() {
     let values: Vec<_> = langs.values().collect();
     assert!(!values.is_empty());
     for (value, binding) in &values {
-        assert!(matches!(value, OwnedValue::String(_)), "{value:?}");
+        assert!(matches!(value, Value::String(_)), "{value:?}");
         assert_eq!(*binding, Binding::Weak, "injected languages must be weak");
     }
     assert_eq!(
         values
             .iter()
             .filter_map(|(v, _)| match v {
-                OwnedValue::String(s) => Some(s.as_str()),
+                Value::String(s) => Some(s.as_str()),
                 _ => None,
             })
             .collect::<Vec<_>>(),
-        fontconf::default_langs().iter().map(String::as_str).collect::<Vec<_>>()
+        typordo::default_langs().iter().map(String::as_str).collect::<Vec<_>>()
     );
 }
 
@@ -198,7 +198,7 @@ fn injection_stops_at_und_but_not_at_an_unrelated_language() {
             .unwrap()
             .values()
             .filter_map(|(v, _)| match v {
-                OwnedValue::String(s) => Some(s.clone()),
+                Value::String(s) => Some(s.clone()),
                 _ => None,
             })
             .collect()
@@ -211,7 +211,7 @@ fn injection_stops_at_und_but_not_at_an_unrelated_language() {
     assert_eq!(with_ja[0], "ja");
     assert!(with_ja.len() > 1, "the locale language should still be appended");
     // The locale's own language is already there, so it is not duplicated.
-    let locale = fontconf::default_langs().remove(0);
+    let locale = typordo::default_langs().remove(0);
     assert_eq!(langs_after(&locale), [locale]);
 }
 
@@ -225,7 +225,7 @@ fn a_config_can_invent_a_property_and_read_it_back() {
     let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/rules/custom.conf");
     let config = Config::load_from(&path).unwrap();
 
-    let mut query = Query::new();
+    let mut query = Pattern::new();
     query.add(Object::Family, "Scratch");
     query.add(Object::PixelSize, 24.0);
     config.substitute(&mut query);
@@ -233,22 +233,22 @@ fn a_config_can_invent_a_property_and_read_it_back() {
     // The first rule stored a factor, the second read it back into weight.
     let custom = query.custom("scratchfactor").expect("custom property kept");
     assert_eq!(custom.len(), 1);
-    assert_eq!(custom[0].0, OwnedValue::Double(3.0));
+    assert_eq!(custom[0].0, Value::Double(3.0));
     assert_eq!(query.number(Object::Weight), Some(72.0));
 }
 
 /// The languages a font is left with after the scan rules run.
 fn scanned_langs(config: &Config, family: &str, langs: &[&str]) -> Vec<String> {
-    let mut set = fontconf::OwnedLangSet::new();
+    let mut set = typordo::LangSet::new();
     for lang in langs {
-        set.insert_index(fontconf::langs::index_of(lang).expect(lang));
+        set.insert_index(typordo::langs::index_of(lang).expect(lang));
     }
-    let mut font = Query::new();
+    let mut font = Pattern::new();
     font.add(Object::Family, family);
-    font.add(Object::Lang, OwnedValue::LangSet(set));
+    font.add(Object::Lang, Value::LangSet(set));
     config.substitute_kind(&mut font, MatchKind::Scan, None);
     match font.value(Object::Lang) {
-        Some(OwnedValue::LangSet(set)) => set.langs().map(str::to_string).collect(),
+        Some(Value::LangSet(set)) => set.langs().map(str::to_string).collect(),
         other => panic!("lang became {other:?}"),
     }
 }
@@ -285,14 +285,14 @@ fn a_scan_rule_unions_languages() {
 #[test]
 fn scan_rules_do_not_run_at_match_time() {
     let config = config();
-    let mut set = fontconf::OwnedLangSet::new();
-    set.insert_index(fontconf::langs::index_of("hi").unwrap());
-    let mut query = Query::new();
+    let mut set = typordo::LangSet::new();
+    set.insert_index(typordo::langs::index_of("hi").unwrap());
+    let mut query = Pattern::new();
     query.add(Object::Family, "Overclaims");
-    query.add(Object::Lang, OwnedValue::LangSet(set));
+    query.add(Object::Lang, Value::LangSet(set));
     config.substitute(&mut query);
     match query.value(Object::Lang) {
-        Some(OwnedValue::LangSet(set)) => assert!(set.langs().any(|l| l == "hi")),
+        Some(Value::LangSet(set)) => assert!(set.langs().any(|l| l == "hi")),
         other => panic!("lang became {other:?}"),
     }
 }
@@ -305,7 +305,7 @@ fn a_range_literal_is_assigned() {
     let mut query = with_family("Ranged");
     config.substitute(&mut query);
     match query.value(Object::Weight) {
-        Some(OwnedValue::Range(range)) => {
+        Some(Value::Range(range)) => {
             assert_eq!((range.begin, range.end), (40.0, 210.0));
         }
         other => panic!("weight became {other:?}"),
@@ -320,7 +320,7 @@ fn a_charset_literal_expands_its_spans() {
     let mut query = with_family("Spanned");
     config.substitute(&mut query);
     match query.value(Object::Charset) {
-        Some(OwnedValue::CharSet(set)) => {
+        Some(Value::CharSet(set)) => {
             assert_eq!(set.chars().collect::<String>(), "Aabc");
         }
         other => panic!("charset became {other:?}"),
@@ -335,7 +335,7 @@ fn a_matrix_literal_is_assigned() {
     let mut query = with_family("Skewed");
     config.substitute(&mut query);
     match query.value(Object::Matrix) {
-        Some(OwnedValue::Matrix(m)) => {
+        Some(Value::Matrix(m)) => {
             assert_eq!((m.xx, m.xy, m.yx, m.yy), (1.0, 0.2, 0.0, 1.0));
         }
         other => panic!("matrix became {other:?}"),

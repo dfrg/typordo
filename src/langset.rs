@@ -28,15 +28,15 @@ pub enum LangResult {
 /// The set of languages a font supports, read from a cache.
 ///
 /// One of three types for the same idea, told apart by where the bitmap
-/// lives: this borrows it from a cache, [`OwnedLangSet`] holds its own and
-/// can grow, and [`LangSetRef`] is either of those seen through a reference.
+/// lives: this borrows it from a cache, [`LangSet`] holds its own and
+/// can grow, and [`AnyLangSet`] is either of those seen through a reference.
 #[derive(Clone, Copy)]
-pub struct LangSet<'a> {
+pub struct LangSetRef<'a> {
     pub(crate) data: Bytes<'a>,
     pub(crate) at: usize,
 }
 
-impl<'a> LangSet<'a> {
+impl<'a> LangSetRef<'a> {
     /// How many 32-bit words the stored bitmap has.
     ///
     /// Compare against [`langs::MAP_WORDS`] to see whether the writer sized
@@ -65,7 +65,7 @@ impl<'a> LangSet<'a> {
 
     /// Whether the font covers exactly this language, by name.
     ///
-    /// This is an exact table lookup. Use [`LangSet::has_lang`] to ask the
+    /// This is an exact table lookup. Use [`LangSetRef::has_lang`] to ask the
     /// question fontconfig actually scores, which treats `en-US` and `en` as
     /// near-misses rather than as unrelated.
     pub fn contains(&self, lang: &str) -> bool {
@@ -147,9 +147,9 @@ impl<'a> LangSet<'a> {
     /// disjoint sets into [`LangResult::DifferentTerritory`] when they share
     /// a country; that table is not embedded here, so this reports
     /// [`LangResult::DifferentLang`] in that case instead. A query built with
-    /// [`Query`](crate::Query) cannot carry a langset, so this is only
+    /// [`Pattern`](crate::Pattern) cannot carry a langset, so this is only
     /// reachable when comparing two fonts.
-    pub fn compare(&self, other: &LangSet<'_>) -> LangResult {
+    pub fn compare(&self, other: &LangSetRef<'_>) -> LangResult {
         let words = self.map_words().min(other.map_words()).min(langs::MAP_WORDS);
         for word in 0..words {
             let ours = self.data.u32(self.at + L.map + word * 4).unwrap_or(0);
@@ -246,22 +246,22 @@ fn is_undetermined(lang: &str) -> bool {
     rest.len() >= 3 && rest[..3].eq_ignore_ascii_case(b"und") && is_subtag_end(lang.chars().nth(3))
 }
 
-impl PartialEq for LangSet<'_> {
+impl PartialEq for LangSetRef<'_> {
     fn eq(&self, other: &Self) -> bool {
         self.langs().eq(other.langs())
     }
 }
 
-impl Eq for LangSet<'_> {}
+impl Eq for LangSetRef<'_> {}
 
-impl std::fmt::Debug for LangSet<'_> {
+impl std::fmt::Debug for LangSetRef<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "LangSet({} languages)", self.len())
+        write!(f, "LangSetRef({} languages)", self.len())
     }
 }
 
 /// The form `fc-list --format='%{lang}'` prints: names separated by `|`.
-impl std::fmt::Display for LangSet<'_> {
+impl std::fmt::Display for LangSetRef<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         for (i, lang) in self.langs().enumerate() {
             if i > 0 {
@@ -276,11 +276,11 @@ impl std::fmt::Display for LangSet<'_> {
 /// Set arithmetic, which is what a `target="scan"` rule does to a font.
 #[cfg(test)]
 mod set_tests {
-    use super::OwnedLangSet;
+    use super::LangSet;
     use crate::langs;
 
-    fn langs(names: &[&str]) -> OwnedLangSet {
-        let mut set = OwnedLangSet::new();
+    fn langs(names: &[&str]) -> LangSet {
+        let mut set = LangSet::new();
         for name in names {
             set.insert_index(langs::index_of(name).expect(name));
         }
@@ -310,7 +310,7 @@ mod set_tests {
     /// cannot say so.
     #[test]
     fn a_language_outside_the_table_is_kept_by_name() {
-        let mut set = OwnedLangSet::new();
+        let mut set = LangSet::new();
         set.insert("en-GB");
         assert!(langs::index_of("en-gb").is_none(), "the premise: no bit for it");
         assert_eq!(set.langs().collect::<Vec<_>>(), ["en-gb"]);
@@ -320,7 +320,7 @@ mod set_tests {
     #[test]
     fn a_broad_language_answers_a_narrower_request() {
         let font = langs(&["en"]);
-        let mut asked = OwnedLangSet::new();
+        let mut asked = LangSet::new();
         asked.insert("en-GB");
         assert!(font.contains_set(&asked));
         assert!(font.contains_lang("en-GB"));
@@ -330,7 +330,7 @@ mod set_tests {
     /// treating a missing region as a wildcard.
     #[test]
     fn a_narrow_language_answers_a_broader_request() {
-        let mut font = OwnedLangSet::new();
+        let mut font = LangSet::new();
         font.insert("en-GB");
         assert!(font.contains_lang("en"));
         assert!(!font.contains_lang("de"));
@@ -338,14 +338,14 @@ mod set_tests {
 
     #[test]
     fn two_different_regions_do_not_answer_each_other() {
-        let mut font = OwnedLangSet::new();
+        let mut font = LangSet::new();
         font.insert("en-GB");
         assert!(!font.contains_lang("en-US"));
     }
 
     #[test]
     fn names_are_folded_and_kept_once() {
-        let mut set = OwnedLangSet::new();
+        let mut set = LangSet::new();
         set.insert("EN-gb");
         set.insert("en-GB");
         assert_eq!(set.langs().collect::<Vec<_>>(), ["en-gb"]);
@@ -353,17 +353,17 @@ mod set_tests {
 
     #[test]
     fn a_name_the_table_knows_becomes_a_bit() {
-        let mut set = OwnedLangSet::new();
+        let mut set = LangSet::new();
         set.insert("JA");
         assert_eq!(set, langs(&["ja"]));
     }
 
     #[test]
     fn set_arithmetic_reaches_the_names_too() {
-        let mut a = OwnedLangSet::new();
+        let mut a = LangSet::new();
         a.insert("en");
         a.insert("en-GB");
-        let mut b = OwnedLangSet::new();
+        let mut b = LangSet::new();
         b.insert("en-GB");
         assert_eq!(a.union(&b), a);
         assert_eq!(a.subtract(&b).langs().collect::<Vec<_>>(), ["en"]);
@@ -430,7 +430,7 @@ mod tests {
 ///
 /// Same bitmap, same bit order; the difference is only where the bytes live.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct OwnedLangSet {
+pub struct LangSet {
     bits: [u32; langs::MAP_WORDS],
     /// Languages fontconfig's table cannot name.
     ///
@@ -445,7 +445,7 @@ pub struct OwnedLangSet {
     extra: Vec<String>,
 }
 
-impl OwnedLangSet {
+impl LangSet {
     /// An empty set.
     pub fn new() -> Self {
         Self::default()
@@ -456,7 +456,7 @@ impl OwnedLangSet {
     /// A language is included when the font covers *every* codepoint of its
     /// orthography. There is no partial credit and no threshold: that one
     /// rule is the whole of `FcLangSetFromCharSet`.
-    pub fn from_char_set(chars: &crate::charset::OwnedCharSet) -> Self {
+    pub fn from_char_set(chars: &crate::charset::CharSet) -> Self {
         let mut set = Self::new();
         for index in 0..crate::orth::len() {
             if chars.covers_ranges(crate::orth::orthography(index)) {
@@ -491,7 +491,7 @@ impl OwnedLangSet {
 
     /// Whether bit `index` is set.
     ///
-    /// Only the table half: see [`OwnedLangSet::contains_lang`] for the question
+    /// Only the table half: see [`LangSet::contains_lang`] for the question
     /// that also consults the names the table cannot hold.
     pub fn contains_index(&self, index: usize) -> bool {
         self.bits.get(index / 32).is_some_and(|word| word & (1 << (index % 32)) != 0)
@@ -507,7 +507,7 @@ impl OwnedLangSet {
     }
 
     /// Every language in the set, however it is stored.
-    pub fn from_languages(languages: &LangSetRef<'_>) -> Self {
+    pub fn from_languages(languages: &AnyLangSet<'_>) -> Self {
         let mut set = Self::new();
         for index in 0..LANGS.len() {
             if languages.contains_index(index) {
@@ -613,19 +613,19 @@ impl OwnedLangSet {
 
 /// A reference to a set of languages, whichever way it is stored.
 ///
-/// The language counterpart to [`CharSetRef`](crate::CharSetRef), and the
-/// same three-way split: [`LangSet`] borrows a cache's bitmap,
-/// [`OwnedLangSet`] holds its own and can grow, and this is either of them
+/// The language counterpart to [`AnyCharSet`](crate::AnyCharSet), and the
+/// same three-way split: [`LangSetRef`] borrows a cache's bitmap,
+/// [`LangSet`] holds its own and can grow, and this is either of them
 /// seen through a reference. Both arms are borrows, so this stays `Copy`.
 #[derive(Clone, Copy, Debug)]
-pub enum LangSetRef<'a> {
+pub enum AnyLangSet<'a> {
     /// Read from a cache.
-    Cached(LangSet<'a>),
+    Cached(LangSetRef<'a>),
     /// Built by scanning a font.
-    Owned(&'a OwnedLangSet),
+    Owned(&'a LangSet),
 }
 
-impl<'a> LangSetRef<'a> {
+impl<'a> AnyLangSet<'a> {
     /// Whether bit `index` is set.
     pub fn contains_index(&self, index: usize) -> bool {
         match self {
@@ -691,7 +691,7 @@ impl<'a> LangSetRef<'a> {
     }
 
     /// How well this set answers another one.
-    pub fn compare(&self, other: &LangSetRef<'_>) -> LangResult {
+    pub fn compare(&self, other: &AnyLangSet<'_>) -> LangResult {
         for index in 0..LANGS.len() {
             if self.contains_index(index) && other.contains_index(index) {
                 return LangResult::Equal;
@@ -717,16 +717,16 @@ impl<'a> LangSetRef<'a> {
     }
 }
 
-impl PartialEq for LangSetRef<'_> {
+impl PartialEq for AnyLangSet<'_> {
     fn eq(&self, other: &Self) -> bool {
         (0..LANGS.len()).all(|i| self.contains_index(i) == other.contains_index(i))
     }
 }
 
-impl Eq for LangSetRef<'_> {}
+impl Eq for AnyLangSet<'_> {}
 
 /// The form `fc-list --format='%{lang}'` prints: names separated by `|`.
-impl std::fmt::Display for LangSetRef<'_> {
+impl std::fmt::Display for AnyLangSet<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         for (i, lang) in self.langs().enumerate() {
             if i > 0 {

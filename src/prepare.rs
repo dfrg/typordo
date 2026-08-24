@@ -9,10 +9,10 @@
 use crate::config::Config;
 use crate::matching;
 use crate::object::Object;
-use crate::pattern::Pattern;
-use crate::query::{OwnedValue, Query};
+use crate::pattern::PatternRef;
+use crate::query::{Pattern, Value};
 use crate::rules::MatchKind;
-use crate::value::{Binding, Value};
+use crate::value::{Binding, ValueRef};
 
 /// The three name properties that travel with a parallel language list.
 ///
@@ -35,11 +35,11 @@ fn is_lang_counterpart(object: Object) -> bool {
 /// Build the pattern that answers `query`, given the font that won.
 ///
 /// This is `FcFontRenderPrepare`. Call it with the query *after*
-/// [`Config::substitute`] and [`Query::default_substitute`] have run, since
+/// [`Config::substitute`] and [`Pattern::default_substitute`] have run, since
 /// those are what the font is merged against.
-pub fn render_prepare(config: &Config, query: &Query, font: &Pattern<'_>) -> Query {
-    let mut out = Query::new();
-    let variable = font.value(Object::Variable) == Some(Value::Bool(true));
+pub fn render_prepare(config: &Config, query: &Pattern, font: &PatternRef<'_>) -> Pattern {
+    let mut out = Pattern::new();
+    let variable = font.value(Object::Variable) == Some(ValueRef::Bool(true));
     let mut variations: Vec<String> = Vec::new();
 
     for element in font.elements() {
@@ -63,13 +63,13 @@ pub fn render_prepare(config: &Config, query: &Query, font: &Pattern<'_>) -> Que
                 let index = best.as_ref().map_or(0, |b| b.index);
                 let resolved = best.as_ref().and_then(|b| b.resolved);
                 let value = match resolved {
-                    Some(number) => Some(OwnedValue::Double(number)),
+                    Some(number) => Some(Value::Double(number)),
                     None => element.values().nth(index).map(own),
                 };
                 if let Some(value) = value {
                     // A variable font records the axis it was pinned to, so a
                     // renderer can instantiate the same instance we scored.
-                    if variable && matches!(element.values().next(), Some(Value::Range(_))) {
+                    if variable && matches!(element.values().next(), Some(ValueRef::Range(_))) {
                         if let Some(tag) = axis_tag(object) {
                             if let Some(number) = resolved {
                                 variations.push(format_axis(tag, object, number));
@@ -121,10 +121,16 @@ pub fn render_prepare(config: &Config, query: &Query, font: &Pattern<'_>) -> Que
 /// best is moved to the front and made strong, so `%{family}` reports the
 /// caller's preferred localization rather than whichever the font listed
 /// first. Without a language preference the lists are copied unchanged.
-fn copy_localized(query: &Query, font: &Pattern<'_>, name: Object, lang: Object, out: &mut Query) {
-    let names: Vec<OwnedValue> =
+fn copy_localized(
+    query: &Pattern,
+    font: &PatternRef<'_>,
+    name: Object,
+    lang: Object,
+    out: &mut Pattern,
+) {
+    let names: Vec<Value> =
         font.get(name).map(|e| e.values().map(own).collect()).unwrap_or_default();
-    let langs: Vec<OwnedValue> =
+    let langs: Vec<Value> =
         font.get(lang).map(|e| e.values().map(own).collect()).unwrap_or_default();
 
     // The query's own language list decides which entry to promote.
@@ -133,7 +139,7 @@ fn copy_localized(query: &Query, font: &Pattern<'_>, name: Object, lang: Object,
         .and_then(|_| matching::best_value(query, font, lang))
         .map(|best| best.index);
 
-    let order = |values: &[OwnedValue]| -> Vec<usize> {
+    let order = |values: &[Value]| -> Vec<usize> {
         let mut order: Vec<usize> = (0..values.len()).collect();
         if let Some(at) = promote {
             if at < order.len() {
@@ -186,35 +192,35 @@ fn format_number(value: f64) -> String {
     }
 }
 
-fn own(value: Value<'_>) -> OwnedValue {
+fn own(value: ValueRef<'_>) -> Value {
     match value {
-        Value::Void => OwnedValue::Void,
-        Value::Int(i) => OwnedValue::Int(i),
-        Value::Double(d) => OwnedValue::Double(d),
-        Value::String(s) => OwnedValue::String(s.to_string()),
-        Value::Bool(b) => OwnedValue::Bool(b),
-        Value::Matrix(m) => OwnedValue::Matrix(m),
-        Value::Range(r) => OwnedValue::Range(r),
-        Value::CharSet(chars) => {
-            let mut coverage = crate::charset::OwnedCharSet::new();
+        ValueRef::Void => Value::Void,
+        ValueRef::Int(i) => Value::Int(i),
+        ValueRef::Double(d) => Value::Double(d),
+        ValueRef::String(s) => Value::String(s.to_string()),
+        ValueRef::Bool(b) => Value::Bool(b),
+        ValueRef::Matrix(m) => Value::Matrix(m),
+        ValueRef::Range(r) => Value::Range(r),
+        ValueRef::CharSet(chars) => {
+            let mut coverage = crate::charset::CharSet::new();
             for c in chars.chars() {
                 coverage.insert(c);
             }
-            OwnedValue::CharSet(coverage)
+            Value::CharSet(coverage)
         }
-        Value::LangSet(langs) => {
-            let mut owned = crate::langset::OwnedLangSet::new();
+        ValueRef::LangSet(langs) => {
+            let mut owned = crate::langset::LangSet::new();
             for index in 0..crate::langs::LANGS.len() {
                 if langs.contains_index(index) {
                     owned.insert_index(index);
                 }
             }
-            OwnedValue::LangSet(owned)
+            Value::LangSet(owned)
         }
     }
 }
 
 /// The bindings of a font element's values.
-fn bindings<'a>(element: crate::pattern::Element<'a>) -> impl Iterator<Item = Binding> + 'a {
+fn bindings<'a>(element: crate::pattern::ElementRef<'a>) -> impl Iterator<Item = Binding> + 'a {
     element.values().bindings().map(|(_, binding)| binding)
 }

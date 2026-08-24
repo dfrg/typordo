@@ -2,7 +2,7 @@
 
 use std::path::{Path, PathBuf};
 
-use fontconf::{Cache, Config, Object, Pattern};
+use typordo::{Cache, Config, Object, PatternRef};
 
 fn fixture(name: &str) -> Config {
     let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/select").join(name);
@@ -15,7 +15,7 @@ fn cantarell() -> Cache {
     Cache::open(&path).expect("fixture cache")
 }
 
-fn with_first_font(cache: &Cache, f: impl FnOnce(Pattern<'_>)) {
+fn with_first_font(cache: &Cache, f: impl FnOnce(PatternRef<'_>)) {
     let font = cache.fonts().expect("fonts").next().expect("at least one font");
     f(font);
 }
@@ -140,7 +140,7 @@ fn an_unevaluable_selector_never_matches() {
 /// directly rather than through a font.
 #[test]
 fn selector_strings_fold_beyond_ascii() {
-    use fontconf::casefold;
+    use typordo::casefold;
     assert!(casefold::eq_ignoring_blanks("STRA\u{00df}E", "strasse"));
     // U+FB01 LATIN SMALL LIGATURE FI folds to "fi", and the blank is dropped.
     assert!(casefold::eq_ignoring_blanks("\u{fb01} le", "FILE"));

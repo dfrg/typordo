@@ -10,15 +10,15 @@
 //! `color` is not penalised against a query that does.
 
 use crate::casefold;
-use crate::charset::CharSetRef;
+use crate::charset::AnyCharSet;
 use crate::fnv::BuildPassthrough;
 use crate::glob;
 use crate::langset;
 use crate::object::Object;
-use crate::pattern::Pattern;
+use crate::pattern::PatternRef;
 use crate::pattern::Values;
-use crate::query::{Element, OwnedValue, Query};
-use crate::value::{Binding, Value};
+use crate::query::{Element, Pattern, Value};
+use crate::value::{Binding, ValueRef};
 use std::collections::HashMap;
 
 /// Where a property sits in the match priority order.
@@ -144,7 +144,7 @@ const NO_MATCH: f64 = 1e99;
 ///
 /// Fontconfig signals that with -1 and treats it as "this font cannot answer
 /// the query at all", discarding the font rather than scoring it badly.
-type Compare = fn(&Value<'_>, &Value<'_>) -> Option<f64>;
+type Compare = fn(&ValueRef<'_>, &ValueRef<'_>) -> Option<f64>;
 
 /// How one property is scored, and which slots it contributes to.
 struct Matcher {
@@ -199,7 +199,7 @@ fn matcher(object: Object) -> Option<Matcher> {
 // Each returns a distance, or `None` for a type mismatch, which fontconfig
 // signals with -1 and treats as "this font cannot answer at all".
 
-fn compare_string(a: &Value<'_>, b: &Value<'_>) -> Option<f64> {
+fn compare_string(a: &ValueRef<'_>, b: &ValueRef<'_>) -> Option<f64> {
     let (a, b) = (a.as_str()?, b.as_str()?);
     Some(f64::from(!casefold::eq(a, b)))
 }
@@ -210,7 +210,7 @@ fn compare_string(a: &Value<'_>, b: &Value<'_>) -> Option<f64> {
 /// The leading-character shortcut mirrors fontconfig: if the first characters
 /// differ and neither is a space, the names cannot match, so it can skip the
 /// full comparison.
-fn compare_family(a: &Value<'_>, b: &Value<'_>) -> Option<f64> {
+fn compare_family(a: &ValueRef<'_>, b: &ValueRef<'_>) -> Option<f64> {
     let (a, b) = (a.as_str()?, b.as_str()?);
     if !first_chars_could_match(a, b) {
         return Some(1.0);
@@ -220,7 +220,7 @@ fn compare_family(a: &Value<'_>, b: &Value<'_>) -> Option<f64> {
 
 /// PostScript names compare as a fraction of characters shared, ignoring
 /// case and the delimiters fontconfig lists as `" -,"`.
-fn compare_postscript(a: &Value<'_>, b: &Value<'_>) -> Option<f64> {
+fn compare_postscript(a: &ValueRef<'_>, b: &ValueRef<'_>) -> Option<f64> {
     let (a, b) = (a.as_str()?, b.as_str()?);
     if !first_chars_could_match(a, b) {
         return Some(1.0);
@@ -264,30 +264,30 @@ fn shared_prefix_ignoring_delimiters(a: &str, b: &str) -> usize {
     }
 }
 
-fn compare_number(a: &Value<'_>, b: &Value<'_>) -> Option<f64> {
+fn compare_number(a: &ValueRef<'_>, b: &ValueRef<'_>) -> Option<f64> {
     Some((number(b)? - number(a)?).abs())
 }
 
-fn number(value: &Value<'_>) -> Option<f64> {
+fn number(value: &ValueRef<'_>) -> Option<f64> {
     match value {
-        Value::Int(i) => Some(f64::from(*i)),
-        Value::Double(d) => Some(*d),
+        ValueRef::Int(i) => Some(f64::from(*i)),
+        ValueRef::Double(d) => Some(*d),
         _ => None,
     }
 }
 
 /// A value as the span it covers: a scalar is a span of zero width.
-fn span(value: &Value<'_>) -> Option<(f64, f64)> {
+fn span(value: &ValueRef<'_>) -> Option<(f64, f64)> {
     match value {
-        Value::Int(i) => Some((f64::from(*i), f64::from(*i))),
-        Value::Double(d) => Some((*d, *d)),
-        Value::Range(r) => Some((r.begin, r.end)),
+        ValueRef::Int(i) => Some((f64::from(*i), f64::from(*i))),
+        ValueRef::Double(d) => Some((*d, *d)),
+        ValueRef::Range(r) => Some((r.begin, r.end)),
         _ => None,
     }
 }
 
 /// Overlapping spans match exactly; otherwise the distance is the gap.
-fn compare_range(a: &Value<'_>, b: &Value<'_>) -> Option<f64> {
+fn compare_range(a: &ValueRef<'_>, b: &ValueRef<'_>) -> Option<f64> {
     let ((b1, e1), (b2, e2)) = (span(a)?, span(b)?);
     if e1 < b2 || e2 < b1 {
         Some((b2 - e1).abs().min((b1 - e2).abs()))
@@ -302,7 +302,7 @@ fn compare_range(a: &Value<'_>, b: &Value<'_>) -> Option<f64> {
 /// The `1e-15` is fontconfig's, and its comment calls the span semi-closed:
 /// it keeps a font whose range merely touches the requested size from tying
 /// with one that genuinely contains it.
-fn compare_size(a: &Value<'_>, b: &Value<'_>) -> Option<f64> {
+fn compare_size(a: &ValueRef<'_>, b: &ValueRef<'_>) -> Option<f64> {
     let ((b1, e1), (b2, e2)) = (span(a)?, span(b)?);
     if e1 < b2 || e2 < b1 {
         return Some((b2 - e1).abs().min((b1 - e2).abs()));
@@ -313,27 +313,27 @@ fn compare_size(a: &Value<'_>, b: &Value<'_>) -> Option<f64> {
     Some(0.0)
 }
 
-fn compare_bool(a: &Value<'_>, b: &Value<'_>) -> Option<f64> {
+fn compare_bool(a: &ValueRef<'_>, b: &ValueRef<'_>) -> Option<f64> {
     match (a, b) {
-        (Value::Bool(a), Value::Bool(b)) => Some(f64::from(a != b)),
+        (ValueRef::Bool(a), ValueRef::Bool(b)) => Some(f64::from(a != b)),
         _ => None,
     }
 }
 
 /// How many characters the query wants that the font does not have.
-fn compare_charset(a: &Value<'_>, b: &Value<'_>) -> Option<f64> {
-    let (Value::CharSet(want), Value::CharSet(got)) = (a, b) else {
+fn compare_charset(a: &ValueRef<'_>, b: &ValueRef<'_>) -> Option<f64> {
+    let (ValueRef::CharSet(want), ValueRef::CharSet(got)) = (a, b) else {
         return None;
     };
     Some(subtract_count(want, got) as f64)
 }
 
-fn subtract_count(want: &CharSetRef<'_>, got: &CharSetRef<'_>) -> usize {
+fn subtract_count(want: &AnyCharSet<'_>, got: &AnyCharSet<'_>) -> usize {
     match got {
         // The font's coverage is the side worth resolving once: it is read
         // out of a cache, and the query names only a few characters.
-        CharSetRef::Cached(set) => set.missing_count(want.chars()),
-        CharSetRef::Owned(set) => want.chars().filter(|c| !set.contains(*c)).count(),
+        AnyCharSet::Cached(set) => set.missing_count(want.chars()),
+        AnyCharSet::Owned(set) => want.chars().filter(|c| !set.contains(*c)).count(),
     }
 }
 
@@ -342,12 +342,12 @@ fn subtract_count(want: &CharSetRef<'_>, got: &CharSetRef<'_>) -> usize {
 ///
 /// Either side may be a langset or a plain tag, which is why this has four
 /// arms rather than one.
-fn compare_lang(a: &Value<'_>, b: &Value<'_>) -> Option<f64> {
+fn compare_lang(a: &ValueRef<'_>, b: &ValueRef<'_>) -> Option<f64> {
     let result = match (a, b) {
-        (Value::LangSet(a), Value::LangSet(b)) => a.compare(b),
-        (Value::LangSet(a), Value::String(b)) => a.has_lang(b),
-        (Value::String(a), Value::LangSet(b)) => b.has_lang(a),
-        (Value::String(a), Value::String(b)) => langset::compare_lang(a, b),
+        (ValueRef::LangSet(a), ValueRef::LangSet(b)) => a.compare(b),
+        (ValueRef::LangSet(a), ValueRef::String(b)) => a.has_lang(b),
+        (ValueRef::String(a), ValueRef::LangSet(b)) => b.has_lang(a),
+        (ValueRef::String(a), ValueRef::String(b)) => langset::compare_lang(a, b),
         _ => return None,
     };
     Some(result as u8 as f64)
@@ -355,7 +355,7 @@ fn compare_lang(a: &Value<'_>, b: &Value<'_>) -> Option<f64> {
 
 /// Filenames score by how loosely they match: identical, same but for case,
 /// glob, or not at all.
-fn compare_filename(a: &Value<'_>, b: &Value<'_>) -> Option<f64> {
+fn compare_filename(a: &ValueRef<'_>, b: &ValueRef<'_>) -> Option<f64> {
     let (a, b) = (a.as_str()?, b.as_str()?);
     Some(if a == b {
         0.0
@@ -392,7 +392,7 @@ fn score_values(matcher: &Matcher, query: &Element, font: &Values<'_>, score: &m
             };
             let ordered = distance * 1000.0
                 + j as f64 * 100.0
-                + if matches!(got, Value::String(_)) { k as f64 } else { 0.0 };
+                + if matches!(got, ValueRef::String(_)) { k as f64 } else { 0.0 };
             best = best.min(ordered);
             if !split {
                 // An exact match on the first-listed value cannot be beaten.
@@ -452,13 +452,13 @@ struct Family<'q> {
 
 impl<'q> Families<'q> {
     /// Index the family element of `query`, if it has one.
-    fn new(query: &'q Query) -> Self {
+    fn new(query: &'q Pattern) -> Self {
         let mut families = Self { heads: HashMap::default(), entries: Vec::new() };
         let Some(element) = query.get(Object::Family) else { return families };
         families.entries.reserve(element.values().count());
 
         for (index, (want, binding)) in element.values().enumerate() {
-            let OwnedValue::String(name) = want else { continue };
+            let Value::String(name) = want else { continue };
             let index = index as f64;
             let hash = casefold::hash_ignoring_blanks(name);
 
@@ -517,10 +517,10 @@ fn score_charsets(chars: &[Vec<char>], font: &Values<'_>, score: &mut Score) -> 
     let mut best = NO_MATCH;
     'outer: for (j, want) in chars.iter().enumerate() {
         for got in font.clone() {
-            let Value::CharSet(got) = got else { return false };
+            let ValueRef::CharSet(got) = got else { return false };
             let missing = match got {
-                CharSetRef::Cached(set) => set.missing_count(want.iter().copied()),
-                CharSetRef::Owned(set) => want.iter().filter(|c| !set.contains(**c)).count(),
+                AnyCharSet::Cached(set) => set.missing_count(want.iter().copied()),
+                AnyCharSet::Owned(set) => want.iter().filter(|c| !set.contains(**c)).count(),
             };
             // A charset never scores by position within the font, so there
             // is no `k` term here: see [`score_values`].
@@ -547,7 +547,7 @@ fn score_langs(ranks: &[LangRank], query: &Element, font: &Values<'_>, score: &m
         let want = want.as_value();
         for got in font.clone() {
             let result = match (&want, &got, ranks.get(j)) {
-                (Value::String(tag), Value::LangSet(set), Some(rank)) => {
+                (ValueRef::String(tag), ValueRef::LangSet(set), Some(rank)) => {
                     set.has_lang_from(tag, *rank) as u8 as f64
                 }
                 _ => match compare_lang(&want, &got) {
@@ -587,7 +587,7 @@ fn score_families(families: &Families<'_>, font: &Values<'_>, score: &mut Score)
 
 /// Score `font` against `query`, or `None` if a property could not be
 /// compared at all because the two sides disagreed about its type.
-pub fn score(query: &Query, font: &Pattern<'_>) -> Option<Score> {
+pub fn score(query: &Pattern, font: &PatternRef<'_>) -> Option<Score> {
     // The one-shot form works the query out for a single font, which is
     // wasted effort repeated. Anything scoring more than one font should
     // prepare it once: see [`best`] and [`sort`].
@@ -632,7 +632,7 @@ enum How {
     /// Against the family index.
     Families,
     /// Against the language ranks.
-    OwnedLangSet,
+    LangSet,
     /// Against the query characters, already extracted, one list per value.
     CharSets(Vec<Vec<char>>),
     /// The general path, through the matcher.
@@ -642,14 +642,14 @@ enum How {
 }
 
 impl<'q> Prepared<'q> {
-    fn new(query: &'q Query) -> Self {
+    fn new(query: &'q Pattern) -> Self {
         let elements = query
             .elements()
             .map(|element| {
                 let object = element.object();
                 let how = match object {
                     Object::Family => How::Families,
-                    Object::Lang => How::OwnedLangSet,
+                    Object::Lang => How::LangSet,
                     Object::Charset => {
                         // Extracting up front is what makes charset scoring
                         // cheap: the characters are walked once here rather
@@ -665,7 +665,7 @@ impl<'q> Prepared<'q> {
                         let extracted: Option<Vec<Vec<char>>> = element
                             .values()
                             .map(|(value, _)| match value {
-                                OwnedValue::CharSet(set) => Some(set.chars().collect()),
+                                Value::CharSet(set) => Some(set.chars().collect()),
                                 _ => None,
                             })
                             .collect();
@@ -689,7 +689,7 @@ impl<'q> Prepared<'q> {
                 element
                     .values()
                     .map(|(value, _)| match value {
-                        OwnedValue::String(name) => crate::langs::rank_of(name),
+                        Value::String(name) => crate::langs::rank_of(name),
                         // Not a tag, so nothing to look up; the comparison
                         // takes its other arm.
                         _ => Err(0),
@@ -702,7 +702,7 @@ impl<'q> Prepared<'q> {
 }
 
 /// [`score`], with the query already prepared.
-fn score_prepared(query: &Prepared<'_>, font: &Pattern<'_>) -> Option<Score> {
+fn score_prepared(query: &Prepared<'_>, font: &PatternRef<'_>) -> Option<Score> {
     let mut score = Score::zero();
 
     // Both sides are sorted by object id, so the two are walked in lockstep
@@ -739,7 +739,7 @@ fn score_prepared(query: &Prepared<'_>, font: &Pattern<'_>) -> Option<Score> {
                 score_families(&query.families, &got, &mut score);
                 true
             }
-            How::OwnedLangSet => score_langs(&query.langs, prepped.element, &got, &mut score),
+            How::LangSet => score_langs(&query.langs, prepped.element, &got, &mut score),
             How::CharSets(chars) => score_charsets(chars, &got, &mut score),
             How::Values(matcher) => score_values(matcher, prepped.element, &got, &mut score),
             How::Skip => true,
@@ -755,12 +755,12 @@ fn score_prepared(query: &Prepared<'_>, font: &Pattern<'_>) -> Option<Score> {
 ///
 /// Ties keep the font that came first, which is the order the caches were
 /// walked in.
-pub fn best<'a, I>(query: &Query, fonts: I) -> Option<(Pattern<'a>, Score)>
+pub fn best<'a, I>(query: &Pattern, fonts: I) -> Option<(PatternRef<'a>, Score)>
 where
-    I: IntoIterator<Item = Pattern<'a>>,
+    I: IntoIterator<Item = PatternRef<'a>>,
 {
     let prepared = Prepared::new(query);
-    let mut best: Option<(Pattern<'a>, Score)> = None;
+    let mut best: Option<(PatternRef<'a>, Score)> = None;
     for font in fonts {
         let Some(score) = score_prepared(&prepared, &font) else { continue };
         let better = match &best {
@@ -788,12 +788,12 @@ pub struct BestValue {
 }
 
 /// Find which font value answers `query` best for `object`.
-pub fn best_value(query: &Query, font: &Pattern<'_>, object: Object) -> Option<BestValue> {
+pub fn best_value(query: &Pattern, font: &PatternRef<'_>, object: Object) -> Option<BestValue> {
     let matcher = matcher(object)?;
     let element = query.get(object)?;
-    let wanted: Vec<(Value<'_>, Binding)> =
+    let wanted: Vec<(ValueRef<'_>, Binding)> =
         element.values().map(|(v, b)| (v.as_value(), b)).collect();
-    let got: Vec<Value<'_>> = font.get(object)?.values().collect();
+    let got: Vec<ValueRef<'_>> = font.get(object)?.values().collect();
 
     let (mut best, mut index) = (f64::MAX, 0usize);
     for (j, (want, _)) in wanted.iter().enumerate() {
@@ -803,7 +803,7 @@ pub fn best_value(query: &Query, font: &Pattern<'_>, object: Object) -> Option<B
             };
             let ordered = distance * 1000.0
                 + j as f64 * 100.0
-                + if matches!(value, Value::String(_)) { k as f64 } else { 0.0 };
+                + if matches!(value, ValueRef::String(_)) { k as f64 } else { 0.0 };
             if ordered < best {
                 best = ordered;
                 index = k;
@@ -827,10 +827,10 @@ pub fn best_value(query: &Query, font: &Pattern<'_>, object: Object) -> Option<B
 }
 
 /// The number a range comparison settles on, `FcCompareRange`'s `bestValue`.
-fn resolve_range(want: &Value<'_>, got: &Value<'_>) -> Option<f64> {
+fn resolve_range(want: &ValueRef<'_>, got: &ValueRef<'_>) -> Option<f64> {
     let ((b1, e1), (b2, e2)) = (span(want)?, span(got)?);
     // Only a real range needs resolving; a scalar is already a number.
-    if !matches!(got, Value::Range(_)) {
+    if !matches!(got, ValueRef::Range(_)) {
         return None;
     }
     Some(if e1 < b2 {
@@ -865,12 +865,12 @@ const LANG_ANSWERED: f64 = 2_000.0;
 /// 2. **Trimming**, when `trim` is set. A font is kept only if it draws a
 ///    character none of its predecessors could. This is what `fc-match -s`
 ///    reports and `fc-match -a` does not.
-pub fn sort<'a, I>(query: &Query, fonts: I, trim: bool) -> Vec<(Pattern<'a>, Score)>
+pub fn sort<'a, I>(query: &Pattern, fonts: I, trim: bool) -> Vec<(PatternRef<'a>, Score)>
 where
-    I: IntoIterator<Item = Pattern<'a>>,
+    I: IntoIterator<Item = PatternRef<'a>>,
 {
     let prepared = Prepared::new(query);
-    let mut scored: Vec<(Pattern<'a>, Score)> = fonts
+    let mut scored: Vec<(PatternRef<'a>, Score)> = fonts
         .into_iter()
         .filter_map(|font| score_prepared(&prepared, &font).map(|s| (font, s)))
         .collect();
@@ -890,13 +890,13 @@ where
 
     // Trimming reads the order directly, so the gather above never happens
     // on this path: the fonts that survive are copied, and the rest are not.
-    let mut coverage = crate::charset::OwnedCharSet::new();
+    let mut coverage = crate::charset::CharSet::new();
     let mut kept = Vec::new();
     for &index in &order {
         let (font, score) = scored[index as usize];
         // A font with no charset cannot be judged, and fontconfig skips it
         // outright rather than keeping it on faith.
-        let Some(Value::CharSet(charset)) = font.value(Object::Charset) else {
+        let Some(ValueRef::CharSet(charset)) = font.value(Object::Charset) else {
             continue;
         };
         let adds = coverage.merge_chars(&charset);
@@ -912,11 +912,11 @@ where
 /// Each pattern language can be satisfied once. A font that satisfies one
 /// keeps its score and claims that language; a font that satisfies none has
 /// its language slot pushed to [`LANG_UNSATISFIED`].
-fn satisfy_languages(query: &Query, order: &[u32], scored: &mut [(Pattern<'_>, Score)]) {
+fn satisfy_languages(query: &Pattern, order: &[u32], scored: &mut [(PatternRef<'_>, Score)]) {
     let Some(element) = query.get(Object::Lang) else {
         return;
     };
-    let wanted: Vec<OwnedValue> = element.values().map(|(v, _)| v.clone()).collect();
+    let wanted: Vec<Value> = element.values().map(|(v, _)| v.clone()).collect();
     if wanted.is_empty() {
         return;
     }
@@ -954,7 +954,7 @@ fn satisfy_languages(query: &Query, order: &[u32], scored: &mut [(Pattern<'_>, S
 ///
 /// Stable, so fonts with equal scores stay in the order they arrived -- which
 /// is the order the caches were walked in, and what fontconfig keeps.
-fn sort_order(order: &mut [u32], scored: &[(Pattern<'_>, Score)]) {
+fn sort_order(order: &mut [u32], scored: &[(PatternRef<'_>, Score)]) {
     order.sort_by(|&left, &right| {
         let (a, b) = (&scored[left as usize].1, &scored[right as usize].1);
         a.0.iter()
@@ -967,9 +967,9 @@ fn sort_order(order: &mut [u32], scored: &[(Pattern<'_>, Score)]) {
 /// Every font, ordered best first, without trimming.
 ///
 /// Equivalent to [`sort`] with `trim` unset.
-pub fn sorted<'a, I>(query: &Query, fonts: I) -> Vec<(Pattern<'a>, Score)>
+pub fn sorted<'a, I>(query: &Pattern, fonts: I) -> Vec<(PatternRef<'a>, Score)>
 where
-    I: IntoIterator<Item = Pattern<'a>>,
+    I: IntoIterator<Item = PatternRef<'a>>,
 {
     sort(query, fonts, false)
 }
@@ -979,10 +979,10 @@ where
 #[cfg(test)]
 mod family_tests {
     use super::{Families, NO_MATCH};
-    use crate::{Binding, Object, Query};
+    use crate::{Binding, Object, Pattern};
 
-    fn query(families: &[(&str, Binding)]) -> Query {
-        let mut query = Query::new();
+    fn query(families: &[(&str, Binding)]) -> Pattern {
+        let mut query = Pattern::new();
         for (name, binding) in families {
             query.add_with_binding(Object::Family, *name, *binding);
         }
@@ -1022,7 +1022,7 @@ mod family_tests {
     /// priority slots.
     #[test]
     fn strong_and_weak_are_kept_apart() {
-        let mut q = Query::new();
+        let mut q = Pattern::new();
         q.add(Object::Family, "Strong Only");
         q.add_weak(Object::Family, "Weak Only");
         let families = Families::new(&q);
@@ -1037,7 +1037,7 @@ mod family_tests {
     /// what the `min` in the scan did.
     #[test]
     fn a_repeated_name_keeps_the_earliest_of_each() {
-        let mut q = Query::new();
+        let mut q = Pattern::new();
         q.add(Object::Family, "Filler");
         q.add_weak(Object::Family, "Repeated");
         q.add(Object::Family, "repeated");
@@ -1050,7 +1050,7 @@ mod family_tests {
 
     #[test]
     fn a_query_with_no_family_finds_nothing() {
-        let mut q = Query::new();
+        let mut q = Pattern::new();
         q.add(Object::Weight, 80);
         assert!(Families::new(&q).find("Anything").is_none());
     }

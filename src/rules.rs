@@ -11,7 +11,7 @@ use std::collections::HashMap;
 use crate::casefold;
 use crate::fnv::BuildPassthrough;
 use crate::object::Object;
-use crate::query::{OwnedValue, Property, Query};
+use crate::query::{Pattern, Property, Value};
 use crate::value::{Binding, Matrix};
 
 /// Which pattern a rule set applies to.
@@ -156,7 +156,7 @@ impl EditMode {
 #[derive(Clone, Debug, PartialEq)]
 pub enum Expr {
     /// A literal.
-    Value(OwnedValue),
+    Value(Value),
     /// `<name>`: the current value of a property, read from whichever
     /// pattern its `target` names.
     Field(MatchKind, Property),
@@ -301,19 +301,19 @@ pub(crate) struct Pass {
     ///
     /// Drained rather than moved, so the allocation survives into the next
     /// edit while the values themselves go into the pattern.
-    tagged: Vec<(OwnedValue, Binding)>,
+    tagged: Vec<(Value, Binding)>,
 }
 
 impl Pass {
     /// Begin a pass over `query`.
-    pub(crate) fn new(query: &Query) -> Self {
+    pub(crate) fn new(query: &Pattern) -> Self {
         Self { families: FamilyIndex::new(query), tagged: Vec::new() }
     }
 }
 
 impl FamilyIndex {
     /// Index the families `query` starts with.
-    pub(crate) fn new(query: &Query) -> Self {
+    pub(crate) fn new(query: &Pattern) -> Self {
         let mut index = Self::default();
         if let Some(values) = query.values_of(&Property::Known(Object::Family)) {
             for (value, _) in values {
@@ -331,15 +331,15 @@ impl FamilyIndex {
     }
 
     /// Record a family the query has gained.
-    fn learn(&mut self, value: &OwnedValue) {
-        if let OwnedValue::String(name) = value {
+    fn learn(&mut self, value: &Value) {
+        if let Value::String(name) = value {
             *self.counts.entry(casefold::hash_ignoring_blanks(name)).or_insert(0) += 1;
         }
     }
 
     /// Record a family the query has lost.
-    fn forget(&mut self, value: &OwnedValue) {
-        if let OwnedValue::String(name) = value {
+    fn forget(&mut self, value: &Value) {
+        if let Value::String(name) = value {
             if let Entry::Occupied(mut entry) =
                 self.counts.entry(casefold::hash_ignoring_blanks(name))
             {
@@ -400,7 +400,7 @@ impl Rule {
     /// reached, so a later test sees what an earlier edit did -- and a test
     /// failing halfway leaves those edits in place, which is what fontconfig
     /// does too.
-    pub fn apply(&self, query: &mut Query, pattern: Option<&Query>, pass: &mut Pass) -> bool {
+    pub fn apply(&self, query: &mut Pattern, pattern: Option<&Pattern>, pass: &mut Pass) -> bool {
         // Where a test matched, per property, so a following edit knows which
         // value to replace or insert beside.
         let mut marks: Vec<(&Property, Option<usize>)> = Vec::new();
@@ -446,8 +446,8 @@ impl Test {
     /// for against what it got.
     fn evaluate(
         &self,
-        query: &Query,
-        pattern: Option<&Query>,
+        query: &Pattern,
+        pattern: Option<&Pattern>,
         families: &mut FamilyIndex,
     ) -> Option<Option<usize>> {
         let source = match (self.kind, pattern) {
@@ -458,7 +458,7 @@ impl Test {
         // common expression is a bare literal that the rule already owns.
         // Borrowing it saves a Vec and a String copy per test.
         let computed;
-        let wanted: &[OwnedValue] = match &self.expr {
+        let wanted: &[Value] = match &self.expr {
             Expr::Value(value) => std::slice::from_ref(value),
             other => {
                 computed = other.values(query, pattern);
@@ -478,9 +478,9 @@ impl Test {
             && std::ptr::eq(source, query)
             && self.object == Property::Known(Object::Family)
         {
-            let decidable = wanted.iter().all(|w| matches!(w, OwnedValue::String(_)));
+            let decidable = wanted.iter().all(|w| matches!(w, Value::String(_)));
             let possible = wanted.iter().any(|w| match w {
-                OwnedValue::String(name) => families.might_hold(name),
+                Value::String(name) => families.might_hold(name),
                 _ => false,
             });
             if decidable && !possible {
@@ -496,7 +496,7 @@ impl Test {
             };
         };
 
-        let hit = |(got, _): &(OwnedValue, Binding)| {
+        let hit = |(got, _): &(Value, Binding)| {
             wanted.iter().any(|want| compare(got, self.compare, want))
         };
 
@@ -523,8 +523,8 @@ impl Edit {
     /// Apply this edit, inserting relative to `mark` when a test set one.
     fn apply(
         &self,
-        query: &mut Query,
-        pattern: Option<&Query>,
+        query: &mut Pattern,
+        pattern: Option<&Pattern>,
         mark: Option<usize>,
         pass: &mut Pass,
     ) {
@@ -554,7 +554,7 @@ impl Edit {
         let families = &mut pass.families;
         {
             let slot = query.values_mut(&self.object);
-            let forget_all = |families: &mut FamilyIndex, slot: &Vec<(OwnedValue, Binding)>| {
+            let forget_all = |families: &mut FamilyIndex, slot: &Vec<(Value, Binding)>| {
                 if tracked {
                     for (value, _) in slot {
                         families.forget(value);
@@ -635,7 +635,7 @@ impl Edit {
     /// This is what keeps an alias chain from promoting its substitutes: a
     /// `<default>` appends last and so stays weak even when the family it
     /// matched was the caller's own strong one.
-    fn resolve_binding(&self, query: &Query, mark: Option<usize>) -> Binding {
+    fn resolve_binding(&self, query: &Pattern, mark: Option<usize>) -> Binding {
         match self.binding {
             Binding::Same => mark
                 .and_then(|at| Some(query.values_of(&self.object)?.get(at)?.1))
@@ -650,7 +650,7 @@ impl Expr {
     ///
     /// A list yields several; an unresolvable expression yields none, which
     /// makes a test fail rather than match something arbitrary.
-    pub fn values(&self, query: &Query, pattern: Option<&Query>) -> Vec<OwnedValue> {
+    pub fn values(&self, query: &Pattern, pattern: Option<&Pattern>) -> Vec<Value> {
         match self {
             Self::Value(v) => vec![v.clone()],
             Self::Unknown => Vec::new(),
@@ -698,76 +698,76 @@ impl Expr {
     }
 }
 
-fn as_bool(value: &OwnedValue) -> Option<bool> {
+fn as_bool(value: &Value) -> Option<bool> {
     match value {
-        OwnedValue::Bool(b) => Some(*b),
+        Value::Bool(b) => Some(*b),
         _ => None,
     }
 }
 
-fn as_number(value: &OwnedValue) -> Option<f64> {
+fn as_number(value: &Value) -> Option<f64> {
     match value {
-        OwnedValue::Int(i) => Some(f64::from(*i)),
-        OwnedValue::Double(d) => Some(*d),
+        Value::Int(i) => Some(f64::from(*i)),
+        Value::Double(d) => Some(*d),
         _ => None,
     }
 }
 
 /// Whether both sides were written as integers, so arithmetic stays integral.
-fn both_int(a: &OwnedValue, b: &OwnedValue) -> bool {
-    matches!((a, b), (OwnedValue::Int(_), OwnedValue::Int(_)))
+fn both_int(a: &Value, b: &Value) -> bool {
+    matches!((a, b), (Value::Int(_), Value::Int(_)))
 }
 
-fn number_result(value: f64, integral: bool) -> OwnedValue {
+fn number_result(value: f64, integral: bool) -> Value {
     if integral {
-        OwnedValue::Int(value as i32)
+        Value::Int(value as i32)
     } else {
-        OwnedValue::Double(value)
+        Value::Double(value)
     }
 }
 
-fn apply_unary(op: UnaryOp, value: &OwnedValue) -> Option<OwnedValue> {
+fn apply_unary(op: UnaryOp, value: &Value) -> Option<Value> {
     Some(match op {
-        UnaryOp::Not => OwnedValue::Bool(!as_bool(value)?),
-        UnaryOp::Floor => OwnedValue::Int(as_number(value)?.floor() as i32),
-        UnaryOp::Ceil => OwnedValue::Int(as_number(value)?.ceil() as i32),
-        UnaryOp::Round => OwnedValue::Int(as_number(value)?.round() as i32),
-        UnaryOp::Trunc => OwnedValue::Int(as_number(value)?.trunc() as i32),
+        UnaryOp::Not => Value::Bool(!as_bool(value)?),
+        UnaryOp::Floor => Value::Int(as_number(value)?.floor() as i32),
+        UnaryOp::Ceil => Value::Int(as_number(value)?.ceil() as i32),
+        UnaryOp::Round => Value::Int(as_number(value)?.round() as i32),
+        UnaryOp::Trunc => Value::Int(as_number(value)?.trunc() as i32),
     })
 }
 
-fn apply_binary(op: BinaryOp, a: &OwnedValue, b: &OwnedValue) -> Option<OwnedValue> {
+fn apply_binary(op: BinaryOp, a: &Value, b: &Value) -> Option<Value> {
     use BinaryOp as B;
     Some(match op {
-        B::Or => OwnedValue::Bool(as_bool(a)? || as_bool(b)?),
-        B::And => OwnedValue::Bool(as_bool(a)? && as_bool(b)?),
-        B::Eq => OwnedValue::Bool(compare(a, Compare::Eq, b)),
-        B::NotEq => OwnedValue::Bool(compare(a, Compare::NotEq, b)),
-        B::Less => OwnedValue::Bool(compare(a, Compare::Less, b)),
-        B::LessEq => OwnedValue::Bool(compare(a, Compare::LessEq, b)),
-        B::More => OwnedValue::Bool(compare(a, Compare::More, b)),
-        B::MoreEq => OwnedValue::Bool(compare(a, Compare::MoreEq, b)),
-        B::Contains => OwnedValue::Bool(compare(a, Compare::Contains, b)),
-        B::NotContains => OwnedValue::Bool(compare(a, Compare::NotContains, b)),
+        B::Or => Value::Bool(as_bool(a)? || as_bool(b)?),
+        B::And => Value::Bool(as_bool(a)? && as_bool(b)?),
+        B::Eq => Value::Bool(compare(a, Compare::Eq, b)),
+        B::NotEq => Value::Bool(compare(a, Compare::NotEq, b)),
+        B::Less => Value::Bool(compare(a, Compare::Less, b)),
+        B::LessEq => Value::Bool(compare(a, Compare::LessEq, b)),
+        B::More => Value::Bool(compare(a, Compare::More, b)),
+        B::MoreEq => Value::Bool(compare(a, Compare::MoreEq, b)),
+        B::Contains => Value::Bool(compare(a, Compare::Contains, b)),
+        B::NotContains => Value::Bool(compare(a, Compare::NotContains, b)),
         // Plus concatenates strings, unions sets, and adds everything else.
         B::Plus => match (a, b) {
-            (OwnedValue::String(a), OwnedValue::String(b)) => OwnedValue::String(format!("{a}{b}")),
-            (OwnedValue::LangSet(a), OwnedValue::LangSet(b)) => OwnedValue::LangSet(a.union(b)),
-            (OwnedValue::CharSet(a), OwnedValue::CharSet(b)) => OwnedValue::CharSet(a.union(b)),
+            (Value::String(a), Value::String(b)) => Value::String(format!("{a}{b}")),
+            (Value::LangSet(a), Value::LangSet(b)) => Value::LangSet(a.union(b)),
+            (Value::CharSet(a), Value::CharSet(b)) => Value::CharSet(a.union(b)),
             _ => number_result(as_number(a)? + as_number(b)?, both_int(a, b)),
         },
         // Minus subtracts sets as well as numbers, which is how a config
         // takes a language away from a font that only appears to have it.
         B::Minus => match (a, b) {
-            (OwnedValue::LangSet(a), OwnedValue::LangSet(b)) => OwnedValue::LangSet(a.subtract(b)),
-            (OwnedValue::CharSet(a), OwnedValue::CharSet(b)) => OwnedValue::CharSet(a.subtract(b)),
+            (Value::LangSet(a), Value::LangSet(b)) => Value::LangSet(a.subtract(b)),
+            (Value::CharSet(a), Value::CharSet(b)) => Value::CharSet(a.subtract(b)),
             _ => number_result(as_number(a)? - as_number(b)?, both_int(a, b)),
         },
         B::Times => number_result(as_number(a)? * as_number(b)?, both_int(a, b)),
         B::Divide => {
             let divisor = as_number(b)?;
             // Division always produces a double, even between two integers.
-            OwnedValue::Double(as_number(a)? / divisor)
+            Value::Double(as_number(a)? / divisor)
         }
     })
 }
@@ -777,8 +777,8 @@ fn apply_binary(op: BinaryOp, a: &OwnedValue, b: &OwnedValue) -> Option<OwnedVal
 /// Strings compare with case folding; `eq` on a family also ignores blanks,
 /// which is `FcOpFlagIgnoreBlanks`. `contains` is a substring test for
 /// strings and a range test for numbers.
-pub(crate) fn compare(got: &OwnedValue, op: Compare, want: &OwnedValue) -> bool {
-    use OwnedValue as V;
+pub(crate) fn compare(got: &Value, op: Compare, want: &Value) -> bool {
+    use Value as V;
     match (got, want) {
         (V::String(got), V::String(want)) => match op {
             Compare::Eq => casefold::eq_ignoring_blanks(got, want),

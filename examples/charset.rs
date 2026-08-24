@@ -4,7 +4,7 @@
 //! cargo run --example charset -- /usr/share/fonts/dejavu-sans-fonts/DejaVuSans.ttf
 //! ```
 
-use fontconf::{CachePolicy, Config, Object, Value};
+use typordo::{CachePolicy, Config, Object, ValueRef};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let want: Vec<String> = std::env::args().skip(1).collect();
@@ -15,7 +15,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             if !want.is_empty() && !want.iter().any(|w| w == file) {
                 continue;
             }
-            let Some(Value::CharSet(charset)) = font.value(Object::Charset) else {
+            let Some(ValueRef::CharSet(charset)) = font.value(Object::Charset) else {
                 continue;
             };
             charset.validate()?;

@@ -54,7 +54,7 @@ pub struct Built {
 /// Rebuilding the caches for font directories.
 ///
 /// ```no_run
-/// # use fontconf::{Builder, Config};
+/// # use typordo::{Builder, Config};
 /// let config = Config::load()?;
 /// let builder = Builder::new(&config);
 /// for dir in config.font_dirs() {
@@ -247,9 +247,9 @@ impl<'a> Builder<'a> {
             // Existing but unwritable is the common case for the system cache
             // directory when running as an ordinary user, and it is why
             // fontconfig falls through to the per-user one.
-            match std::fs::write(dir.join(".fontconf-probe"), b"") {
+            match std::fs::write(dir.join(".typordo-probe"), b"") {
                 Ok(()) => {
-                    let _ = std::fs::remove_file(dir.join(".fontconf-probe"));
+                    let _ = std::fs::remove_file(dir.join(".typordo-probe"));
                     tag(dir);
                     return Ok(dir.to_path_buf());
                 }
@@ -304,7 +304,7 @@ mod tests {
     /// where it lands, and an empty directory still gets a cache. Scanning
     /// itself is covered against the real font set.
     fn fixture(name: &str) -> (std::path::PathBuf, std::path::PathBuf) {
-        let root = std::env::temp_dir().join(format!("fontconf-build-{name}"));
+        let root = std::env::temp_dir().join(format!("typordo-build-{name}"));
         let _ = std::fs::remove_dir_all(&root);
         let fonts = root.join("fonts");
         let caches = root.join("caches");

@@ -1,7 +1,7 @@
 use crate::bytes::Bytes;
-use crate::charset::{CharSet, CharSetRef};
+use crate::charset::{AnyCharSet, CharSetRef};
 use crate::error::{Error, Result};
-use crate::langset::{LangSet, LangSetRef};
+use crate::langset::{AnyLangSet, LangSetRef};
 
 /// A 2x2 transform, fontconfig's `FcMatrix`.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -45,7 +45,7 @@ impl Range {
 /// Strings borrow directly out of the cache buffer — reading a family name
 /// costs a bounds check and a UTF-8 validation, no allocation.
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub enum Value<'a> {
+pub enum ValueRef<'a> {
     /// Present but empty. Fontconfig uses this as a deletion tombstone.
     Void,
     /// A whole number.
@@ -59,14 +59,14 @@ pub enum Value<'a> {
     /// A 2x2 transform to apply to the face.
     Matrix(Matrix),
     /// The characters a font covers.
-    CharSet(CharSetRef<'a>),
+    CharSet(AnyCharSet<'a>),
     /// The languages a font can write.
-    LangSet(LangSetRef<'a>),
+    LangSet(AnyLangSet<'a>),
     /// A span of numbers, as a variable axis reports its extent.
     Range(Range),
 }
 
-impl<'a> Value<'a> {
+impl<'a> ValueRef<'a> {
     /// The string, if this is one.
     pub fn as_str(&self) -> Option<&'a str> {
         match self {
@@ -129,20 +129,20 @@ pub(crate) fn binding_at(data: Bytes<'_>, node: usize) -> Result<Binding> {
 /// Offsets inside a value are relative to the value itself, not to the field
 /// holding them — `FcValueString` in `fcint.h` passes the whole `FcValue` as
 /// the base.
-pub(crate) fn value_at<'a>(data: Bytes<'a>, at: usize) -> Result<Value<'a>> {
+pub(crate) fn value_at<'a>(data: Bytes<'a>, at: usize) -> Result<ValueRef<'a>> {
     let union = at + L.union;
     Ok(match data.i32(at)? {
-        0 => Value::Void,
-        1 => Value::Int(data.i32(union)?),
-        2 => Value::Double(data.f64(union)?),
+        0 => ValueRef::Void,
+        1 => ValueRef::Int(data.i32(union)?),
+        2 => ValueRef::Double(data.f64(union)?),
         3 => {
             let s = data.follow(at, union)?.ok_or(Error::BadString(union))?;
-            Value::String(data.str(s)?)
+            ValueRef::String(data.str(s)?)
         }
-        4 => Value::Bool(data.i32(union)? != 0),
+        4 => ValueRef::Bool(data.i32(union)? != 0),
         5 => {
             let m = data.follow(at, union)?.ok_or(Error::BadOffset { base: at, delta: 0 })?;
-            Value::Matrix(Matrix {
+            ValueRef::Matrix(Matrix {
                 xx: data.f64(m)?,
                 xy: data.f64(m + 8)?,
                 yx: data.f64(m + 16)?,
@@ -151,17 +151,17 @@ pub(crate) fn value_at<'a>(data: Bytes<'a>, at: usize) -> Result<Value<'a>> {
         }
         6 => {
             let c = data.follow(at, union)?.ok_or(Error::BadOffset { base: at, delta: 0 })?;
-            Value::CharSet(CharSetRef::Cached(CharSet { data, at: c }))
+            ValueRef::CharSet(AnyCharSet::Cached(CharSetRef { data, at: c }))
         }
         // 7 is FcTypeFTFace, a live FT_Face pointer. It cannot be serialized
         // and must never appear in a file.
         8 => {
             let l = data.follow(at, union)?.ok_or(Error::BadOffset { base: at, delta: 0 })?;
-            Value::LangSet(LangSetRef::Cached(LangSet { data, at: l }))
+            ValueRef::LangSet(AnyLangSet::Cached(LangSetRef { data, at: l }))
         }
         9 => {
             let r = data.follow(at, union)?.ok_or(Error::BadOffset { base: at, delta: 0 })?;
-            Value::Range(Range { begin: data.f64(r)?, end: data.f64(r + 8)? })
+            ValueRef::Range(Range { begin: data.f64(r)?, end: data.f64(r + 8)? })
         }
         other => return Err(Error::BadCount(other)),
     })

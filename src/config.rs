@@ -28,15 +28,15 @@ use std::path::{Path, PathBuf};
 use crate::cache::Cache;
 use crate::casefold;
 use crate::glob;
-use crate::langset::OwnedLangSet;
+use crate::langset::LangSet;
 use crate::md5;
 use crate::object::Object;
-use crate::pattern::Pattern;
-use crate::query::{OwnedValue, Property, Query};
+use crate::pattern::PatternRef;
+use crate::query::{Pattern, Property, Value};
 use crate::rules::{
     BinaryOp, Compare, Edit, EditMode, Expr, MatchKind, Qual, Rule, Step, Test, UnaryOp,
 };
-use crate::value::{Binding, Matrix, Range, Value};
+use crate::value::{Binding, Matrix, Range, ValueRef};
 use crate::xml::{Event, Reader, XmlError};
 
 /// The architecture tag fontconfig builds into a cache file name.
@@ -192,7 +192,7 @@ enum SelectorValue {
     /// An inclusive span, from `<range>`.
     Range(Range),
     /// Languages, from `<langset>`.
-    LangSet(OwnedLangSet),
+    LangSet(LangSet),
     /// A value this crate cannot evaluate.
     ///
     /// It never matches, and poisons the selector that holds it. Dropping it
@@ -230,31 +230,31 @@ impl SelectorValue {
     ///
     /// Strings compare with case folding and blanks ignored, which is what
     /// `FcOpListing` with `FcOpFlagIgnoreBlanks` does.
-    fn matches(&self, value: &Value<'_>) -> bool {
+    fn matches(&self, value: &ValueRef<'_>) -> bool {
         match (self, value) {
-            (Self::String(want), Value::String(got)) => casefold::eq_ignoring_blanks(want, got),
-            (Self::Int(want), Value::Int(got)) => want == got,
-            (Self::Int(want), Value::Double(got)) => f64::from(*want) == *got,
-            (Self::Int(want), Value::Bool(got)) => (*want != 0) == *got,
-            (Self::Double(want), Value::Double(got)) => want == got,
-            (Self::Double(want), Value::Int(got)) => *want == f64::from(*got),
-            (Self::Bool(want), Value::Bool(got)) => want == got,
-            (Self::Matrix(want), Value::Matrix(got)) => want == got,
-            (Self::CharSet(want), Value::CharSet(got)) => want.iter().all(|c| got.contains(*c)),
+            (Self::String(want), ValueRef::String(got)) => casefold::eq_ignoring_blanks(want, got),
+            (Self::Int(want), ValueRef::Int(got)) => want == got,
+            (Self::Int(want), ValueRef::Double(got)) => f64::from(*want) == *got,
+            (Self::Int(want), ValueRef::Bool(got)) => (*want != 0) == *got,
+            (Self::Double(want), ValueRef::Double(got)) => want == got,
+            (Self::Double(want), ValueRef::Int(got)) => *want == f64::from(*got),
+            (Self::Bool(want), ValueRef::Bool(got)) => want == got,
+            (Self::Matrix(want), ValueRef::Matrix(got)) => want == got,
+            (Self::CharSet(want), ValueRef::CharSet(got)) => want.iter().all(|c| got.contains(*c)),
             // The font has to answer everything the selector asks for, and a
             // language it holds broadly answers a narrower request: a font
             // listing `en` satisfies a selector naming `en-US`.
-            (Self::LangSet(want), Value::LangSet(got)) => {
-                OwnedLangSet::from_languages(got).contains_set(want)
+            (Self::LangSet(want), ValueRef::LangSet(got)) => {
+                LangSet::from_languages(got).contains_set(want)
             }
             // A listing comparison asks the font to sit *inside* what the
             // selector names, so a scalar matches any span covering it while
             // a span matches only a span that covers all of it.
-            (Self::Range(want), Value::Range(got)) => within(got, want),
-            (Self::Range(want), Value::Int(got)) => within(&point(f64::from(*got)), want),
-            (Self::Range(want), Value::Double(got)) => within(&point(*got), want),
-            (Self::Int(want), Value::Range(got)) => within(got, &point(f64::from(*want))),
-            (Self::Double(want), Value::Range(got)) => within(got, &point(*want)),
+            (Self::Range(want), ValueRef::Range(got)) => within(got, want),
+            (Self::Range(want), ValueRef::Int(got)) => within(&point(f64::from(*got)), want),
+            (Self::Range(want), ValueRef::Double(got)) => within(&point(*got), want),
+            (Self::Int(want), ValueRef::Range(got)) => within(got, &point(f64::from(*want))),
+            (Self::Double(want), ValueRef::Range(got)) => within(got, &point(*want)),
             _ => false,
         }
     }
@@ -314,19 +314,19 @@ fn literal(frame: &Frame, body: &str, strict: Strictness) -> SelectorValue {
 /// A literal value element as a rule expression.
 fn value_expr(value: SelectorValue) -> Expr {
     match value {
-        SelectorValue::String(v) => Expr::Value(OwnedValue::String(v)),
-        SelectorValue::Int(v) => Expr::Value(OwnedValue::Int(v)),
-        SelectorValue::Double(v) => Expr::Value(OwnedValue::Double(v)),
-        SelectorValue::Bool(v) => Expr::Value(OwnedValue::Bool(v)),
-        SelectorValue::Matrix(v) => Expr::Value(OwnedValue::Matrix(v)),
-        SelectorValue::Range(v) => Expr::Value(OwnedValue::Range(v)),
-        SelectorValue::LangSet(v) => Expr::Value(OwnedValue::LangSet(v)),
+        SelectorValue::String(v) => Expr::Value(Value::String(v)),
+        SelectorValue::Int(v) => Expr::Value(Value::Int(v)),
+        SelectorValue::Double(v) => Expr::Value(Value::Double(v)),
+        SelectorValue::Bool(v) => Expr::Value(Value::Bool(v)),
+        SelectorValue::Matrix(v) => Expr::Value(Value::Matrix(v)),
+        SelectorValue::Range(v) => Expr::Value(Value::Range(v)),
+        SelectorValue::LangSet(v) => Expr::Value(Value::LangSet(v)),
         SelectorValue::CharSet(chars) => {
-            let mut coverage = crate::charset::OwnedCharSet::new();
+            let mut coverage = crate::charset::CharSet::new();
             for c in chars {
                 coverage.insert(c);
             }
-            Expr::Value(OwnedValue::CharSet(coverage))
+            Expr::Value(Value::CharSet(coverage))
         }
         SelectorValue::Unsupported => Expr::Unknown,
     }
@@ -360,7 +360,7 @@ fn range_from(values: &[SelectorValue]) -> SelectorValue {
 /// answers a request for `en-GB`, and treating the name as unreadable would
 /// silently turn such a selector into one that matches nothing.
 fn langset_from(values: &[SelectorValue], strict: Strictness) -> SelectorValue {
-    let mut set = OwnedLangSet::new();
+    let mut set = LangSet::new();
     let mut named = false;
     for value in values {
         let SelectorValue::String(name) = value else {
@@ -459,14 +459,12 @@ fn uuid_name(dir: &Path) -> Option<String> {
 /// A query that already mentions the language, or the undetermined tag `und`,
 /// is left alone entirely -- fontconfig stops at the first such value rather
 /// than skipping just that one language.
-fn add_default_langs(query: &mut Query) {
+fn add_default_langs(query: &mut Pattern) {
     let langs = crate::query::default_langs();
     for lang in langs {
         if let Some(element) = query.get(Object::Lang) {
             let already = element.values().any(|(value, _)| match value {
-                OwnedValue::String(s) => {
-                    s.eq_ignore_ascii_case(&lang) || s.eq_ignore_ascii_case("und")
-                }
+                Value::String(s) => s.eq_ignore_ascii_case(&lang) || s.eq_ignore_ascii_case("und"),
                 _ => false,
             });
             if already {
@@ -681,7 +679,7 @@ impl Selectors {
         !self.reject_globs.iter().any(|g| glob::matches(g, filename))
     }
 
-    fn accepts_font(&self, font: &Pattern<'_>) -> bool {
+    fn accepts_font(&self, font: &PatternRef<'_>) -> bool {
         if self.accept_patterns.iter().any(|s| s.matches(font)) {
             return true;
         }
@@ -690,7 +688,7 @@ impl Selectors {
 }
 
 impl Selector {
-    fn matches(&self, font: &Pattern<'_>) -> bool {
+    fn matches(&self, font: &PatternRef<'_>) -> bool {
         if !self.usable {
             return false;
         }
@@ -758,7 +756,7 @@ impl Config {
     /// The `<pattern>` half of the same mechanism: a selector matches when
     /// every property it names is present on the font and shares at least one
     /// value with it.
-    pub fn accepts_font(&self, font: &Pattern<'_>) -> bool {
+    pub fn accepts_font(&self, font: &PatternRef<'_>) -> bool {
         self.selectors.accepts_font(font)
     }
 
@@ -766,7 +764,7 @@ impl Config {
     ///
     /// This is the check fontconfig applies as it builds a font set, and the
     /// one a caller listing fonts wants.
-    pub fn accepts(&self, font: &Pattern<'_>) -> bool {
+    pub fn accepts(&self, font: &PatternRef<'_>) -> bool {
         match font.string(Object::File) {
             Some(file) if !self.accepts_filename(file) => false,
             _ => self.accepts_font(font),
@@ -789,9 +787,9 @@ impl Config {
     /// edits. Rules see each other's work, so ordering is the whole design --
     /// which is why `conf.d` files carry numeric prefixes.
     ///
-    /// Call [`Query::default_substitute`] *after* this, as fontconfig does:
+    /// Call [`Pattern::default_substitute`] *after* this, as fontconfig does:
     /// the rules run first and the defaults only fill what is still missing.
-    pub fn substitute(&self, query: &mut Query) {
+    pub fn substitute(&self, query: &mut Pattern) {
         add_default_langs(query);
         self.substitute_kind(query, MatchKind::Pattern, None);
     }
@@ -801,7 +799,7 @@ impl Config {
     /// `pattern` is the original query, which a font-target rule can read
     /// through `target="pattern"` to compare what was asked for against what
     /// was found. It is unused for pattern-target rules.
-    pub fn substitute_kind(&self, query: &mut Query, kind: MatchKind, pattern: Option<&Query>) {
+    pub fn substitute_kind(&self, query: &mut Pattern, kind: MatchKind, pattern: Option<&Pattern>) {
         // Indexed once for the whole pass, not once per rule: the rules see
         // each other's edits, so the index has to follow the query through
         // all of them.
@@ -1145,7 +1143,7 @@ impl Config {
             }
             "family" => {
                 if let Some(parent) = stack.last_mut() {
-                    parent.exprs.push(Expr::Value(OwnedValue::String(body.to_string())));
+                    parent.exprs.push(Expr::Value(Value::String(body.to_string())));
                 }
             }
             "name" => {
@@ -1622,7 +1620,7 @@ mod tests {
             },
             _ => None,
         });
-        assert_eq!(bare, Some(MatchKind::Default), "a bare <name> must not be Pattern");
+        assert_eq!(bare, Some(MatchKind::Default), "a bare <name> must not be PatternRef");
         assert_eq!(
             Property::parse("pixelsizefixupfactor"),
             Property::Custom("pixelsizefixupfactor".into())
@@ -1668,7 +1666,7 @@ mod uuid_tests {
     use std::path::Path;
 
     fn dir(name: &str, contents: Option<&str>) -> std::path::PathBuf {
-        let dir = std::env::temp_dir().join(format!("fontconf-uuid-{name}"));
+        let dir = std::env::temp_dir().join(format!("typordo-uuid-{name}"));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         if let Some(text) = contents {

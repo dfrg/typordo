@@ -29,17 +29,17 @@ of matching. This crate splits it by where the data lives:
 
 | | fontconfig | here |
 | --- | --- | --- |
-| a query you build | `FcPattern *` | `Query` — owned, mutable |
-| a font from a cache | `FcPattern *` (`FC_REF_CONSTANT`) | `Pattern<'a>` — a 32-byte cursor, read-only |
-| the result of matching | `FcPattern *` (new) | `Query` |
+| a query you build | `FcPattern *` | `Pattern` — owned, mutable |
+| a font from a cache | `FcPattern *` (`FC_REF_CONSTANT`) | `PatternRef<'a>` — a 32-byte cursor, read-only |
+| the result of matching | `FcPattern *` (new) | `Pattern` |
 
-The split is why scoring allocates nothing: a `Pattern` is a cursor into the
+The split is why scoring allocates nothing: a `PatternRef` is a cursor into the
 cache's bytes and the strings it yields borrow from them. It is also the
-thing any C binding would have to reconcile, since a `Pattern` cannot outlive
+thing any C binding would have to reconcile, since a `PatternRef` cannot outlive
 the `Cache` it reads. Fontconfig has the same constraint on `FcFontSetSort`'s
 result and documents it; it just cannot express it in the type.
 
-`Query::from_pattern` copies one into the other when a borrowed font needs to
+`Pattern::from_pattern` copies one into the other when a borrowed font needs to
 outlive its cache.
 
 ## Starting up
@@ -68,19 +68,19 @@ ask; `Config::caches(CachePolicy::read_only())` never scans or writes.
 
 | fontconfig | here |
 | --- | --- |
-| `FcPatternCreate` | `Query::new()` |
+| `FcPatternCreate` | `Pattern::new()` |
 | `FcPatternDestroy` | drop |
-| `FcPatternDuplicate` | `Query::clone()` |
-| `FcPatternAddInteger` / `Double` / `String` / `Bool` / `Matrix` / `Range` / `CharSet` / `LangSet` | `Query::add(Object, value)` |
-| `FcPatternAddWeak` | `Query::add_weak` |
-| `FcPatternAdd` with a binding | `Query::add_with_binding` |
-| `FcPatternDel` | `Query::remove` |
-| `FcPatternGet` / `GetString` / `GetInteger` / … | `Query::value`, `string`, `number`, `get` |
-| the same, on a cached font | `Pattern::value`, `string`, `int`, `get` |
+| `FcPatternDuplicate` | `Pattern::clone()` |
+| `FcPatternAddInteger` / `Double` / `String` / `Bool` / `Matrix` / `Range` / `CharSetRef` / `LangSetRef` | `Pattern::add(Object, value)` |
+| `FcPatternAddWeak` | `Pattern::add_weak` |
+| `FcPatternAdd` with a binding | `Pattern::add_with_binding` |
+| `FcPatternDel` | `Pattern::remove` |
+| `FcPatternGet` / `GetString` / `GetInteger` / … | `Pattern::value`, `string`, `number`, `get` |
+| the same, on a cached font | `PatternRef::value`, `string`, `int`, `get` |
 | `FcPatternEqual` | `PartialEq` |
-| `FcPatternObjectCount` | `Query::len`, `Pattern::len` |
-| `FcPatternIterStart` / `IterNext` | `Query::elements`, `Pattern::elements` |
-| `FcDefaultSubstitute` | `Query::default_substitute()` |
+| `FcPatternObjectCount` | `Pattern::len`, `PatternRef::len` |
+| `FcPatternIterStart` / `IterNext` | `Pattern::elements`, `PatternRef::elements` |
+| `FcDefaultSubstitute` | `Pattern::default_substitute()` |
 | `FcConfigSubstitute` | `Config::substitute()` |
 | `FcConfigSubstituteWithPat` | `Config::substitute_kind(query, kind, Some(pattern))` |
 | `FcNameParse` | **no equivalent** — see Gaps |
@@ -101,7 +101,7 @@ it in both.
 | `FcFontSort` | `sort(query, fonts, trim)` |
 | `FcFontSetSort` | `sort()`, or `sorted()` for no trimming |
 | `FcFontRenderPrepare` | `render_prepare()` |
-| `FcFontSetCreate` / `Add` / `Destroy` | `Vec<Pattern>` |
+| `FcFontSetCreate` / `Add` / `Destroy` | `Vec<PatternRef>` |
 | `FcFontList` / `FcFontSetList` | walk `Config::caches()` and filter |
 
 `FcFontMatch` is `best` followed by `render_prepare`: the first picks the
@@ -118,13 +118,13 @@ since anyone reading its source meets them: `FcCompare` in `fcmatch.c`, which
 scores one font against one pattern, is `score()` here, or `best_value()` for
 a single property; and `FcLangSetFromCharSet` in `fclang.c`, which works out
 what a font's coverage implies about the languages it supports, is
-`OwnedLangSet::from_char_set`.
+`LangSet::from_char_set`.
 
 ## Character sets
 
 | fontconfig | here |
 | --- | --- |
-| `FcCharSetCreate` | `OwnedCharSet::new()` |
+| `FcCharSetCreate` | `CharSet::new()` |
 | `FcCharSetDestroy` / `Copy` | ordinary ownership |
 | `FcCharSetAddChar` | `insert` |
 | `FcCharSetHasChar` | `contains` |
@@ -140,7 +140,7 @@ what a font's coverage implies about the languages it supports, is
 
 | fontconfig | here |
 | --- | --- |
-| `FcLangSetCreate` | `OwnedLangSet::new()` |
+| `FcLangSetCreate` | `LangSet::new()` |
 | `FcLangSetAdd` | `insert` |
 | `FcLangSetHasLang` | `has_lang` → `LangResult` |
 | `FcLangSetCompare` | `compare` |
@@ -185,9 +185,9 @@ somebody will want them.
   the examples.
 - Properties under a name the crate does not know. A configuration can invent
   one, and this crate honours that internally — `10-scale-bitmap-fonts.conf`
-  depends on it — but `Query::add` takes an `Object`, and the type that names
+  depends on it — but `Pattern::add` takes an `Object`, and the type that names
   an arbitrary property is not public. Reading one back works
-  (`Query::custom`); setting one does not.
+  (`Pattern::custom`); setting one does not.
 - `FcFontList`'s object-set filtering. Listing works by walking `caches()`,
   but the deduplication `FcObjectSet` implies is left to the caller.
 

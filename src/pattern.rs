@@ -1,16 +1,16 @@
 use crate::bytes::Bytes;
 use crate::error::{Error, Result};
 use crate::object::Object;
-use crate::value::{self, Binding, Value};
+use crate::value::{self, Binding, ValueRef};
 
 use crate::layout::NATIVE as L;
 
 /// The properties of a single font face, as the cache recorded them.
 ///
-/// Nothing is copied out of the file: a `Pattern` is a bounds-checked cursor,
+/// Nothing is copied out of the file: a `PatternRef` is a bounds-checked cursor,
 /// and the strings it yields borrow from the cache buffer.
 #[derive(Clone, Copy)]
-pub struct Pattern<'a> {
+pub struct PatternRef<'a> {
     data: Bytes<'a>,
     /// Start of the element array, already resolved and bounds-checked.
     elts: usize,
@@ -18,7 +18,7 @@ pub struct Pattern<'a> {
     len: usize,
 }
 
-impl<'a> Pattern<'a> {
+impl<'a> PatternRef<'a> {
     /// Read the pattern at `at`, checking its element array fits in the file.
     pub(crate) fn read(data: Bytes<'a>, at: usize) -> Result<Self> {
         let count = data.count(at)?;
@@ -46,7 +46,7 @@ impl<'a> Pattern<'a> {
     }
 
     /// The element for `object`, if the pattern has one.
-    pub fn get(&self, object: Object) -> Option<Element<'a>> {
+    pub fn get(&self, object: Object) -> Option<ElementRef<'a>> {
         self.elements().find(|e| e.object() == Some(object))
     }
 
@@ -54,7 +54,7 @@ impl<'a> Pattern<'a> {
     ///
     /// This is what most lookups want: a pattern can hold several families or
     /// several styles, but the first is the primary one.
-    pub fn value(&self, object: Object) -> Option<Value<'a>> {
+    pub fn value(&self, object: Object) -> Option<ValueRef<'a>> {
         self.get(object)?.values().next()
     }
 
@@ -78,10 +78,10 @@ impl<'a> Pattern<'a> {
 
     /// The element at `index`.
     ///
-    /// Infallible: [`Pattern::read`] already proved the whole array is inside
+    /// Infallible: [`PatternRef::read`] already proved the whole array is inside
     /// the file, so the header of every element is readable.
-    fn element_at(&self, index: usize) -> Element<'a> {
-        Element { data: self.data, at: self.elts + index * L.elt }
+    fn element_at(&self, index: usize) -> ElementRef<'a> {
+        ElementRef { data: self.data, at: self.elts + index * L.elt }
     }
 
     /// The object id of the element at `index`.
@@ -100,9 +100,9 @@ impl<'a> Pattern<'a> {
     }
 }
 
-impl std::fmt::Debug for Pattern<'_> {
+impl std::fmt::Debug for PatternRef<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let mut s = f.debug_struct("Pattern");
+        let mut s = f.debug_struct("PatternRef");
         for elt in self.elements() {
             let name = match elt.object() {
                 Some(object) => object.name().to_string(),
@@ -117,14 +117,14 @@ impl std::fmt::Debug for Pattern<'_> {
 /// Iterator over a pattern's properties.
 #[derive(Clone)]
 pub struct Elements<'a> {
-    pattern: Pattern<'a>,
+    pattern: PatternRef<'a>,
     index: usize,
 }
 
 impl<'a> Iterator for Elements<'a> {
-    type Item = Element<'a>;
+    type Item = ElementRef<'a>;
 
-    fn next(&mut self) -> Option<Element<'a>> {
+    fn next(&mut self) -> Option<ElementRef<'a>> {
         if self.index >= self.pattern.len {
             return None;
         }
@@ -143,12 +143,12 @@ impl ExactSizeIterator for Elements<'_> {}
 
 /// One property of a pattern, together with every value held against it.
 #[derive(Clone, Copy)]
-pub struct Element<'a> {
+pub struct ElementRef<'a> {
     data: Bytes<'a>,
     at: usize,
 }
 
-impl<'a> Element<'a> {
+impl<'a> ElementRef<'a> {
     /// The raw object id, including ids fontconfig minted at runtime.
     pub fn id(&self) -> i32 {
         self.data.i32(self.at).unwrap_or(0)
@@ -197,9 +197,9 @@ impl<'a> Element<'a> {
     }
 }
 
-impl std::fmt::Debug for Element<'_> {
+impl std::fmt::Debug for ElementRef<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Element")
+        f.debug_struct("ElementRef")
             .field("object", &self.object())
             .field("values", &self.values().collect::<Vec<_>>())
             .finish()
@@ -208,7 +208,7 @@ impl std::fmt::Debug for Element<'_> {
 
 /// Iterator over the values held against one property.
 ///
-/// Iteration is bounded: see [`Element::validate`] for what a corrupt chain
+/// Iteration is bounded: see [`ElementRef::validate`] for what a corrupt chain
 /// can otherwise do.
 #[derive(Clone)]
 pub struct Values<'a> {
@@ -223,7 +223,7 @@ impl<'a> Values<'a> {
         Bindings(self)
     }
 
-    fn step(&mut self) -> Option<(usize, Value<'a>)> {
+    fn step(&mut self) -> Option<(usize, ValueRef<'a>)> {
         let at = self.next?;
         self.budget = self.budget.checked_sub(1)?;
         let value = value::value_at(self.data, at + L.node_value).ok()?;
@@ -233,9 +233,9 @@ impl<'a> Values<'a> {
 }
 
 impl<'a> Iterator for Values<'a> {
-    type Item = Value<'a>;
+    type Item = ValueRef<'a>;
 
-    fn next(&mut self) -> Option<Value<'a>> {
+    fn next(&mut self) -> Option<ValueRef<'a>> {
         self.step().map(|(_, value)| value)
     }
 }
@@ -245,9 +245,9 @@ impl<'a> Iterator for Values<'a> {
 pub struct Bindings<'a>(Values<'a>);
 
 impl<'a> Iterator for Bindings<'a> {
-    type Item = (Value<'a>, Binding);
+    type Item = (ValueRef<'a>, Binding);
 
-    fn next(&mut self) -> Option<(Value<'a>, Binding)> {
+    fn next(&mut self) -> Option<(ValueRef<'a>, Binding)> {
         let (at, value) = self.0.step()?;
         Some((value, value::binding_at(self.0.data, at).ok()?))
     }

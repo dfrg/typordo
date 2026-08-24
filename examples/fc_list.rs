@@ -9,7 +9,7 @@
 use std::collections::BTreeSet;
 use std::path::PathBuf;
 
-use fontconf::{CachePolicy, Config, Object, Pattern, Value};
+use typordo::{CachePolicy, Config, Object, PatternRef, ValueRef};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut format = "full".to_string();
@@ -100,13 +100,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 /// Every string value of `object`, comma separated, the way `fc-list` prints them.
-fn join(font: Pattern<'_>, object: Object) -> String {
+fn join(font: PatternRef<'_>, object: Object) -> String {
     let mut out = String::new();
     let Some(element) = font.get(object) else {
         return out;
     };
     for value in element.values() {
-        if let Value::String(s) = value {
+        if let ValueRef::String(s) = value {
             if !out.is_empty() {
                 out.push(',');
             }

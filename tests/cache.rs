@@ -5,7 +5,7 @@
 //! ones with no fontconfig at all. That is the point: every other check we
 //! have against a system font stack is machine-dependent.
 
-use fontconf::{Cache, Error, Object, Value};
+use typordo::{Cache, Error, Object, ValueRef};
 
 fn fixture(name: &str) -> Cache {
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures").join(name);
@@ -74,7 +74,7 @@ fn weight_is_stored_as_a_range() {
         .fonts()
         .unwrap()
         .filter_map(|f| match f.value(Object::Weight) {
-            Some(Value::Range(r)) => Some(r),
+            Some(ValueRef::Range(r)) => Some(r),
             _ => None,
         })
         .max_by(|a, b| (a.end - a.begin).total_cmp(&(b.end - b.begin)))
@@ -265,10 +265,10 @@ fn a_cyclic_value_chain_terminates() {
 
 // --- character coverage ---------------------------------------------------
 
-fn cantarell_charset(cache: &Cache) -> fontconf::CharSetRef<'_> {
+fn cantarell_charset(cache: &Cache) -> typordo::AnyCharSet<'_> {
     let font = cache.fonts().unwrap().next().unwrap();
     match font.value(Object::Charset) {
-        Some(Value::CharSet(charset)) => charset,
+        Some(ValueRef::CharSet(charset)) => charset,
         other => panic!("expected a charset, got {other:?}"),
     }
 }
@@ -337,7 +337,7 @@ fn all_instances_share_one_coverage() {
         .fonts()
         .unwrap()
         .filter_map(|f| match f.value(Object::Charset) {
-            Some(Value::CharSet(c)) => Some(c),
+            Some(ValueRef::CharSet(c)) => Some(c),
             _ => None,
         })
         .collect();
@@ -347,10 +347,10 @@ fn all_instances_share_one_coverage() {
 
 // --- languages ------------------------------------------------------------
 
-fn cantarell_langs(cache: &Cache) -> fontconf::LangSetRef<'_> {
+fn cantarell_langs(cache: &Cache) -> typordo::AnyLangSet<'_> {
     let font = cache.fonts().unwrap().next().unwrap();
     match font.value(Object::Lang) {
-        Some(Value::LangSet(langs)) => langs,
+        Some(ValueRef::LangSet(langs)) => langs,
         other => panic!("expected a langset, got {other:?}"),
     }
 }
@@ -377,7 +377,7 @@ fn a_langset_decodes_to_the_languages_fontconfig_reports() {
 /// and is *not* alphabetical. `bm` before `be` is the giveaway.
 #[test]
 fn languages_are_reported_in_bit_order_not_alphabetically() {
-    use fontconf::langs::LANGS;
+    use typordo::langs::LANGS;
     let bm = LANGS.iter().position(|l| *l == "bm").unwrap();
     let be = LANGS.iter().position(|l| *l == "be").unwrap();
     assert!(bm < be, "bit order should be declaration order");
@@ -393,7 +393,7 @@ fn languages_are_reported_in_bit_order_not_alphabetically() {
 /// same language elsewhere is a near miss, an unrelated one is worst.
 #[test]
 fn has_lang_grades_a_request_rather_than_answering_yes_or_no() {
-    use fontconf::LangResult;
+    use typordo::LangResult;
     let cache = cantarell();
     let langs = cantarell_langs(&cache);
 
@@ -421,12 +421,12 @@ fn has_lang_grades_a_request_rather_than_answering_yes_or_no() {
 fn the_types_an_ffi_would_expose_are_send_and_sync() {
     fn assert_send_sync<T: Send + Sync>() {}
     assert_send_sync::<Cache>();
-    assert_send_sync::<fontconf::Config>();
-    assert_send_sync::<fontconf::Query>();
-    assert_send_sync::<fontconf::OwnedCharSet>();
-    assert_send_sync::<fontconf::OwnedLangSet>();
-    assert_send_sync::<fontconf::Pattern<'static>>();
-    assert_send_sync::<fontconf::CharSetRef<'static>>();
-    assert_send_sync::<fontconf::LangSetRef<'static>>();
-    assert_send_sync::<fontconf::Score>();
+    assert_send_sync::<typordo::Config>();
+    assert_send_sync::<typordo::Pattern>();
+    assert_send_sync::<typordo::CharSet>();
+    assert_send_sync::<typordo::LangSet>();
+    assert_send_sync::<typordo::PatternRef<'static>>();
+    assert_send_sync::<typordo::AnyCharSet<'static>>();
+    assert_send_sync::<typordo::AnyLangSet<'static>>();
+    assert_send_sync::<typordo::Score>();
 }

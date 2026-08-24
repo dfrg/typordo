@@ -21,7 +21,7 @@
 
 use std::time::Instant;
 
-use fontconf::{best, sort as sort_fonts, CachePolicy, Config, Object, OwnedValue, Pattern, Query};
+use typordo::{best, sort as sort_fonts, CachePolicy, Config, Object, Pattern, PatternRef, Value};
 
 /// The family a caller was already using when it ran out of coverage.
 ///
@@ -170,12 +170,12 @@ fn run(op: &str, iterations: u32) -> Result<u64, Box<dyn std::error::Error>> {
             let mut n = 0u64;
             for i in 0..iterations {
                 let (lang, chars) = &SCRIPTS[i as usize % SCRIPTS.len()];
-                let mut query = Query::new();
-                let mut coverage = fontconf::OwnedCharSet::new();
+                let mut query = Pattern::new();
+                let mut coverage = typordo::CharSet::new();
                 for c in chars.iter().filter_map(|c| char::from_u32(*c)) {
                     coverage.insert(c);
                 }
-                query.add(Object::Charset, OwnedValue::CharSet(coverage));
+                query.add(Object::Charset, Value::CharSet(coverage));
                 query.add(Object::Lang, *lang);
                 if op.starts_with("hint") {
                     query.add(Object::Family, HINTS[i as usize % HINTS.len()]);
@@ -243,7 +243,7 @@ fn run(op: &str, iterations: u32) -> Result<u64, Box<dyn std::error::Error>> {
 }
 
 /// Everything a program holds once it can answer questions.
-type Loaded = (Config, Vec<(String, fontconf::Cache)>);
+type Loaded = (Config, Vec<(String, typordo::Cache)>);
 
 /// Configuration and every cache, loaded once.
 fn loaded() -> Result<Loaded, Box<dyn std::error::Error>> {
@@ -255,8 +255,8 @@ fn loaded() -> Result<Loaded, Box<dyn std::error::Error>> {
 /// Every font the configuration accepts, as borrowed patterns.
 fn fonts<'a>(
     config: &Config,
-    caches: &'a [(String, fontconf::Cache)],
-) -> Result<Vec<Pattern<'a>>, Box<dyn std::error::Error>> {
+    caches: &'a [(String, typordo::Cache)],
+) -> Result<Vec<PatternRef<'a>>, Box<dyn std::error::Error>> {
     Ok(caches
         .iter()
         .filter_map(|(_, cache)| cache.fonts().ok())
@@ -266,8 +266,8 @@ fn fonts<'a>(
 }
 
 /// A query with configuration and defaults applied, as matching expects.
-fn prepared(config: &Config, name: &str) -> Query {
-    let mut query = Query::new();
+fn prepared(config: &Config, name: &str) -> Pattern {
+    let mut query = Pattern::new();
     parse(&mut query, name);
     config.substitute(&mut query);
     query.default_substitute();
@@ -276,7 +276,7 @@ fn prepared(config: &Config, name: &str) -> Query {
 
 /// Enough of `FcNameParse` for the benchmark queries: a family, then
 /// `:key=value` terms.
-fn parse(query: &mut Query, name: &str) {
+fn parse(query: &mut Pattern, name: &str) {
     let mut parts = name.split(':');
     if let Some(family) = parts.next() {
         if !family.is_empty() {

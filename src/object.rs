@@ -9,121 +9,121 @@
 /// Ids beyond this list exist: fontconfig assigns numbers above
 /// [`Object::MAX`] at runtime to properties invented by a configuration file.
 /// Those have no meaning outside the process that minted them, so they are
-/// reported through [`Element::id`](crate::Element::id) instead of being
+/// reported through [`ElementRef::id`](crate::ElementRef::id) instead of being
 /// mapped to a variant.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[repr(i32)]
 #[non_exhaustive]
 pub enum Object {
-    /// `family`, holding a [`Value::String`](crate::Value::String).
+    /// `family`, holding a [`ValueRef::String`](crate::ValueRef::String).
     Family = 1,
-    /// `familylang`, holding a [`Value::String`](crate::Value::String).
+    /// `familylang`, holding a [`ValueRef::String`](crate::ValueRef::String).
     Familylang = 2,
-    /// `style`, holding a [`Value::String`](crate::Value::String).
+    /// `style`, holding a [`ValueRef::String`](crate::ValueRef::String).
     Style = 3,
-    /// `stylelang`, holding a [`Value::String`](crate::Value::String).
+    /// `stylelang`, holding a [`ValueRef::String`](crate::ValueRef::String).
     Stylelang = 4,
-    /// `fullname`, holding a [`Value::String`](crate::Value::String).
+    /// `fullname`, holding a [`ValueRef::String`](crate::ValueRef::String).
     Fullname = 5,
-    /// `fullnamelang`, holding a [`Value::String`](crate::Value::String).
+    /// `fullnamelang`, holding a [`ValueRef::String`](crate::ValueRef::String).
     Fullnamelang = 6,
-    /// `slant`, holding a [`Value::Int`](crate::Value::Int).
+    /// `slant`, holding a [`ValueRef::Int`](crate::ValueRef::Int).
     Slant = 7,
-    /// `weight`, holding a [`Value::Range`](crate::Value::Range).
+    /// `weight`, holding a [`ValueRef::Range`](crate::ValueRef::Range).
     Weight = 8,
-    /// `width`, holding a [`Value::Range`](crate::Value::Range).
+    /// `width`, holding a [`ValueRef::Range`](crate::ValueRef::Range).
     Width = 9,
-    /// `size`, holding a [`Value::Range`](crate::Value::Range).
+    /// `size`, holding a [`ValueRef::Range`](crate::ValueRef::Range).
     Size = 10,
-    /// `aspect`, holding a [`Value::Double`](crate::Value::Double).
+    /// `aspect`, holding a [`ValueRef::Double`](crate::ValueRef::Double).
     Aspect = 11,
-    /// `pixelsize`, holding a [`Value::Double`](crate::Value::Double).
+    /// `pixelsize`, holding a [`ValueRef::Double`](crate::ValueRef::Double).
     PixelSize = 12,
-    /// `spacing`, holding a [`Value::Int`](crate::Value::Int).
+    /// `spacing`, holding a [`ValueRef::Int`](crate::ValueRef::Int).
     Spacing = 13,
-    /// `foundry`, holding a [`Value::String`](crate::Value::String).
+    /// `foundry`, holding a [`ValueRef::String`](crate::ValueRef::String).
     Foundry = 14,
-    /// `antialias`, holding a [`Value::Bool`](crate::Value::Bool).
+    /// `antialias`, holding a [`ValueRef::Bool`](crate::ValueRef::Bool).
     Antialias = 15,
-    /// `hintstyle`, holding a [`Value::Int`](crate::Value::Int).
+    /// `hintstyle`, holding a [`ValueRef::Int`](crate::ValueRef::Int).
     HintStyle = 16,
-    /// `hinting`, holding a [`Value::Bool`](crate::Value::Bool).
+    /// `hinting`, holding a [`ValueRef::Bool`](crate::ValueRef::Bool).
     Hinting = 17,
-    /// `verticallayout`, holding a [`Value::Bool`](crate::Value::Bool).
+    /// `verticallayout`, holding a [`ValueRef::Bool`](crate::ValueRef::Bool).
     VerticalLayout = 18,
-    /// `autohint`, holding a [`Value::Bool`](crate::Value::Bool).
+    /// `autohint`, holding a [`ValueRef::Bool`](crate::ValueRef::Bool).
     Autohint = 19,
-    /// `globaladvance`, holding a [`Value::Bool`](crate::Value::Bool).
+    /// `globaladvance`, holding a [`ValueRef::Bool`](crate::ValueRef::Bool).
     GlobalAdvance = 20,
-    /// `file`, holding a [`Value::String`](crate::Value::String).
+    /// `file`, holding a [`ValueRef::String`](crate::ValueRef::String).
     File = 21,
-    /// `index`, holding a [`Value::Int`](crate::Value::Int).
+    /// `index`, holding a [`ValueRef::Int`](crate::ValueRef::Int).
     Index = 22,
-    /// `rasterizer`, holding a [`Value::String`](crate::Value::String).
+    /// `rasterizer`, holding a [`ValueRef::String`](crate::ValueRef::String).
     Rasterizer = 23,
-    /// `outline`, holding a [`Value::Bool`](crate::Value::Bool).
+    /// `outline`, holding a [`ValueRef::Bool`](crate::ValueRef::Bool).
     Outline = 24,
-    /// `scalable`, holding a [`Value::Bool`](crate::Value::Bool).
+    /// `scalable`, holding a [`ValueRef::Bool`](crate::ValueRef::Bool).
     Scalable = 25,
-    /// `dpi`, holding a [`Value::Double`](crate::Value::Double).
+    /// `dpi`, holding a [`ValueRef::Double`](crate::ValueRef::Double).
     Dpi = 26,
-    /// `rgba`, holding a [`Value::Int`](crate::Value::Int).
+    /// `rgba`, holding a [`ValueRef::Int`](crate::ValueRef::Int).
     Rgba = 27,
-    /// `scale`, holding a [`Value::Double`](crate::Value::Double).
+    /// `scale`, holding a [`ValueRef::Double`](crate::ValueRef::Double).
     Scale = 28,
-    /// `minspace`, holding a [`Value::Bool`](crate::Value::Bool).
+    /// `minspace`, holding a [`ValueRef::Bool`](crate::ValueRef::Bool).
     Minspace = 29,
-    /// `charwidth`, holding a [`Value::Int`](crate::Value::Int).
+    /// `charwidth`, holding a [`ValueRef::Int`](crate::ValueRef::Int).
     Charwidth = 30,
-    /// `charheight`, holding a [`Value::Int`](crate::Value::Int).
+    /// `charheight`, holding a [`ValueRef::Int`](crate::ValueRef::Int).
     CharHeight = 31,
-    /// `matrix`, holding a [`Value::Matrix`](crate::Value::Matrix).
+    /// `matrix`, holding a [`ValueRef::Matrix`](crate::ValueRef::Matrix).
     Matrix = 32,
-    /// `charset`, holding a [`Value::CharSet`](crate::Value::CharSet).
+    /// `charset`, holding a [`ValueRef::CharSet`](crate::ValueRef::CharSet).
     Charset = 33,
-    /// `lang`, holding a [`Value::LangSet`](crate::Value::LangSet).
+    /// `lang`, holding a [`ValueRef::LangSet`](crate::ValueRef::LangSet).
     Lang = 34,
-    /// `fontversion`, holding a [`Value::Int`](crate::Value::Int).
+    /// `fontversion`, holding a [`ValueRef::Int`](crate::ValueRef::Int).
     Fontversion = 35,
-    /// `capability`, holding a [`Value::String`](crate::Value::String).
+    /// `capability`, holding a [`ValueRef::String`](crate::ValueRef::String).
     Capability = 36,
-    /// `fontformat`, holding a [`Value::String`](crate::Value::String).
+    /// `fontformat`, holding a [`ValueRef::String`](crate::ValueRef::String).
     Fontformat = 37,
-    /// `embolden`, holding a [`Value::Bool`](crate::Value::Bool).
+    /// `embolden`, holding a [`ValueRef::Bool`](crate::ValueRef::Bool).
     Embolden = 38,
-    /// `embeddedbitmap`, holding a [`Value::Bool`](crate::Value::Bool).
+    /// `embeddedbitmap`, holding a [`ValueRef::Bool`](crate::ValueRef::Bool).
     EmbeddedBitmap = 39,
-    /// `decorative`, holding a [`Value::Bool`](crate::Value::Bool).
+    /// `decorative`, holding a [`ValueRef::Bool`](crate::ValueRef::Bool).
     Decorative = 40,
-    /// `lcdfilter`, holding a [`Value::Int`](crate::Value::Int).
+    /// `lcdfilter`, holding a [`ValueRef::Int`](crate::ValueRef::Int).
     LcdFilter = 41,
-    /// `namelang`, holding a [`Value::String`](crate::Value::String).
+    /// `namelang`, holding a [`ValueRef::String`](crate::ValueRef::String).
     Namelang = 42,
-    /// `fontfeatures`, holding a [`Value::String`](crate::Value::String).
+    /// `fontfeatures`, holding a [`ValueRef::String`](crate::ValueRef::String).
     FontFeatures = 43,
-    /// `prgname`, holding a [`Value::String`](crate::Value::String).
+    /// `prgname`, holding a [`ValueRef::String`](crate::ValueRef::String).
     Prgname = 44,
-    /// `hash`, holding a [`Value::String`](crate::Value::String).
+    /// `hash`, holding a [`ValueRef::String`](crate::ValueRef::String).
     Hash = 45,
-    /// `postscriptname`, holding a [`Value::String`](crate::Value::String).
+    /// `postscriptname`, holding a [`ValueRef::String`](crate::ValueRef::String).
     PostscriptName = 46,
-    /// `color`, holding a [`Value::Bool`](crate::Value::Bool).
+    /// `color`, holding a [`ValueRef::Bool`](crate::ValueRef::Bool).
     Color = 47,
-    /// `symbol`, holding a [`Value::Bool`](crate::Value::Bool).
+    /// `symbol`, holding a [`ValueRef::Bool`](crate::ValueRef::Bool).
     Symbol = 48,
-    /// `fontvariations`, holding a [`Value::String`](crate::Value::String).
+    /// `fontvariations`, holding a [`ValueRef::String`](crate::ValueRef::String).
     FontVariations = 49,
-    /// `variable`, holding a [`Value::Bool`](crate::Value::Bool).
+    /// `variable`, holding a [`ValueRef::Bool`](crate::ValueRef::Bool).
     Variable = 50,
-    /// `fonthashint`, holding a [`Value::Bool`](crate::Value::Bool).
+    /// `fonthashint`, holding a [`ValueRef::Bool`](crate::ValueRef::Bool).
     FontHasHint = 51,
-    /// `order`, holding a [`Value::Int`](crate::Value::Int).
+    /// `order`, holding a [`ValueRef::Int`](crate::ValueRef::Int).
     Order = 52,
-    /// `desktop`, holding a [`Value::String`](crate::Value::String).
+    /// `desktop`, holding a [`ValueRef::String`](crate::ValueRef::String).
     DesktopName = 53,
-    /// `namedinstance`, holding a [`Value::Bool`](crate::Value::Bool).
+    /// `namedinstance`, holding a [`ValueRef::Bool`](crate::ValueRef::Bool).
     NamedInstance = 54,
-    /// `fontwrapper`, holding a [`Value::String`](crate::Value::String).
+    /// `fontwrapper`, holding a [`ValueRef::String`](crate::ValueRef::String).
     FontWrapper = 55,
 }
 

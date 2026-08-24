@@ -3,7 +3,7 @@ use std::path::Path;
 use crate::bytes::Bytes;
 use crate::error::{Error, Result};
 use crate::layout;
-use crate::pattern::Pattern;
+use crate::pattern::PatternRef;
 
 /// Magic on a cache written to disk, `FC_CACHE_MAGIC_MMAP`.
 ///
@@ -275,19 +275,19 @@ pub struct Fonts<'a> {
 }
 
 impl<'a> Fonts<'a> {
-    fn pattern_at(&self, index: usize) -> Result<Pattern<'a>> {
+    fn pattern_at(&self, index: usize) -> Result<PatternRef<'a>> {
         let slot = self.array + index * layout::PTR;
-        // Pattern offsets are encoded relative to the font set, not to the
+        // PatternRef offsets are encoded relative to the font set, not to the
         // slot holding them: see `FcFontSetFont` in `fcint.h`.
         let at = self.data.follow(self.set, slot)?.ok_or(Error::NotAnOffset(0))?;
-        Pattern::read(self.data, at)
+        PatternRef::read(self.data, at)
     }
 }
 
 impl<'a> Iterator for Fonts<'a> {
-    type Item = Pattern<'a>;
+    type Item = PatternRef<'a>;
 
-    fn next(&mut self) -> Option<Pattern<'a>> {
+    fn next(&mut self) -> Option<PatternRef<'a>> {
         while self.index < self.len {
             let index = self.index;
             self.index += 1;
@@ -314,13 +314,13 @@ mod storage_tests {
     /// over it and gets mapped.
     #[test]
     fn small_and_large_caches_read_alike() {
-        let dir = std::env::temp_dir().join("fontconf-storage");
+        let dir = std::env::temp_dir().join("typordo-storage");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
 
         for (name, fonts) in [("small", 0), ("large", 40)] {
             let font = {
-                let mut font = crate::Query::new();
+                let mut font = crate::Pattern::new();
                 font.add(crate::Object::File, "/fonts/Test.ttf");
                 font.add(crate::Object::Family, "A Family With A Long Enough Name");
                 font
@@ -349,7 +349,7 @@ mod storage_tests {
     /// A file too short to hold a header is rejected, not mapped and trusted.
     #[test]
     fn a_truncated_file_is_rejected() {
-        let dir = std::env::temp_dir().join("fontconf-storage-short");
+        let dir = std::env::temp_dir().join("typordo-storage-short");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("stub");

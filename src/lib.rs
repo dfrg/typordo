@@ -15,20 +15,20 @@
 //! that fontconfig reads the caches this writes, and picks the same font.
 //!
 //! ```no_run
-//! use fontconf::{best, CachePolicy, Config, Object, Pattern, Query};
+//! use typordo::{best, CachePolicy, Config, Object, PatternRef, Pattern};
 //!
 //! let config = Config::load()?;
 //!
 //! // The caches own the bytes; the patterns borrow from them.
 //! let caches: Vec<_> = config.caches(CachePolicy::read_only()).collect();
-//! let fonts: Vec<Pattern<'_>> = caches
+//! let fonts: Vec<PatternRef<'_>> = caches
 //!     .iter()
 //!     .filter_map(|(_, cache)| cache.fonts().ok())
 //!     .flatten()
 //!     .filter(|font| config.accepts(font))
 //!     .collect();
 //!
-//! let mut query = Query::new();
+//! let mut query = Pattern::new();
 //! query.add(Object::Family, "sans-serif");
 //! query.add(Object::Lang, "ja");
 //! config.substitute(&mut query);
@@ -135,19 +135,19 @@ mod zapf;
 #[cfg(feature = "scan")]
 pub use build::{Builder, Built};
 pub use cache::{Cache, Fonts, Subdirs, VERSION};
-pub use charset::{CharSet, CharSetRef, OwnedCharSet};
+pub use charset::{AnyCharSet, CharSet, CharSetRef};
 pub use config::{
     CachePolicy, Caches, Config, ConfigError, IfMissing, IfStale, SkipReason, Skipped, ARCHITECTURE,
 };
 pub use error::{Error, Result};
-pub use langset::{LangResult, LangSet, LangSetRef, OwnedLangSet};
+pub use langset::{AnyLangSet, LangResult, LangSet, LangSetRef};
 pub use matching::{best, best_value, score, sort, sorted, BestValue, Priority, Score, PRIORITIES};
 pub use object::Object;
-pub use pattern::{Bindings, Element, Elements, Pattern, Values};
+pub use pattern::{Bindings, ElementRef, Elements, PatternRef, Values};
 pub use prepare::render_prepare;
-pub use query::{default_langs, OwnedValue, Query};
+pub use query::{default_langs, Element, Pattern, Value};
 pub use rules::MatchKind;
 #[cfg(feature = "scan")]
 pub use scan::{scan_bytes, scan_file, ScanError};
-pub use value::{Binding, Matrix, Range, Value};
+pub use value::{Binding, Matrix, Range, ValueRef};
 pub use write::CacheWriter;

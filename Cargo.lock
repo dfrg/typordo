@@ -32,15 +32,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "fontconf"
-version = "0.1.0"
-dependencies = [
- "libc",
- "memmap2",
- "read-fonts",
-]
-
-[[package]]
 name = "libc"
 version = "0.2.189"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -99,6 +90,15 @@ dependencies = [
  "proc-macro2",
  "quote",
  "unicode-ident",
+]
+
+[[package]]
+name = "typordo"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "memmap2",
+ "read-fonts",
 ]
 
 [[package]]

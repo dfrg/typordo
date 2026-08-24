@@ -1,5 +1,5 @@
 //! Print each font's languages, to compare with `fc-list --format='%{lang}'`.
-use fontconf::{CachePolicy, Config, Object, Value};
+use typordo::{CachePolicy, Config, Object, ValueRef};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let want: Vec<String> = std::env::args().skip(1).collect();
@@ -11,7 +11,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 continue;
             }
             match font.value(Object::Lang) {
-                Some(Value::LangSet(langset)) => {
+                Some(ValueRef::LangSet(langset)) => {
                     langset.validate()?;
                     if !langset.is_consistent() {
                         eprintln!("{file}: bitmap wider than our language table");

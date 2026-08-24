@@ -8,8 +8,8 @@
 
 use std::path::PathBuf;
 
-use fontconf::CachePolicy;
-use fontconf::Config;
+use typordo::CachePolicy;
+use typordo::Config;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut path: Option<PathBuf> = None;

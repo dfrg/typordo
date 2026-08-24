@@ -15,7 +15,7 @@
 
 use std::path::{Path, PathBuf};
 
-use fontconf::{Builder, Cache, CachePolicy, CacheWriter, Config, Query};
+use typordo::{Builder, Cache, CachePolicy, CacheWriter, Config, Pattern};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut out: Option<PathBuf> = None;
@@ -96,7 +96,7 @@ fn rewrite_cache(cache: &Cache) -> Result<(usize, Vec<u8>), Box<dyn std::error::
     let dir = cache.dir()?.to_string();
     let subdirs: Vec<String> =
         cache.subdirs()?.collect::<Result<Vec<_>, _>>()?.iter().map(|s| s.to_string()).collect();
-    let fonts: Vec<Query> = cache.fonts()?.map(|p| Query::from_pattern(&p)).collect();
+    let fonts: Vec<Pattern> = cache.fonts()?.map(|p| Pattern::from_pattern(&p)).collect();
     let (stamp, nanoseconds) = cache.mtime()?;
 
     let mut writer = CacheWriter::new(&dir);

@@ -11,7 +11,7 @@
 
 use std::path::PathBuf;
 
-use fontconf::{render_prepare, CachePolicy, Config, Object, OwnedValue, Pattern, Query, Score};
+use typordo::{render_prepare, CachePolicy, Config, Object, Pattern, PatternRef, Score, Value};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut config_path: Option<PathBuf> = None;
@@ -45,7 +45,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     let caches: Vec<_> = config.caches(CachePolicy::read_only()).collect();
-    let fonts: Vec<Pattern<'_>> = caches
+    let fonts: Vec<PatternRef<'_>> = caches
         .iter()
         .filter_map(|(_, cache)| cache.fonts().ok())
         .flatten()
@@ -62,7 +62,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let stdin = std::io::stdin();
         for line in stdin.lock().lines() {
             let line = line?;
-            let mut query = Query::new();
+            let mut query = Pattern::new();
             parse_name(&mut query, line.trim_end())?;
             config.substitute(&mut query);
             query.default_substitute();
@@ -71,7 +71,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
 
-    let mut query = Query::new();
+    let mut query = Pattern::new();
     for term in &terms {
         parse_name(&mut query, term)?;
     }
@@ -82,9 +82,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         for element in query.elements() {
             for (value, binding) in element.values() {
                 let mark = match binding {
-                    fontconf::Binding::Strong => "s",
-                    fontconf::Binding::Weak => "w",
-                    fontconf::Binding::Same => "?",
+                    typordo::Binding::Strong => "s",
+                    typordo::Binding::Weak => "w",
+                    typordo::Binding::Same => "?",
                 };
                 println!("{}	{value:?}	{mark}", element.object());
             }
@@ -100,7 +100,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         // contributes one per named instance, and they score differently.
         for font in &fonts {
             if font.string(Object::File) == Some(wanted.as_str()) {
-                if let Some(score) = fontconf::score(&query, font) {
+                if let Some(score) = typordo::score(&query, font) {
                     println!(
                         "weight={:<10} instance={:<6} {}",
                         font.value(Object::Weight).map_or("?".to_string(), |v| format!("{v:?}")),
@@ -118,7 +118,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     if debug {
         eprintln!("query: {query}");
-        for (font, score) in fontconf::sorted(&query, fonts.clone()).iter().take(4) {
+        for (font, score) in typordo::sorted(&query, fonts.clone()).iter().take(4) {
             eprintln!("  {}", font.string(Object::File).unwrap_or(""));
             eprintln!("      {}", format_score(score));
         }
@@ -134,19 +134,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 /// the winner, so the same has to happen here.
 fn answer(
     config: &Config,
-    query: &Query,
-    fonts: &[Pattern<'_>],
+    query: &Pattern,
+    fonts: &[PatternRef<'_>],
     field: Object,
     sort: Option<bool>,
 ) {
     match sort {
         Some(trim) => {
-            for (font, _) in fontconf::sort(query, fonts.to_vec(), trim) {
+            for (font, _) in typordo::sort(query, fonts.to_vec(), trim) {
                 let prepared = render_prepare(config, query, &font);
                 println!("{}", show(&prepared, field));
             }
         }
-        None => match fontconf::best(query, fonts.to_vec()) {
+        None => match typordo::best(query, fonts.to_vec()) {
             Some((best, _)) => {
                 let prepared = render_prepare(config, query, &best);
                 println!("{}", show(&prepared, field));
@@ -157,24 +157,24 @@ fn answer(
 }
 
 /// Render one property the way `fc-match --format='%{field}'` does.
-fn show(pattern: &Query, field: Object) -> String {
+fn show(pattern: &Pattern, field: Object) -> String {
     let Some(element) = pattern.get(field) else {
         return String::new();
     };
     element
         .values()
         .map(|(value, _)| match value {
-            OwnedValue::String(s) => s.clone(),
-            OwnedValue::Int(i) => i.to_string(),
-            OwnedValue::Double(d) => format_g(*d),
-            OwnedValue::Bool(b) => if *b { "True" } else { "False" }.to_string(),
-            OwnedValue::Range(r) => format!("[{} {}]", format_g(r.begin), format_g(r.end)),
-            OwnedValue::Matrix(m) => {
+            Value::String(s) => s.clone(),
+            Value::Int(i) => i.to_string(),
+            Value::Double(d) => format_g(*d),
+            Value::Bool(b) => if *b { "True" } else { "False" }.to_string(),
+            Value::Range(r) => format!("[{} {}]", format_g(r.begin), format_g(r.end)),
+            Value::Matrix(m) => {
                 format!("[{} {}; {} {}]", m.xx, m.xy, m.yx, m.yy)
             }
-            OwnedValue::CharSet(c) => fontconf::CharSetRef::Owned(c).to_string(),
-            OwnedValue::LangSet(l) => fontconf::LangSetRef::Owned(l).to_string(),
-            OwnedValue::Void => String::new(),
+            Value::CharSet(c) => typordo::AnyCharSet::Owned(c).to_string(),
+            Value::LangSet(l) => typordo::AnyLangSet::Owned(l).to_string(),
+            Value::Void => String::new(),
         })
         .collect::<Vec<_>>()
         .join(",")
@@ -200,7 +200,7 @@ fn format_score(score: &Score) -> String {
 /// Families come first, separated by commas. A `-` ends the family list and
 /// starts a size list; a `:` ends either and starts `name=value` properties.
 /// A backslash escapes the next character anywhere.
-fn parse_name(query: &mut Query, name: &str) -> Result<(), String> {
+fn parse_name(query: &mut Pattern, name: &str) -> Result<(), String> {
     let (families, delim, rest) = take_until(name, "-,:");
     let mut families = vec![families];
     let mut delim = delim;
@@ -248,7 +248,7 @@ fn parse_name(query: &mut Query, name: &str) -> Result<(), String> {
 }
 
 /// Add `value` to `object`, inferring its type from how it is written.
-fn add_typed(query: &mut Query, object: Object, value: &str) {
+fn add_typed(query: &mut Pattern, object: Object, value: &str) {
     if let Ok(int) = value.parse::<i32>() {
         query.add(object, int);
     } else if let Ok(double) = value.parse::<f64>() {

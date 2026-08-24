@@ -1,4 +1,4 @@
-# fontconf
+# typordo
 
 > ### Written by an AI
 >
@@ -25,20 +25,20 @@ matching fonts. Closely enough that fontconfig reads the caches this writes,
 and picks the same font.
 
 ```rust
-use fontconf::{best, Config, Object, Pattern, Query};
+use typordo::{best, Config, Object, PatternRef, Pattern};
 
 let config = Config::load()?;
 
 // Caches own the bytes; patterns borrow from them.
 let caches: Vec<_> = config.caches(CachePolicy::read_only()).collect();
-let fonts: Vec<Pattern<'_>> = caches
+let fonts: Vec<PatternRef<'_>> = caches
     .iter()
     .filter_map(|(_, cache)| cache.fonts().ok())
     .flatten()
     .filter(|font| config.accepts(font))
     .collect();
 
-let mut query = Query::new();
+let mut query = Pattern::new();
 query.add(Object::Family, "sans-serif");
 query.add(Object::Lang, "ja");
 config.substitute(&mut query);   // apply the config's <match> rules
@@ -101,7 +101,7 @@ machine, which is the honest limit on all of it.
 one, function by function, including what has no equivalent and why. Two
 differences explain most of it: there is no current configuration to reach by
 passing `NULL`, and `FcPattern` is split in two by where its data lives — a
-`Query` you own and build, a `Pattern` that borrows from a cache.
+`Pattern` you own and build, a `PatternRef` that borrows from a cache.
 
 ## Status
 

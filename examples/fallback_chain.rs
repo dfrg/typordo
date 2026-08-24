@@ -10,7 +10,7 @@
 
 use std::error::Error;
 
-use fontconf::{sort, CachePolicy, Config, Object, Pattern, Query, Value};
+use typordo::{sort, CachePolicy, Config, Object, Pattern, PatternRef, ValueRef};
 
 fn main() -> Result<(), Box<dyn Error>> {
     let text: String = std::env::args().skip(1).collect::<Vec<_>>().join(" ");
@@ -21,14 +21,14 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     let config = Config::load()?;
     let caches: Vec<_> = config.caches(CachePolicy::read_only()).collect();
-    let fonts: Vec<Pattern<'_>> = caches
+    let fonts: Vec<PatternRef<'_>> = caches
         .iter()
         .filter_map(|(_, cache)| cache.fonts().ok())
         .flatten()
         .filter(|font| config.accepts(font))
         .collect();
 
-    let mut query = Query::new();
+    let mut query = Pattern::new();
     query.add(Object::Family, "sans-serif");
     config.substitute(&mut query);
     query.default_substitute();
@@ -55,7 +55,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         if remaining.is_empty() {
             break;
         }
-        let Some(Value::CharSet(coverage)) = font.value(Object::Charset) else { continue };
+        let Some(ValueRef::CharSet(coverage)) = font.value(Object::Charset) else { continue };
 
         let (covered, left): (Vec<char>, Vec<char>) =
             remaining.iter().partition(|c| coverage.contains(**c));
