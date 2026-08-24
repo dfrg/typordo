@@ -1,5 +1,8 @@
 # typordo
 
+*typo* + *ordo* — fontconfig, declined into Latin: the type, and the
+ordering of it.
+
 > ### Written by an AI
 >
 > Nearly all of this — the code, the tests, the harnesses, this file — was

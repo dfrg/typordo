@@ -1,5 +1,8 @@
 //! Fontconfig, without libfontconfig.
 //!
+//! *typo* + *ordo* -- fontconfig, declined into Latin: the type, and the
+//! ordering of it.
+//!
 //! <div class="warning">
 //!
 //! **Written by an AI.** Nearly all of this crate was written by Claude,
