@@ -8,6 +8,7 @@ license = "MIT"
 description = "Fontconfig without libfontconfig: reads and writes its cache format, parses its configuration, and matches fonts the way it does."
 keywords = ["fontconfig", "font", "fonts", "font-matching", "font-fallback"]
 categories = ["text-processing", "graphics"]
+repository = "https://github.com/dfrg/typordo"
 # Data generated into src/ comes from upstream sources; see NOTICE.
 #
 # The generator inputs stay in the repository but not in the published
