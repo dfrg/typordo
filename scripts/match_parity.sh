@@ -7,6 +7,12 @@
 #
 # Run: bash scripts/match_parity.sh
 set -uo pipefail
+
+# A harness is a check, not a report. Anything that differs has to make the
+# script fail, or a caller running it -- CI most of all -- is told everything
+# passed while it is looking at differences.
+FAILURES=0
+fail() { FAILURES=$((FAILURES + 1)); }
 cd "$(dirname "$0")/.." || exit 1
 export PATH="$HOME/.cargo/bin:$PATH"
 export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$PWD/target}"
@@ -165,7 +171,14 @@ run_all
 
 echo
 echo "match parity: $ok identical, $tied tie-broken differently, $bad genuinely differing"
+[ "$bad" -eq 0 ] || fail
 if [ $bad -gt 0 ]; then
   echo "failing queries:"
   printf '  %s\n' "${failed[@]}" | head -20
 fi
+
+if [ "$FAILURES" -gt 0 ]; then
+  echo
+  echo "FAILED: $FAILURES difference(s) -- see above"
+fi
+exit $((FAILURES > 0))

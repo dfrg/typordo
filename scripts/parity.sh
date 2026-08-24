@@ -2,6 +2,12 @@
 # Compare our reader against the system fc-list, driven by the real config.
 # Run: bash scripts/parity.sh
 set -uo pipefail
+
+# A harness is a check, not a report. Anything that differs has to make the
+# script fail, or a caller running it -- CI most of all -- is told everything
+# passed while it is looking at differences.
+FAILURES=0
+fail() { FAILURES=$((FAILURES + 1)); }
 cd "$(dirname "$0")/.." || exit 1
 export PATH="$HOME/.cargo/bin:$PATH"
 export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$PWD/target}"
@@ -19,6 +25,7 @@ compare() {
     echo "MATCH ($label): $(sort -u "$theirs" | wc -l) lines identical"
   else
     echo "DIFF ($label): ours=$(sort -u "$ours" | wc -l) fc-list=$(sort -u "$theirs" | wc -l)"
+    fail
     diff <(sort -u "$ours") <(sort -u "$theirs") | head -20
   fi
 }
@@ -47,3 +54,9 @@ for dir in $(fc-list --format='%{file}\n' | sed 's|/[^/]*$||' | sort -u); do
   fi
 done
 echo "  $missing directories without a cache"
+
+if [ "$FAILURES" -gt 0 ]; then
+  echo
+  echo "FAILED: $FAILURES difference(s) -- see above"
+fi
+exit $((FAILURES > 0))

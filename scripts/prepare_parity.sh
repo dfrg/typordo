@@ -8,6 +8,12 @@
 #
 # Run: bash scripts/prepare_parity.sh
 set -uo pipefail
+
+# A harness is a check, not a report. Anything that differs has to make the
+# script fail, or a caller running it -- CI most of all -- is told everything
+# passed while it is looking at differences.
+FAILURES=0
+fail() { FAILURES=$((FAILURES + 1)); }
 cd "$(dirname "$0")/.." || exit 1
 export PATH="$HOME/.cargo/bin:$PATH"
 export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$PWD/target}"
@@ -69,3 +75,10 @@ for line in sys.stdin:
 done
 echo
 echo "prepare parity: $total_ok identical, $total_bad differing"
+[ "$total_bad" -eq 0 ] || fail
+
+if [ "$FAILURES" -gt 0 ]; then
+  echo
+  echo "FAILED: $FAILURES difference(s) -- see above"
+fi
+exit $((FAILURES > 0))

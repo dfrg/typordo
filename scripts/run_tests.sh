@@ -13,6 +13,11 @@ cd "$(dirname "$0")/.." || exit 1
 export PATH="/usr/bin:/bin:$HOME/.cargo/bin:$PATH"
 export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$PWD/target}"
 
+# Counting problems and then exiting 0 tells a caller everything passed while
+# it looks at failures. Every count below adds to this, and it decides the
+# exit status.
+FAILURES=0
+
 total() {
   local sum=0 n
   while read -r n; do sum=$((sum + n)); done < <(
@@ -26,11 +31,13 @@ for f in "" "--no-default-features" "--features mmap" "--features statfs" \
   out=$(cargo test -q $f 2>&1)
   bad=$(echo "$out" | grep -cE 'FAILED|^error')
   printf '%-42s %4s tests, %s problems\n' "cargo test $f" "$(total "$out")" "$bad"
+  FAILURES=$((FAILURES + bad))
 done
 
 for f in "" "--features full-fontconfig-compat"; do
   bad=$(cargo clippy -q --all-targets $f 2>&1 | grep -cE '^(warning|error)')
   printf '%-42s %s clippy issues\n' "clippy $f" "$bad"
+  FAILURES=$((FAILURES + bad))
 done
 
 # Every generated table still matches the generator that claims to produce
@@ -49,3 +56,12 @@ for g in tools/gen_*.py; do
   python3 "$g" --check >/dev/null 2>&1 || { bad=$((bad + 1)); echo "  DRIFTED: $g"; }
 done
 printf '%-42s %s drifted\n' "generated tables" "$bad"
+FAILURES=$((FAILURES + bad))
+
+echo
+if [ "$FAILURES" -gt 0 ]; then
+  echo "FAILED: $FAILURES problem(s)"
+else
+  echo "all green"
+fi
+exit $((FAILURES > 0))

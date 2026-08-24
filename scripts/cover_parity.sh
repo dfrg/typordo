@@ -2,6 +2,12 @@
 # Compare scanned charsets and language sets against fc-query.
 # Run: bash scripts/cover_parity.sh
 set -uo pipefail
+
+# A harness is a check, not a report. Anything that differs has to make the
+# script fail, or a caller running it -- CI most of all -- is told everything
+# passed while it is looking at differences.
+FAILURES=0
+fail() { FAILURES=$((FAILURES + 1)); }
 cd "$(dirname "$0")/.." || exit 1
 export PATH="$HOME/.cargo/bin:$PATH"
 export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$PWD/target}"
@@ -17,6 +23,7 @@ for field in charset lang; do
       bad=$((bad+1))
       if [ $shown -lt 3 ]; then
         echo "  DIFF $(basename "$f")"
+        fail
         diff <(echo "$ours" | head -1 | tr ' |' '\n\n') <(echo "$theirs" | head -1 | tr ' |' '\n\n') | head -8
         shown=$((shown+1))
       fi
@@ -24,3 +31,9 @@ for field in charset lang; do
   done < /tmp/scan-files.txt
   printf '  %-10s %s identical, %s differing\n' "$field" "$ok" "$bad"
 done
+
+if [ "$FAILURES" -gt 0 ]; then
+  echo
+  echo "FAILED: $FAILURES difference(s) -- see above"
+fi
+exit $((FAILURES > 0))

@@ -14,6 +14,12 @@
 #
 # Run: bash scripts/write_parity.sh
 set -uo pipefail
+
+# A harness is a check, not a report. Anything that differs has to make the
+# script fail, or a caller running it -- CI most of all -- is told everything
+# passed while it is looking at differences.
+FAILURES=0
+fail() { FAILURES=$((FAILURES + 1)); }
 cd "$(dirname "$0")/.." || exit 1
 export PATH="$HOME/.cargo/bin:$PATH"
 export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$PWD/target}"
@@ -100,6 +106,7 @@ check() {
     if [ "$a" = "$b" ]; then ok=$((ok+1)); else bad=$((bad+1)); echo "    fc-match DIFF $q: $a vs $b"; fi
   done
   echo "  fc-match: $ok identical, $bad differing"
+  [ "$bad" -eq 0 ] || fail
 }
 
 rm -rf "$OURS"; mkdir -p "$OURS"
@@ -121,7 +128,7 @@ again=$("$CARGO_TARGET_DIR/release/examples/fc_cache" --out "$OURS")
 echo "  second pass: $again"
 case "$again" in
   "0 directories rescanned, "*) echo "  MATCH (nothing rescanned)" ;;
-  *) echo "  DIFF: a current tree should rescan nothing" ;;
+  *) echo "  DIFF: a current tree should rescan nothing" ; fail ;;
 esac
 
 # A directory nobody else is using, so touching it cannot disturb the system.
@@ -133,7 +140,7 @@ one=$("$CARGO_TARGET_DIR/release/examples/fc_cache" --out "$OURS" "$victim")
 echo "  after adding a file: $one"
 case "$one" in
   "1 directories rescanned, "*) echo "  MATCH (the changed directory rescanned)" ;;
-  *) echo "  DIFF: adding a file should make the cache stale" ;;
+  *) echo "  DIFF: adding a file should make the cache stale" ; fail ;;
 esac
 rm -rf "$victim"
 
@@ -186,6 +193,7 @@ XML
     echo "  MATCH   epoch=$epoch stamp=$ours"
   else
     echo "  DIFF    epoch=$epoch ours=$ours theirs=$theirs"
+    fail
   fi
 done
 
@@ -196,6 +204,12 @@ SOURCE_DATE_EPOCH=$pin "$CARGO_TARGET_DIR/release/examples/fc_cache" --out "$sde
 again=$(SOURCE_DATE_EPOCH=$pin "$CARGO_TARGET_DIR/release/examples/fc_cache" --out "$sde_out" "$sde_dir")
 case "$again" in
   "0 directories rescanned, "*) echo "  MATCH   the pinned cache stays current: $again" ;;
-  *) echo "  DIFF    a pinned cache should not go stale: $again" ;;
+  *) echo "  DIFF    a pinned cache should not go stale: $again" ; fail ;;
 esac
 rm -rf "$sde_dir" "$sde_out"
+
+if [ "$FAILURES" -gt 0 ]; then
+  echo
+  echo "FAILED: $FAILURES difference(s) -- see above"
+fi
+exit $((FAILURES > 0))

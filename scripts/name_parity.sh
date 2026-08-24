@@ -13,6 +13,12 @@
 #
 # Run: bash scripts/name_parity.sh
 set -uo pipefail
+
+# A harness is a check, not a report. Anything that differs has to make the
+# script fail, or a caller running it -- CI most of all -- is told everything
+# passed while it is looking at differences.
+FAILURES=0
+fail() { FAILURES=$((FAILURES + 1)); }
 cd "$(dirname "$0")/.." || exit 1
 export PATH="$HOME/.cargo/bin:$PATH"
 export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$PWD/target}"
@@ -63,6 +69,7 @@ PYX
     echo "MATCH   $label: $ours"
   else
     echo "DIFF    $label: ours=$ours fontconfig=${theirs:-<none written>}"
+    fail
   fi
 }
 
@@ -116,7 +123,7 @@ touch "$cache/$uuid-le64.cache-9"
 found=$("$OURS" --config "$conf" --cache-path "$fonts")
 case "$found" in
   *"$uuid"*) echo "MATCH   uuid fallback used when nothing else is there" ;;
-  *) echo "DIFF    uuid fallback not used: ${found:-<nothing>}" ;;
+  *) echo "DIFF    uuid fallback not used: ${found:-<nothing>}" ; fail ;;
 esac
 
 # ...and the hashed name still wins when both exist.
@@ -124,7 +131,13 @@ touch "$cache/$hashed"
 found=$("$OURS" --config "$conf" --cache-path "$fonts")
 case "$found" in
   *"$hashed") echo "MATCH   the hashed name wins over the uuid one" ;;
-  *) echo "DIFF    uuid should be a fallback only: $found" ;;
+  *) echo "DIFF    uuid should be a fallback only: $found" ; fail ;;
 esac
 
 rm -rf "$root"
+
+if [ "$FAILURES" -gt 0 ]; then
+  echo
+  echo "FAILED: $FAILURES difference(s) -- see above"
+fi
+exit $((FAILURES > 0))

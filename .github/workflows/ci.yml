@@ -1,0 +1,144 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+  # Deliberately no `RUSTFLAGS: -D warnings`: it reaches dependencies as
+  # well, so an upstream crate emitting one would fail a build that has
+  # nothing wrong with it. Warnings in our own code are clippy's job, below.
+
+jobs:
+  # The suite, across the feature matrix and both platforms that have code of
+  # their own. Windows is not incidental: how a directory reports having
+  # changed is decided by `#[cfg(windows)]`, and nothing else exercises it.
+  test:
+    name: test ${{ matrix.features }} on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        features:
+          - ""
+          - "--no-default-features"
+          - "--features mmap"
+          - "--features statfs"
+          - "--all-features"
+        exclude:
+          # `statfs` asks a Unix filesystem what it is; on Windows the
+          # feature compiles to nothing, so the run would duplicate the
+          # default one.
+          - os: windows-latest
+            features: "--features statfs"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test ${{ matrix.features }}
+
+  lint:
+    name: format, clippy and docs
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --check
+      - run: cargo clippy --all-targets --all-features -- -D warnings
+      # Documentation that does not build is documentation nobody reads. A
+      # broken intra-doc link is a warning, and RUSTFLAGS does not reach
+      # rustdoc, so it needs saying again here.
+      - run: cargo doc --no-deps --all-features
+        env:
+          RUSTDOCFLAGS: -D warnings
+
+  # Five modules are generated from upstream data. A generator that has
+  # drifted from its output silently reverts the next person to run it, which
+  # has happened twice, so the check compares without writing.
+  generated:
+    name: generated tables are current
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: |
+          fail=0
+          for g in tools/gen_*.py; do
+            # gen_name_langs reads FreeType's ttnameid.h, which is not
+            # vendored; see NOTICE.
+            case "$g" in *gen_name_langs.py)
+              [ -r /usr/include/freetype2/freetype/ttnameid.h ] || continue ;;
+            esac
+            python3 "$g" --check || fail=1
+          done
+          exit $fail
+
+  # The layouts for 32-bit targets are derived rather than measured, and the
+  # assertions in `layout` are compile-time. Building for them is what checks
+  # the derivation; see the note on untested targets in the README.
+  cross:
+    name: check ${{ matrix.target }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - i686-unknown-linux-gnu
+          - armv7-unknown-linux-gnueabihf
+          - aarch64-unknown-linux-gnu
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo check --target ${{ matrix.target }} --all-features
+
+  # The claim this crate exists to make: that it answers what fontconfig
+  # answers. Checked against fontconfig itself, on whatever fonts the runner
+  # has -- these harnesses assert the two agree, not what they agree on, so
+  # they do not depend on a particular font set.
+  parity:
+    name: agrees with fontconfig
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: install fontconfig and a font set worth testing against
+        run: |
+          sudo apt-get update
+          # fontconfig is the oracle and dejavu is the one font every
+          # harness can assume, so those two are required.
+          sudo apt-get install -y --no-install-recommends fontconfig fonts-dejavu-core
+          # The rest only widen what gets compared. A distribution renaming
+          # one of these should narrow the corpus, not fail the build.
+          for pkg in fonts-liberation fonts-noto-core fonts-noto-cjk \
+                     fonts-noto-color-emoji fonts-freefont-ttf; do
+            sudo apt-get install -y --no-install-recommends "$pkg" || echo "skipped $pkg"
+          done
+          fc-cache -f
+          echo "fonts: $(fc-list | wc -l) patterns, $(fc-list --format='%{file}\n' | sort -u | wc -l) files"
+      - name: parity
+        run: |
+          fail=0
+          # scan_parity is left out on purpose: it names how many files are
+          # expected to differ, and that count describes one font set. The
+          # rest compare the two implementations against each other and hold
+          # whatever is installed.
+          for s in parity select_parity match_parity prepare_parity \
+                   sort_parity lang_parity charset_parity cover_parity \
+                   name_parity write_parity; do
+            echo "::group::$s"
+            # Each script exits non-zero on a difference, so the loop keeps
+            # going and names every harness that failed rather than stopping
+            # at the first.
+            bash "scripts/$s.sh" || { fail=1; echo "::error::$s reported a difference"; }
+            echo "::endgroup::"
+          done
+          exit $fail
