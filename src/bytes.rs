@@ -132,3 +132,78 @@ impl<'a> Bytes<'a> {
         std::str::from_utf8(&rest[..end]).map_err(|_| Error::BadString(at))
     }
 }
+
+/// The arithmetic every reader depends on, against values a corrupt file can
+/// hold.
+///
+/// These matter most for a target this crate cannot run on. A count near
+/// `i32::MAX` scaled by a pointer width overflows a 32-bit `usize` long
+/// before any bounds check sees the address, and on x86_64 it simply does
+/// not: the same corrupt cache is harmless here and a panic there. So the
+/// bound is asserted directly rather than inferred from a walk that happens
+/// not to crash.
+#[cfg(test)]
+mod tests {
+    use super::Bytes;
+
+    fn bytes(len: usize) -> Vec<u8> {
+        vec![0u8; len]
+    }
+
+    #[test]
+    fn an_array_that_would_overflow_is_rejected() {
+        let buf = bytes(64);
+        let data = Bytes::new(&buf);
+        // count * stride overflows usize outright.
+        assert!(data.array(0, usize::MAX, 2).is_err());
+        assert!(data.array(0, usize::MAX / 2 + 1, 4).is_err());
+        // The product fits but base + it does not.
+        assert!(data.array(usize::MAX - 8, 4, 8).is_err());
+        // Large but not overflowing, and still past the end.
+        assert!(data.array(0, i32::MAX as usize, 8).is_err());
+    }
+
+    #[test]
+    fn an_array_that_fits_is_accepted_to_the_last_byte() {
+        let buf = bytes(64);
+        let data = Bytes::new(&buf);
+        assert_eq!(data.array(0, 8, 8).unwrap(), 8, "exactly the whole buffer");
+        assert_eq!(data.array(32, 4, 8).unwrap(), 4, "exactly to the end");
+        assert_eq!(data.array(64, 0, 8).unwrap(), 0, "empty at the very end");
+        assert!(data.array(33, 4, 8).is_err(), "one byte past");
+    }
+
+    /// `resolve` takes a signed offset, so it has to survive both directions.
+    #[test]
+    fn resolving_a_hostile_offset_is_rejected() {
+        let buf = bytes(64);
+        let data = Bytes::new(&buf);
+        assert!(data.resolve(0, i64::MIN).is_err(), "far negative");
+        assert!(data.resolve(0, i64::MAX).is_err(), "far positive");
+        assert!(data.resolve(0, -1).is_err(), "before the start");
+        assert!(data.resolve(32, -33).is_err(), "past the start from inside");
+        assert_eq!(data.resolve(32, -32).unwrap(), 0, "back to the start");
+        assert_eq!(data.resolve(0, 64).unwrap(), 64, "one past the end is an address");
+        assert!(data.resolve(0, 65).is_err(), "two past is not");
+    }
+
+    /// A count field is signed in the format, and a negative one is not a
+    /// small number: it is a very large `usize` once cast.
+    #[test]
+    fn a_negative_count_is_rejected_rather_than_cast() {
+        let mut buf = bytes(16);
+        buf[0..4].copy_from_slice(&(-1i32).to_ne_bytes());
+        let data = Bytes::new(&buf);
+        assert!(data.count(0).is_err());
+    }
+
+    #[test]
+    fn a_read_that_would_wrap_is_truncated_not_wrapped() {
+        let buf = bytes(16);
+        let data = Bytes::new(&buf);
+        assert!(data.u32(usize::MAX).is_err());
+        assert!(data.u32(usize::MAX - 2).is_err());
+        assert!(data.i64(13).is_err(), "starts inside, ends outside");
+        assert!(data.u32(12).is_ok(), "exactly the last four bytes");
+    }
+}

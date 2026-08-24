@@ -155,7 +155,16 @@ impl<'a> CharSet<'a> {
     }
 
     fn checked_pages(&self) -> Result<usize> {
-        self.data.count(self.at + L.charset_num)
+        // Both arrays are proved to fit before the count is handed out, so
+        // every `base + index * stride` below is inside the file by
+        // construction rather than by a bounds check that happens to catch
+        // it. Without this the count is only known to be non-negative, and
+        // `index * PTR` for an index near `i32::MAX` overflows a 32-bit
+        // `usize` before any bounds check can see it.
+        let count = self.data.count(self.at + L.charset_num)?;
+        self.data.array(self.numbers_base()?, count, 2)?;
+        self.data.array(self.leaves_base()?, count, layout::PTR)?;
+        Ok(count)
     }
 
     fn numbers_base(&self) -> Result<usize> {

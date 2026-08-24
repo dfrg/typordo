@@ -42,7 +42,13 @@ impl<'a> LangSet<'a> {
     /// Compare against [`langs::MAP_WORDS`] to see whether the writer sized
     /// its language list the same way we do.
     pub fn map_words(&self) -> usize {
-        self.data.u32(self.at + L.map_size).unwrap_or(0) as usize
+        let words = self.data.u32(self.at + L.map_size).unwrap_or(0) as usize;
+        // Proved to fit before it is handed out: a map claiming four billion
+        // words would make `word * 4` overflow a 32-bit `usize` before the
+        // read that would have rejected it. A map that does not fit is no
+        // map, so this reports none rather than however many happen to be
+        // readable.
+        self.data.array(self.at + L.map, words, 4).unwrap_or(0)
     }
 
     /// Whether bit `index` is set.
