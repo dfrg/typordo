@@ -414,7 +414,7 @@ fn coverage_reports_whether_a_font_contributed() {
 /// where the comparison it stands in for rejects the font outright, which is
 /// what fontconfig does with any value whose type it cannot compare.
 #[test]
-fn a_charset_value_of_the_wrong_type_does_not_score_as_perfect() {
+fn a_value_the_property_cannot_hold_never_reaches_the_pattern() {
     let cache = cantarell();
     let font = cache.fonts().unwrap().next().expect("a font");
 
@@ -425,15 +425,32 @@ fn a_charset_value_of_the_wrong_type_does_not_score_as_perfect() {
     honest.add(Object::Charset, Value::CharSet(uncovered));
 
     // The same slot, holding something that is not a charset at all.
+    // `FcPatternObjectAddWithBinding` refuses it through `FcObjectValidType`,
+    // so it is not that it scores badly -- it is not there to score.
     let mut garbage = Pattern::new();
     garbage.add(Object::Charset, "not a charset");
+    assert!(garbage.get(Object::Charset).is_none(), "a string is not a charset");
+    assert_eq!(garbage.elements().count(), 0, "and nothing else was left behind");
 
+    // Void is refused before the type is even looked at.
+    let mut void = Pattern::new();
+    void.add(Object::Family, Value::Void);
+    assert!(void.get(Object::Family).is_none());
+
+    // The promotions upstream allows still go through: a number reaches a
+    // range-typed property, and a string reaches a langset-typed one.
+    let mut promoted = Pattern::new();
+    promoted.add(Object::Weight, 200);
+    promoted.add(Object::Lang, "ja");
+    assert!(promoted.get(Object::Weight).is_some(), "an integer is a valid weight");
+    assert!(promoted.get(Object::Lang).is_some(), "a string is a valid lang");
+
+    // And the point of refusing it: a real charset the font fails scores a
+    // miss, while the refused one leaves a pattern with no charset request at
+    // all -- which scores zero because there is nothing to fail, not because
+    // nonsense matched perfectly.
     let honest = typordo::score(&honest, &font).map(|s| s.get(Priority::CharSet));
     let garbage = typordo::score(&garbage, &font).map(|s| s.get(Priority::CharSet));
-
-    // Nonsense must not outrank a real request the font genuinely fails.
-    assert!(
-        garbage.is_none() || garbage >= honest,
-        "garbage scored {garbage:?}, an honest miss scored {honest:?}"
-    );
+    assert_eq!(honest, Some(1000.0), "a charset the font does not cover is a miss");
+    assert_eq!(garbage, Some(0.0), "and the refused one asked for nothing");
 }

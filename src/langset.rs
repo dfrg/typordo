@@ -671,6 +671,11 @@ impl LangSet {
     }
 
     /// Every language in the set, however it is stored.
+    ///
+    /// `FcLangSetCopy` copies the extra names as well as the bitmap, and so
+    /// does this: a set holding only `en-GB` -- a name the table cannot
+    /// express, so it is a string and nothing else -- would otherwise come
+    /// back empty.
     pub fn from_languages(languages: &AnyLangSet<'_>) -> Self {
         let mut set = Self::new();
         for index in 0..LANGS.len() {
@@ -678,6 +683,7 @@ impl LangSet {
                 set.insert_index(index);
             }
         }
+        set.extra.extend(languages.extra().iter().cloned());
         set
     }
 
@@ -799,18 +805,38 @@ impl<'a> AnyLangSet<'a> {
     }
 
     /// Whether the font covers exactly this language, by name.
+    ///
+    /// A name the table cannot express is still in the set if the scanner put
+    /// it there, so the extra names are searched too -- case-insensitively,
+    /// which is how `FcStrCmpIgnoreCase` compares language names everywhere
+    /// else.
     pub fn contains(&self, lang: &str) -> bool {
-        langs::index_of(lang).is_some_and(|i| self.contains_index(i))
+        if langs::index_of(lang).is_some_and(|i| self.contains_index(i)) {
+            return true;
+        }
+        self.extra().iter().any(|name| name.eq_ignore_ascii_case(lang))
     }
 
-    /// Every language in the set, in bit order.
-    pub fn langs(self) -> impl Iterator<Item = &'static str> + 'a {
-        (0..LANGS.len()).filter(move |i| self.contains_index(*i)).map(|i| LANGS[i])
+    /// Every language in the set: the table half in bit order, then any name
+    /// the table could not hold.
+    ///
+    /// The second half is always empty for a cached set. Upstream does not
+    /// serialize it -- `FcLangSetSerialize` sets `extra` to `NULL` and says
+    /// why -- so only a set built by scanning can carry one.
+    pub fn langs(self) -> impl Iterator<Item = &'a str> {
+        let extra: &'a [String] = match self {
+            Self::Cached(_) => &[],
+            Self::Owned(set) => &set.extra,
+        };
+        (0..LANGS.len())
+            .filter(move |i| self.contains_index(*i))
+            .map(|i| LANGS[i])
+            .chain(extra.iter().map(String::as_str))
     }
 
     /// How many languages the set holds.
     pub fn len(&self) -> usize {
-        (0..LANGS.len()).filter(|i| self.contains_index(*i)).count()
+        (0..LANGS.len()).filter(|i| self.contains_index(*i)).count() + self.extra().len()
     }
 
     /// Whether the set is empty.
@@ -927,9 +953,18 @@ impl<'a> AnyLangSet<'a> {
     }
 }
 
+/// `FcLangSetEqual`: the bitmaps, and then the extra names as a set.
 impl PartialEq for AnyLangSet<'_> {
     fn eq(&self, other: &Self) -> bool {
-        (0..LANGS.len()).all(|i| self.contains_index(i) == other.contains_index(i))
+        if !(0..LANGS.len()).all(|i| self.contains_index(i) == other.contains_index(i)) {
+            return false;
+        }
+        // A set, not a list: `FcStrSetEqual` compares membership, and the
+        // scanner does not promise an order. A cached set never has any --
+        // `FcLangSetSerialize` says so in as many words -- so this only ever
+        // separates two owned sets.
+        let (ours, theirs) = (self.extra(), other.extra());
+        ours.len() == theirs.len() && ours.iter().all(|name| theirs.contains(name))
     }
 }
 

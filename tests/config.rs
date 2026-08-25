@@ -1,23 +1,29 @@
 //! Tests for reading configuration, against a synthetic config tree.
 //!
-//! The fixture uses `prefix="relative"` throughout so it resolves next to
-//! itself rather than against `/etc/fonts`, which makes these run on any
-//! host. The paths it names are deliberately fictional: nothing here touches
-//! a real font directory.
+//! The fixture is loaded with its own directory as the search path, through
+//! [`Config::load_from_with_path`], so its relative includes resolve next to
+//! it rather than against `/etc/fonts` and these run on any host. That is
+//! also how fontconfig resolves them -- a relative `<include>` is looked up
+//! on the search path, never against the including file, whatever `prefix`
+//! says. The paths the fixture names are deliberately fictional: nothing here
+//! touches a real font directory.
 
 use std::path::{Path, PathBuf};
 
 use typordo::CachePolicy;
 use typordo::Config;
 use typordo::ConfigError;
-use typordo::ConfigWarning;
 
 fn fixture_dir() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/config")
 }
 
 fn config() -> Config {
-    Config::load_from(&fixture_dir().join("fonts.conf")).expect("fixture should load")
+    Config::load_from_with_path(
+        &fixture_dir().join("fonts.conf"),
+        std::slice::from_ref(&fixture_dir()),
+    )
+    .expect("fixture should load")
 }
 
 #[test]
@@ -57,9 +63,14 @@ fn an_include_cycle_terminates_and_reads_each_file_once() {
 }
 
 #[test]
-fn a_missing_include_is_not_an_error() {
-    // The fixture includes `not-there.conf`, which does not exist.
-    assert!(Config::load_from(&fixture_dir().join("fonts.conf")).is_ok());
+fn an_optional_include_that_is_missing_is_not_an_error() {
+    // The fixture includes `not-there.conf`, which does not exist, under
+    // `ignore_missing`.
+    assert!(Config::load_from_with_path(
+        &fixture_dir().join("fonts.conf"),
+        std::slice::from_ref(&fixture_dir())
+    )
+    .is_ok());
 }
 
 #[test]
@@ -583,7 +594,7 @@ fn a_relocated_cache_has_its_subdirectories_rebased() {
 /// saying out loud. An include naming a path that moved contributes nothing
 /// and, without this, says nothing.
 #[test]
-fn a_missing_include_is_reported_unless_it_says_not_to() {
+fn a_required_include_that_is_missing_fails_the_load() {
     let root = std::env::temp_dir().join("typordo-missing-include");
     let _ = std::fs::remove_dir_all(&root);
     std::fs::create_dir_all(&root).unwrap();
@@ -592,33 +603,92 @@ fn a_missing_include_is_reported_unless_it_says_not_to() {
         let path = root.join("fonts.conf");
         std::fs::write(
             &path,
-            format!("<?xml version=\"1.0\"?>\n<fontconfig>\n{include}\n</fontconfig>\n"),
+            format!(
+                "<?xml version=\"1.0\"?>
+<fontconfig>
+{include}
+</fontconfig>
+"
+            ),
         )
         .unwrap();
-        Config::load_from(&path).unwrap()
+        Config::load_from_with_path(&path, std::slice::from_ref(&root))
     };
 
-    assert_eq!(load("").warnings(), &[]);
+    assert!(load("").is_ok());
 
+    // `_FcConfigParse` is called with `complain = !ignore_missing`, and a
+    // required include it cannot resolve makes it return false, which sets
+    // `parse->error` and fails the whole load -- the including file's rules
+    // with it. Fontconfig then runs on its built-in configuration, so this is
+    // not a quiet dropped file: it changes every answer.
     let absent = "/typordo-no-such-directory/nope.conf";
-    assert_eq!(
-        load(&format!("<include>{absent}</include>")).warnings(),
-        &[ConfigWarning::MissingInclude(absent.to_string())],
+    assert!(
+        matches!(load(&format!("<include>{absent}</include>")), Err(ConfigError::NotFound(_))),
+        "a required include that resolves to nothing has to fail the load"
     );
+
     // `FcNameBool`, so every spelling fontconfig accepts works here.
     for yes in ["yes", "true", "on", "1", "Yes"] {
-        let config = load(&format!("<include ignore_missing=\"{yes}\">{absent}</include>"));
-        assert_eq!(config.warnings(), &[], "ignore_missing={yes}");
+        assert!(
+            load(&format!("<include ignore_missing=\"{yes}\">{absent}</include>")).is_ok(),
+            "ignore_missing={yes}"
+        );
     }
     for no in ["no", "false", "off", "0"] {
-        let config = load(&format!("<include ignore_missing=\"{no}\">{absent}</include>"));
-        assert_eq!(config.warnings().len(), 1, "ignore_missing={no}");
+        assert!(
+            load(&format!("<include ignore_missing=\"{no}\">{absent}</include>")).is_err(),
+            "ignore_missing={no}"
+        );
     }
 
-    // A file that is there produces no warning.
-    std::fs::write(root.join("real.conf"), "<?xml version=\"1.0\"?>\n<fontconfig/>\n").unwrap();
+    // And `ignore_missing` covers a file that *is* there and will not parse,
+    // not only one that is absent: `_FcConfigParse` returns true without
+    // looking at the outcome whenever it was told not to complain.
+    let broken = root.join("broken.conf");
+    std::fs::write(&broken, "not xml at all <<<").unwrap();
+    assert!(load(&format!("<include>{}</include>", broken.display())).is_err());
+    assert!(
+        load(&format!("<include ignore_missing=\"yes\">{}</include>", broken.display())).is_ok()
+    );
+
+    // A file that is there and parses loads cleanly.
     let real = root.join("real.conf");
-    assert_eq!(load(&format!("<include>{}</include>", real.display())).warnings(), &[]);
+    std::fs::write(
+        &real,
+        "<?xml version=\"1.0\"?>
+<fontconfig/>
+",
+    )
+    .unwrap();
+    assert!(load(&format!("<include>{}</include>", real.display())).is_ok());
+
+    // A relative include is looked for on the search path in order, and the
+    // *first* directory holding it wins -- reading every match would merge
+    // configurations fontconfig never merges.
+    let second = std::env::temp_dir().join("typordo-missing-include-2");
+    let _ = std::fs::remove_dir_all(&second);
+    std::fs::create_dir_all(&second).unwrap();
+    std::fs::write(
+        second.join("only-here.conf"),
+        "<?xml version=\"1.0\"?>
+<fontconfig/>
+",
+    )
+    .unwrap();
+    let path = root.join("fonts.conf");
+    std::fs::write(
+        &path,
+        "<?xml version=\"1.0\"?>
+<fontconfig><include>only-here.conf</include></fontconfig>
+",
+    )
+    .unwrap();
+    assert!(Config::load_from_with_path(&path, std::slice::from_ref(&root)).is_err());
+    assert!(Config::load_from_with_path(&path, &[root.clone(), second.clone()]).is_ok());
+
+    let _ = std::fs::remove_dir_all(&root);
+    let _ = std::fs::remove_dir_all(&second);
 }
 
 /// A `<patelt>` holding a value its property cannot store is fatal.
@@ -680,10 +750,6 @@ fn the_fallback_configuration_names_the_usual_places() {
     assert!(dirs.iter().any(|parts| parts.windows(2).any(|w| w == ["share", "fonts"])), "{dirs:?}");
     assert!(!config.cache_dirs().is_empty(), "the fallback names its own cache dirs");
     // Every include in it is `ignore_missing`, so a machine that has none of
-    // them still loads it without complaint.
-    assert!(
-        !config.warnings().iter().any(|w| matches!(w, ConfigWarning::MissingInclude(_))),
-        "{:?}",
-        config.warnings()
-    );
+    // them still loads it -- a required one that resolved to nothing would
+    // have failed the load outright rather than warning.
 }

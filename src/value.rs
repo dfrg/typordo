@@ -4,6 +4,7 @@
 //! out of a cache, borrowing from its buffer.
 
 use crate::bytes::Bytes;
+use crate::casefold;
 use crate::charset::{AnyCharSet, CharSet, CharSetRef};
 use crate::error::{Error, Result};
 use crate::langset::{AnyLangSet, LangSet, LangSetRef};
@@ -401,6 +402,35 @@ impl Value {
 }
 
 impl Value {
+    /// Whether this value says the same thing as `other`.
+    ///
+    /// `FcValueEqual`, which is a looser question than `==`: an integer is
+    /// promoted to a double before comparing, strings fold case, and a range
+    /// is equal to another it contains -- `FcRangeIsInRange`, not an identical
+    /// pair of bounds. Two `Void`s are equal to each other and to nothing
+    /// else.
+    pub fn equivalent(&self, other: &Value) -> bool {
+        match (self, other) {
+            (Self::Void, Self::Void) => true,
+            // The promotion upstream makes before it dispatches, so an
+            // integer and a double holding the same number compare equal.
+            (Self::Int(a), Self::Double(b)) | (Self::Double(b), Self::Int(a)) => {
+                f64::from(*a) == *b
+            }
+            (Self::Int(a), Self::Int(b)) => a == b,
+            (Self::Double(a), Self::Double(b)) => a == b,
+            // `FcStrCmpIgnoreCase`. Blanks are *not* ignored here -- that is a
+            // flag on the comparison operators, not part of equality.
+            (Self::String(a), Self::String(b)) => casefold::eq(a, b),
+            (Self::Bool(a), Self::Bool(b)) => a == b,
+            (Self::Matrix(a), Self::Matrix(b)) => a == b,
+            (Self::CharSet(a), Self::CharSet(b)) => a == b,
+            (Self::LangSet(a), Self::LangSet(b)) => AnyLangSet::Owned(a) == AnyLangSet::Owned(b),
+            (Self::Range(a), Self::Range(b)) => b.within(a),
+            _ => false,
+        }
+    }
+
     /// Which kind of value this is, or `None` for [`Value::Void`].
     ///
     /// Void has no kind because it is not one a property can hold:

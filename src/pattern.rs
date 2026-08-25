@@ -336,6 +336,17 @@ impl Pattern {
     }
 
     /// Append a value with an explicit binding.
+    ///
+    /// A value the property cannot hold is **dropped**, as is
+    /// [`Value::Void`]. That is what `FcPatternObjectAddWithBinding` does --
+    /// it bails on `FcTypeVoid` and on anything `FcObjectValidType` refuses,
+    /// warns, and returns false -- and it matters beyond tidiness: a pattern
+    /// carrying a string where a number belongs scores against every font as
+    /// a type mismatch, so accepting one quietly turns a query into one that
+    /// matches nothing.
+    ///
+    /// [`Object::accepts`] is the same check, for a caller who would rather
+    /// know than have the value disappear.
     pub fn add_with_binding(
         &mut self,
         object: Object,
@@ -343,11 +354,38 @@ impl Pattern {
         binding: Binding,
     ) -> &mut Self {
         let value = value.into();
+        // `Void` has no kind at all, which is the first thing upstream
+        // refuses; anything else has to be one the property declares.
+        if !value.kind().is_some_and(|kind| object.accepts(kind)) {
+            return self;
+        }
         match self.position(object) {
             Ok(at) => self.elements[at].values.push((value, binding)),
             Err(at) => self.elements.insert(at, Element { object, values: vec![(value, binding)] }),
         }
         self
+    }
+
+    /// Whether this pattern says the same thing as `other`.
+    ///
+    /// `FcPatternEqual`, which is not what `==` is here. The derived
+    /// `PartialEq` compares the values as Rust holds them, which is the right
+    /// answer for "did this round-trip" and the wrong one for "do these two
+    /// queries mean the same": fontconfig promotes an integer to a double
+    /// before comparing, folds case on strings, treats a range as equal to
+    /// one it contains, and ignores bindings entirely.
+    ///
+    /// So `Int(200)` and `Double(200.0)` are equivalent and not equal, and
+    /// `"Bold"` and `"bold"` likewise.
+    pub fn equivalent(&self, other: &Pattern) -> bool {
+        if self.elements.len() != other.elements.len() {
+            return false;
+        }
+        self.elements.iter().zip(&other.elements).all(|(ours, theirs)| {
+            ours.object == theirs.object
+                && ours.values.len() == theirs.values.len()
+                && ours.values.iter().zip(&theirs.values).all(|((a, _), (b, _))| a.equivalent(b))
+        })
     }
 
     /// Remove a property entirely.

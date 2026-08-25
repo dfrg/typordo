@@ -126,12 +126,33 @@ fn a_const_resolves_to_its_numeric_value() {
 /// fixtures pairs a condition that *would* match with one that cannot be
 /// evaluated; if the bad half were dropped, every font would be rejected.
 #[test]
-fn an_unevaluable_selector_never_matches() {
+fn a_selector_naming_a_property_we_cannot_resolve_never_matches() {
+    // A property fontconfig assigns at runtime cannot be resolved here, so
+    // the selector must not narrow to the elements around it: dropping the
+    // element would *widen* it, and a reject rule that widens rejects fonts
+    // fontconfig keeps. Measured: with this config `fc-list` keeps the font.
     let cache = cantarell();
-    for name in ["langset-poison.conf", "unknown-object.conf"] {
+    let config = fixture("unknown-object.conf");
+    let kept = cache.fonts().unwrap().filter(|f| config.accepts(f)).count();
+    assert_eq!(kept, 6, "the selector narrowed to its understood half");
+}
+
+/// A `<langset>` with no usable names contributes *nothing*, and a `<patelt>`
+/// left with nothing is not in the pattern at all.
+///
+/// `FcParseLangSet` pushes its set only when it took at least one name, so
+/// `<langset>en</langset>` -- bare text where `<string>en</string>` was meant
+/// -- is `FcTypeVoid`, `FcParsePatelt` stops at it, and the selector is
+/// whatever elements came before. Here that is the family alone, which
+/// matches. Measured: `fc-list` rejects the font for this config, where this
+/// crate used to treat the whole selector as unevaluable and keep it.
+#[test]
+fn a_value_element_with_nothing_usable_in_it_leaves_the_patelt_out() {
+    let cache = cantarell();
+    for name in ["langset-poison.conf", "charset-empty.conf"] {
         let config = fixture(name);
         let kept = cache.fonts().unwrap().filter(|f| config.accepts(f)).count();
-        assert_eq!(kept, 6, "{name} narrowed to its understood half and rejected fonts");
+        assert_eq!(kept, 0, "{name}: the family selector alone still rejects");
     }
 }
 

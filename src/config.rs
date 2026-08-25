@@ -125,14 +125,6 @@ impl std::error::Error for ConfigError {}
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum ConfigWarning {
-    /// An `<include>` named a file or directory that is not there, and did
-    /// not carry `ignore_missing`.
-    ///
-    /// The path is as the configuration wrote it. A relative one is looked
-    /// for under every entry of `FONTCONFIG_PATH` and then the built-in
-    /// configuration directory, and is reported missing only when none of
-    /// them had it.
-    MissingInclude(String),
     /// The configuration named no `<cachedir>`, so the defaults were used.
     ///
     /// Fontconfig prints this unless `FONTCONFIG_FILE` or `FONTCONFIG_PATH`
@@ -144,7 +136,6 @@ pub enum ConfigWarning {
 impl std::fmt::Display for ConfigWarning {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::MissingInclude(path) => write!(f, "cannot load config file \"{path}\""),
             Self::NoCacheDir => f.write_str("no <cachedir> elements found; using the defaults"),
         }
     }
@@ -164,6 +155,13 @@ pub struct Config {
     /// -- a font in the target's `/usr/share/fonts` is recorded at that path,
     /// because that is where it will be when the target is running.
     sysroot: Option<PathBuf>,
+    /// Where a relative `<include>` is looked for, in order.
+    ///
+    /// `FcConfigGetPath`: the `FONTCONFIG_PATH` entries and then the built-in
+    /// configuration directory. Held rather than read from the environment at
+    /// each include so that a configuration tree somewhere else can be loaded
+    /// without setting a variable the whole process shares.
+    search_path: Vec<PathBuf>,
     font_dirs: Vec<FontDir>,
     cache_dirs: Vec<PathBuf>,
     files: Vec<PathBuf>,
@@ -329,11 +327,25 @@ impl SelectorValue {
     /// parses the buffer it accumulated and nothing tidies it first, so
     /// `<int>  200  </int>` is not an integer and `<bool>  true  </bool>` is
     /// not a boolean.
-    fn parse(kind: &str, body: &str) -> Self {
-        match kind {
+    fn parse(kind: &str, body: &str) -> Result<Self, String> {
+        Ok(match kind {
             "string" => Self::String(body.to_string()),
-            "int" => parse_int(body).map_or(Self::Unsupported, Self::Int),
-            "double" => body.parse().map_or(Self::Unsupported, Self::Double),
+            // `FcParseInt` and `FcParseDouble` require `strtol`/`strtod` to
+            // consume the whole body and raise `FcSevereError` when it does
+            // not -- which fails the configuration, not the element.
+            "int" => match parse_int(body) {
+                Some(int) => Self::Int(int),
+                // Empty is not an error: `strtol` consumes nothing, `end`
+                // equals the start, and `s + strlen (s)` equals it too, so
+                // the check passes and the value pushed is zero.
+                None if body.is_empty() => Self::Int(0),
+                None => return Err(format!("\"{body}\": not a valid integer")),
+            },
+            "double" => match body.parse() {
+                Ok(double) => Self::Double(double),
+                Err(_) if body.is_empty() => Self::Double(0.0),
+                Err(_) => return Err(format!("\"{body}\": not a valid double")),
+            },
             // `FcNameBool`, not a literal "true": `<bool>yes</bool>` and
             // `<bool>on</bool>` are as valid as `<bool>true</bool>`.
             //
@@ -349,7 +361,7 @@ impl SelectorValue {
             // something that cannot match. See `SelectorValue::Void`.
             "const" => constant(body).map_or(Self::Void, Self::Int),
             _ => Self::Unsupported,
-        }
+        })
     }
 
     /// Whether a font's value counts as matching this one.
@@ -396,7 +408,14 @@ impl SelectorValue {
 }
 
 /// Build a `<matrix>` from the four `<double>` children it collected.
-fn matrix_from(values: &[SelectorValue]) -> SelectorValue {
+fn matrix_from(values: &[SelectorValue]) -> Result<SelectorValue, String> {
+    // The two failures are graded differently, and not the way round they
+    // look. `FcParseMatrix` pops four expressions; if any of them is missing
+    // it *warns* and pushes nothing, so a short matrix is `FcTypeVoid`. Only
+    // a fifth one left on the stack is a severe error.
+    if values.len() > 4 {
+        return Err("wrong number of matrix elements".to_string());
+    }
     let numbers: Vec<f64> = values
         .iter()
         .filter_map(|v| match v {
@@ -405,10 +424,10 @@ fn matrix_from(values: &[SelectorValue]) -> SelectorValue {
             _ => None,
         })
         .collect();
-    match numbers[..] {
+    Ok(match numbers[..] {
         [xx, xy, yx, yy] => SelectorValue::Matrix(Matrix { xx, xy, yx, yy }),
-        _ => SelectorValue::Unsupported,
-    }
+        _ => SelectorValue::Void,
+    })
 }
 
 /// Build a `<charset>` from the `<int>` codepoints it collected.
@@ -423,24 +442,24 @@ fn within(font: &Range, selector: &Range) -> bool {
     selector.contains(font.begin) && selector.contains(font.end)
 }
 
-/// Whether an unreadable part of a literal poisons the whole thing.
-///
-/// A `<patelt>` selector must poison: dropping a value it cannot evaluate
-/// *widens* the selector, and a `<selectfont>` rule that widens rejects fonts
-/// fontconfig keeps. A rule expression must not: an edit naming one language
-/// this crate has no room for should still make the rest of its change.
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Strictness {
-    Poison,
-    Salvage,
-}
-
 /// One value element -- a scalar, or one of the four built from children.
-fn literal(frame: &Frame, body: &str, strict: Strictness) -> SelectorValue {
+///
+/// `Err` is a value fontconfig reports at `FcSevereError`, which sets
+/// `parse->error` and fails the **whole configuration**, not the element or
+/// the selector holding it. The severity belongs to the element's parser --
+/// `FcParseInt` is the same function wherever the `<int>` is written -- so
+/// this does not depend on what the value was going to be used for.
+///
+/// The graded ones are what makes this worth stating. `FcParseBool` accepts
+/// any word and quietly means false; a codepoint out of range in a
+/// `<charset>` and an unusable name in a `<langset>` are warnings and the
+/// element keeps whatever else it had; an unknown `<const>` is a warning and
+/// the value becomes `FcTypeVoid`. None of those fails anything.
+fn literal(frame: &Frame, body: &str) -> Result<SelectorValue, String> {
     match frame.name.as_str() {
         "matrix" => matrix_from(&frame.values),
-        "charset" => charset_from(&frame.values, strict),
-        "langset" => langset_from(&frame.values, strict),
+        "charset" => charset_from(&frame.values),
+        "langset" => langset_from(&frame.values),
         "range" => range_from(&frame.values),
         kind => SelectorValue::parse(kind, body),
     }
@@ -476,7 +495,10 @@ fn value_expr(value: SelectorValue) -> Expr {
 /// If either is a `<double>` the whole range is one, matching fontconfig:
 /// `<range><int>1</int><double>2.5</double></range>` spans 1.0 to 2.5 rather
 /// than being rejected for mixing its types.
-fn range_from(values: &[SelectorValue]) -> SelectorValue {
+fn range_from(values: &[SelectorValue]) -> Result<SelectorValue, String> {
+    if values.len() > 2 {
+        return Err("too many elements in range".to_string());
+    }
     let numbers: Vec<f64> = values
         .iter()
         .filter_map(|v| match v {
@@ -487,8 +509,8 @@ fn range_from(values: &[SelectorValue]) -> SelectorValue {
         .collect();
     match numbers[..] {
         // An inverted range is an error to fontconfig, not an empty span.
-        [begin, end] if begin <= end => SelectorValue::Range(Range { begin, end }),
-        _ => SelectorValue::Unsupported,
+        [begin, end] if begin <= end => Ok(SelectorValue::Range(Range { begin, end })),
+        _ => Err("invalid range".to_string()),
     }
 }
 
@@ -498,28 +520,23 @@ fn range_from(values: &[SelectorValue]) -> SelectorValue {
 /// It cannot be a bit, but it still has to match: a font listing `en`
 /// answers a request for `en-GB`, and treating the name as unreadable would
 /// silently turn such a selector into one that matches nothing.
-fn langset_from(values: &[SelectorValue], strict: Strictness) -> SelectorValue {
+fn langset_from(values: &[SelectorValue]) -> Result<SelectorValue, String> {
     let mut set = LangSet::new();
     let mut named = false;
     for value in values {
         let SelectorValue::String(name) = value else {
-            if strict == Strictness::Poison {
-                return SelectorValue::Unsupported;
-            }
-            continue;
+            return Err("invalid element in langset".to_string());
         };
         named = true;
         set.insert(name);
     }
-    if named {
-        SelectorValue::LangSet(set)
-    } else {
-        SelectorValue::Unsupported
-    }
+    // Nothing usable pushes nothing, which is `FcTypeVoid` and not an error:
+    // `FcParseLangSet` only pushes the set when it took at least one name.
+    Ok(if named { SelectorValue::LangSet(set) } else { SelectorValue::Void })
 }
 
 /// Build a `<charset>` from the codepoints and spans it collected.
-fn charset_from(values: &[SelectorValue], strict: Strictness) -> SelectorValue {
+fn charset_from(values: &[SelectorValue]) -> Result<SelectorValue, String> {
     let mut chars = Vec::with_capacity(values.len());
     for value in values {
         // A span is expanded here, because a charset is a bitmap and has no
@@ -527,21 +544,21 @@ fn charset_from(values: &[SelectorValue], strict: Strictness) -> SelectorValue {
         let (begin, end) = match value {
             SelectorValue::Int(cp) => (i64::from(*cp), i64::from(*cp)),
             SelectorValue::Range(range) => (range.begin as i64, range.end as i64),
-            _ if strict == Strictness::Poison => return SelectorValue::Unsupported,
-            _ => continue,
+            _ => return Err("invalid element in charset".to_string()),
         };
+        // An inverted span contributes nothing rather than being an error:
+        // `FcParseCharSet` guards the loop with `if (begin <= end)` and says
+        // nothing when it does not hold.
         for cp in begin..=end {
-            match u32::try_from(cp).ok().and_then(char::from_u32) {
-                Some(c) => chars.push(c),
-                None if strict == Strictness::Poison => return SelectorValue::Unsupported,
-                None => {}
+            // A codepoint out of range is only a warning -- `FcCharSetAddChar`
+            // refuses it and the element keeps whatever else it had.
+            if let Some(c) = u32::try_from(cp).ok().and_then(char::from_u32) {
+                chars.push(c);
             }
         }
     }
-    if chars.is_empty() {
-        return SelectorValue::Unsupported;
-    }
-    SelectorValue::CharSet(chars)
+    // Nothing usable pushes nothing, which is `FcTypeVoid` and not an error.
+    Ok(if chars.is_empty() { SelectorValue::Void } else { SelectorValue::CharSet(chars) })
 }
 
 /// One attribute of an element, if it has it.
@@ -899,8 +916,8 @@ impl Config {
     pub fn load() -> Result<Self, ConfigError> {
         let root = sysroot();
         let loaded = match &root {
-            Some(root) => Self::load_from_sysroot(&default_config_path(), root),
-            None => Self::load_from(&default_config_path()),
+            Some(root) => Self::load_from_sysroot(&default_config_path(Some(root)), root),
+            None => Self::load_from(&default_config_path(None)),
         };
         match loaded {
             Ok(config) => Ok(config.with_default_cache_dirs()),
@@ -966,8 +983,31 @@ impl Config {
         Self::read(path, Some(sysroot.to_path_buf()))
     }
 
+    /// Load `path`, looking for relative includes under `search_path`.
+    ///
+    /// [`Config::load_from`] is this with the search path `FONTCONFIG_PATH`
+    /// gives, which is what fontconfig itself always uses. Naming it outright
+    /// is for loading a configuration tree that is not installed -- a fixture,
+    /// a candidate configuration, one shipped inside an application -- where
+    /// setting the variable would reach every other thread in the process.
+    ///
+    /// A relative `<include>` still resolves against these directories and
+    /// **not** against the including file: fontconfig has no
+    /// "next to me" resolution for includes, whatever `prefix` says.
+    pub fn load_from_with_path(path: &Path, search_path: &[PathBuf]) -> Result<Self, ConfigError> {
+        Self::read_with(path, None, search_path.to_vec())
+    }
+
     fn read(path: &Path, sysroot: Option<PathBuf>) -> Result<Self, ConfigError> {
-        let mut config = Self { sysroot, ..Self::default() };
+        Self::read_with(path, sysroot, config_path())
+    }
+
+    fn read_with(
+        path: &Path,
+        sysroot: Option<PathBuf>,
+        search_path: Vec<PathBuf>,
+    ) -> Result<Self, ConfigError> {
+        let mut config = Self { sysroot, search_path, ..Self::default() };
         let on_disk = config.host_path(path);
         if !on_disk.exists() {
             return Err(ConfigError::NotFound(path.to_path_buf()));
@@ -1392,26 +1432,23 @@ impl Config {
             "string" | "int" | "double" | "bool" | "const" | "matrix" | "charset" | "langset"
             | "range" => {
                 let Some(parent) = stack.last_mut() else { return Ok(()) };
+                // The severity is the element's, not its context's: the same
+                // `<int>` that fails a `<patelt>` fails an `<edit>`, because
+                // it is `FcParseInt` that reports it either way.
+                let value = literal(&frame, body)
+                    .map_err(|why| ConfigError::Rejected(path.to_path_buf(), why))?;
                 match parent.name.as_str() {
                     // A container collects its children: four numbers for a
                     // <matrix>, codepoints and spans for a <charset>, names
                     // for a <langset>, two numbers for a <range>.
-                    "matrix" | "charset" | "langset" | "range" => {
-                        parent.values.push(literal(&frame, body, Strictness::Poison));
-                    }
-                    // A <patelt> is a selector, and a value it cannot read
-                    // has to poison it rather than be dropped.
-                    "patelt" => {
-                        parent.values.push(literal(&frame, body, Strictness::Poison));
+                    //
+                    // A <patelt> collects them too, being a selector.
+                    "matrix" | "charset" | "langset" | "range" | "patelt" => {
+                        parent.values.push(value);
                     }
                     // Anywhere else the same names are literals in a rule
-                    // expression, where dropping what cannot be read is
-                    // right: an edit with one unreadable value in it should
-                    // still make the rest of its change.
-                    _ => {
-                        let value = literal(&frame, body, Strictness::Salvage);
-                        parent.exprs.push(value_expr(value));
-                    }
+                    // expression.
+                    _ => parent.exprs.push(value_expr(value)),
                 }
             }
             "patelt" => {
@@ -1618,15 +1655,36 @@ impl Config {
             return Ok(());
         }
         if element == "include" {
-            let candidates = include_paths(body, prefix, from);
-            let mut found = false;
+            // `_FcConfigParse` resolves the name to **one** file through
+            // `FcConfigGetFilename` and reads that. A relative include is
+            // looked for under each search-path entry in turn and the first
+            // that exists wins -- reading every one of them merges
+            // configurations fontconfig would never have merged, and a
+            // distribution really does ship the same file name under more
+            // than one entry.
+            let candidates = include_paths(body, prefix, &self.search_path);
+            let mut outcome = Ok(false);
             for path in &candidates {
-                found |= self.read_include(path, depth, seen)?;
+                outcome = self.read_include(path, depth, seen);
+                // Found, or found and failed: either way this was the file,
+                // and the search does not continue past it.
+                if !matches!(outcome, Ok(false)) {
+                    break;
+                }
             }
-            // A relative include is looked for in several places, so it is
-            // missing only when none of them had it.
-            if !found && !ignore_missing {
-                self.warnings.push(ConfigWarning::MissingInclude(body.to_string()));
+            // `complain = !ignore_missing`, and `_FcConfigParse` returns
+            // `FcTrue` unconditionally when it is not to complain -- so the
+            // attribute suppresses a malformed file just as it suppresses a
+            // missing one, not only the latter.
+            if ignore_missing {
+                return Ok(());
+            }
+            // Anything else fails the load, the including file's with it.
+            // Fontconfig then runs on its built-in configuration, which is
+            // what makes a missing required include change every answer
+            // rather than quietly dropping one file's rules.
+            if !outcome? {
+                return Err(ConfigError::NotFound(PathBuf::from(body)));
             }
             return Ok(());
         }
@@ -1995,17 +2053,22 @@ impl Caches<'_> {
 /// `<include>conf.d</include>` in `/etc/fonts/fonts.conf` finds
 /// `/etc/fonts/conf.d` no matter what the process working directory is. Only
 /// `prefix="relative"` means relative to the including file.
-fn include_paths(body: &str, prefix: Option<&str>, from: &Path) -> Vec<PathBuf> {
+fn include_paths(body: &str, prefix: Option<&str>, search_path: &[PathBuf]) -> Vec<PathBuf> {
     if body.starts_with('~') {
         return resolve(body, None, home().as_deref()).into_iter().collect();
     }
     if Path::new(body).is_absolute() {
         return vec![PathBuf::from(body)];
     }
+    // `FcParseInclude` reads exactly one prefix, `xdg`, and ignores every
+    // other value -- including `relative`, which the *other* path elements do
+    // honour through `_get_real_paths_from_prefix`. So
+    // `<include prefix="relative">` is a plain relative include, looked up on
+    // the search path like any other, and a configuration written expecting
+    // otherwise is one fontconfig fails to load.
     match prefix {
         Some("xdg") => xdg_config_home().map(|b| b.join(body)).into_iter().collect(),
-        Some("relative") => from.parent().map(|b| b.join(body)).into_iter().collect(),
-        _ => config_path().into_iter().map(|base| base.join(body)).collect(),
+        _ => search_path.iter().map(|base| base.join(body)).collect(),
     }
 }
 
@@ -2093,24 +2156,107 @@ fn xdg_data_dirs() -> Vec<Option<PathBuf>> {
 }
 
 /// Where fontconfig looks for its root configuration file.
-fn default_config_path() -> PathBuf {
-    if let Some(file) = std::env::var_os("FONTCONFIG_FILE") {
-        let path = PathBuf::from(file);
-        if path.is_absolute() {
-            return path;
-        }
-        return config_dir().join(path);
-    }
-    config_dir().join("fonts.conf")
+/// The root configuration file, resolved the way `FcConfigGetFilename` does.
+///
+/// An absolute name is taken as it stands. A `~`-relative one is resolved
+/// against the home directory. Anything else is looked for **under every**
+/// entry of `FONTCONFIG_PATH` in turn, and the first that exists wins -- not
+/// the first entry, which is the reading that leaves
+/// `FONTCONFIG_PATH=/missing:/etc/fonts` running the built-in fallback while
+/// fontconfig loads `/etc/fonts/fonts.conf`.
+///
+/// `sysroot` prefixes every candidate before it is tested, since the file has
+/// to be found in the root being configured rather than this one.
+fn default_config_path(sysroot: Option<&Path>) -> PathBuf {
+    let url = std::env::var_os("FONTCONFIG_FILE")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("fonts.conf"));
+    resolve_config_path(&url, &config_path(), sysroot, home())
 }
 
-fn config_dir() -> PathBuf {
-    config_path().into_iter().next().unwrap_or_else(|| PathBuf::from(CONFIG_DIR))
+/// Resolve `url` against `candidates`, as `FcConfigGetFilename` does.
+///
+/// Split out from the environment it normally reads so that it can be tested
+/// without setting variables the rest of the process shares.
+fn resolve_config_path(
+    url: &Path,
+    candidates: &[PathBuf],
+    sysroot: Option<&Path>,
+    home: Option<PathBuf>,
+) -> PathBuf {
+    // The same prefixing `Config::host_path` does, before there is a
+    // `Config` to ask.
+    let exists = |path: &Path| match (sysroot, path.strip_prefix("/")) {
+        (Some(root), Ok(rest)) if !path.starts_with(root) => root.join(rest).exists(),
+        _ => path.exists(),
+    };
+
+    if url.is_absolute() {
+        return url.to_path_buf();
+    }
+    if let Ok(rest) = url.strip_prefix("~") {
+        if let Some(home) = home {
+            return home.join(rest);
+        }
+    }
+    for dir in candidates {
+        let candidate = dir.join(url);
+        if exists(&candidate) {
+            return candidate;
+        }
+    }
+    // Nothing exists anywhere. Naming the first candidate rather than
+    // nothing keeps the error message about a path somebody configured.
+    candidates.first().cloned().unwrap_or_else(|| PathBuf::from(CONFIG_DIR)).join(url)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `FcConfigGetFilename` searches **every** `FONTCONFIG_PATH` entry, not
+    /// the first. A missing directory ahead of a real one used to leave this
+    /// crate on its built-in fallback while fontconfig loaded the real file.
+    #[test]
+    fn a_root_config_is_looked_for_under_every_path_entry() {
+        let root = std::env::temp_dir().join("typordo-config-path");
+        let real = root.join("real");
+        std::fs::create_dir_all(&real).unwrap();
+        std::fs::write(real.join("fonts.conf"), "<fontconfig/>").unwrap();
+        let missing = root.join("missing");
+
+        let url = Path::new("fonts.conf");
+        let found = real.join("fonts.conf");
+        for candidates in [
+            vec![real.clone()],
+            vec![missing.clone(), real.clone()],
+            vec![missing.clone(), missing.clone(), real.clone()],
+            vec![real.clone(), missing.clone()],
+        ] {
+            assert_eq!(resolve_config_path(url, &candidates, None, None), found);
+        }
+
+        // Nothing anywhere still names a path, so the error can say which.
+        assert_eq!(
+            resolve_config_path(url, std::slice::from_ref(&missing), None, None),
+            missing.join("fonts.conf")
+        );
+
+        // An absolute name is taken as it stands, existing or not.
+        let absolute = root.join("elsewhere.conf");
+        assert_eq!(
+            resolve_config_path(&absolute, std::slice::from_ref(&real), None, None),
+            absolute
+        );
+
+        // `~` resolves against the home directory, never against the path.
+        assert_eq!(
+            resolve_config_path(Path::new("~/mine.conf"), &[real], None, Some(root.join("home"))),
+            root.join("home/mine.conf")
+        );
+
+        std::fs::remove_dir_all(&root).ok();
+    }
 
     fn fixture(name: &str) -> Config {
         let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/rules").join(name);
