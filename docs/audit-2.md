@@ -21,12 +21,12 @@ produced.
 | F3 | scanner | `size` never produced (no `opsz` axis, no OS/2 v5 optical range) | Fixed, `efbeb00` |
 | F4 | matching | Range resolution uses the first query value, not the winning one | Fixed, `e080b89` |
 | F5 | scanner | Named-instance weight/width ignore the OS/2 × (instance/default) multiplier | Fixed, `efbeb00` |
-| F6 | scanner | Missing name fallbacks: `Regular` style, family from the filename, PS-name sanitisation | Fixed, *this commit* |
+| F6 | scanner | Missing name fallbacks: `Regular` style, family from the filename, PS-name sanitisation | Fixed, `b230fd6` |
 | F8 | rules | Multi-valued `<test name="family">` has different semantics | |
 | F9 | cache | Binding encoding inverted; cache values read Strong where upstream reads Weak | |
 | F10 | prepare | `fontvariations` number formatting / weight rounding differs | Fixed, `e080b89` |
 | F12 | rules | Edit marks tracked by index, not by value node | |
-| F13 | scanner | Empty `capability` string vs absent element | |
+| F13 | scanner | Empty `capability` string vs absent element | Fixed, *this commit* |
 
 ## F1, F7, F11 — matrix multiplication, and what it took
 
@@ -177,3 +177,33 @@ thing standing between a font and being unusable:
 Four more crafted fonts in `fallback_parity`, and the field list grew to
 include the three `*lang` properties, since a fallback that supplies a name
 has to supply its language too. 396/396 fields over 22 fonts.
+
+## F13 — an empty capability is not no capability
+
+`FcFontCapabilities` decides once, at the top: a font with no script tags and
+no Graphite table returns NULL. Past that it allocates the string and returns
+whatever it ends up holding, so a font whose script list contains nothing but
+broken tags -- `addtag` skips anything not alphanumeric -- gets an **empty**
+capability rather than none.
+
+This crate made the same decision at the top and then undid it at the bottom,
+with a `(!out.is_empty()).then_some(out)` that turned the empty string back
+into nothing. An element that exists is scored; an absent one is skipped. They
+are not interchangeable.
+
+The audit reached this through `variabletest_matching.ttf`, whose `ScriptList`
+offset is zero. That case is *not* fixed and deliberately so: with a zero
+offset FreeType reads the table header as a script count and invents a tag out
+of the bytes that follow, while `read-fonts` parses the same table correctly
+and finds nothing. Matching there would mean reproducing a byte-level misread
+of malformed input, which is not fontconfig semantics but fontconfig's
+undefined response to a broken font -- and a different FreeType would answer
+differently. The finding's substance, a script list yielding only invalid
+tags, is fixed and tested with a well-formed list carrying one broken tag.
+
+Gating this on `usable_os2` rather than `font.os2()` came with it -- the last
+`OS/2` reader still trusting version `0xffff`, missed when G5 went in.
+
+`fallback_parity` gained the `capability` and `properties` fields, the second
+of which needs the property *names* rather than a value, since an empty
+element and an absent one print identically. 460/460 over 23 crafted fonts.

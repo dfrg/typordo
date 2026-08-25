@@ -30,6 +30,24 @@ command -v fc-query >/dev/null || { echo "fc-query not found"; exit 1; }
 WORK=$(mktemp -d) || exit 1
 trap 'rm -rf "$WORK"' EXIT
 
+# fc-query prints one block per face, each property on its own line.
+NAMES="$WORK/names.py"
+cat > "$NAMES" <<'PY'
+import re, sys
+names = []
+for line in sys.stdin:
+    if line.startswith('Pattern has'):
+        if names:
+            print(','.join(names))
+        names = []
+        continue
+    m = re.match(r'\t([a-z]+):', line)
+    if m:
+        names.append(m.group(1))
+if names:
+    print(','.join(names))
+PY
+
 SOURCE=$(fc-list --format='%{file}\n' | grep -E 'DejaVuSans\.ttf$' | head -1)
 [ -n "$SOURCE" ] || SOURCE=$(fc-list --format='%{file}\n' | grep -E '\.ttf$' | head -1)
 if [ -z "$SOURCE" ]; then
@@ -126,18 +144,37 @@ write("names-psname-chars", sfnt.set_names(src, [(3, 1, 0x409, 1, "Tuffy Two (Te
                                                  (3, 1, 0x409, 2, "Regular")]))
 write("names-psname-brackets", sfnt.set_names(src, [(3, 1, 0x409, 1, "A<B>C[D]E{F}G/H"),
                                                     (3, 1, 0x409, 2, "Regular")]))
+
+# A script list holding nothing but a broken tag. `FcFontCapabilities` bails
+# only when there are no tags at all, so this font has an *empty* capability
+# rather than none -- and an element that exists is scored where an absent one
+# is skipped, so the two are not interchangeable.
+at, length = sfnt.tables(src)["GSUB"]
+gsub = bytearray(src[at:at + length])
+offset = len(gsub)
+gsub += struct.pack(">H", 1) + struct.pack(">4sH", b"\x01\x02\x03\x04", 8) + bytes(8)
+struct.pack_into(">H", gsub, 4, offset)
+write("capability-broken-tag", sfnt.drop_table(sfnt.replace_table(src, "GSUB", bytes(gsub)), "GPOS"))
 PY
 
 FIELDS="weight width size slant foundry outline scalable family style fullname
         postscriptname familylang stylelang fullnamelang spacing variable
-        namedinstance index"
+        namedinstance index capability properties"
 files=0; total=0; bad=0
 for font in "$WORK"/*.ttf; do
   files=$((files + 1))
   differing=0
   for field in $FIELDS; do
     # Several patterns per file for a variable font, so every line counts.
+    if [ "$field" = properties ]; then
+      # Not an fc-query format: it asks which properties a pattern *has*, so
+      # the names are read out of the full listing instead. An element that
+      # exists with an empty value prints the same as an absent one, and the
+      # two score differently, so this is the only way to tell them apart.
+      theirs=$(fc-query "$font" 2>/dev/null | python3 "$NAMES")
+    else
     theirs=$(fc-query --format="%{$field}\n" "$font" 2>&1)
+    fi
     ours=$("$QUERY" --format "$field" "$font" 2>&1)
     total=$((total + 1))
     if [ "$theirs" != "$ours" ]; then

@@ -270,8 +270,9 @@ fn capability(font: &FontRef<'_>) -> Option<String> {
     use read_fonts::types::Tag;
     use read_fonts::ReadError;
 
-    // Fontconfig reads this only from a font that has an OS/2 table.
-    font.os2().ok()?;
+    // Fontconfig reads this only from a font that has an OS/2 table -- and a
+    // table marked version `0xffff` is not one, here as everywhere else.
+    usable_os2(font)?;
 
     // Substitution and positioning each name the scripts they know how to
     // shape, and the two lists have the same shape -- but they are separate
@@ -337,7 +338,13 @@ fn capability(font: &FontRef<'_>) -> Option<String> {
             (None, None) => break,
         }
     }
-    (!out.is_empty()).then_some(out)
+    // Whatever came of it, empty included. The decision was made above, where
+    // a font with no script tags and no Graphite table bails out entirely --
+    // `FcFontCapabilities` allocates the string first and returns it however
+    // it ends up, so a font whose script list holds nothing but broken tags
+    // has an empty `capability`, not none. The two are not the same thing: an
+    // element that exists scores, and one that does not is skipped.
+    Some(out)
 }
 
 /// Every character an SFNT font maps, from its Unicode `cmap` subtables.
