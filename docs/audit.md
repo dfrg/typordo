@@ -299,12 +299,6 @@ executable name: `fc-pattern` fires the `fc-pattern` rule and this crate fires
 its own, each reporting the name it should. `order: 0` matches, and `desktop`
 appears in both or neither as `XDG_CURRENT_DESKTOP` is set or empty.
 
-**3.1 - include resolution.** Read against both trees and found already
-correct. `FcConfigGetFilename` sends a `~` path to the home directory, an
-absolute path straight through, an `xdg` prefix to `XDG_CONFIG_HOME`, and
-anything else to each `FONTCONFIG_PATH` entry in turn and then the built-in
-configuration directory -- **not** to the including file's own directory,
-which is the plausible wrong answer. That is what `include_paths` does.
 
 **3.2 - `ignore_missing`.** The attribute was never read, and a missing
 `<include>` was passed over in silence. Fontconfig prints `Cannot load config
@@ -495,134 +489,6 @@ one `Tristate::parse` now.
 Eighteen cases in `compare_parity` cover the operators and every spelling
 fontconfig accepts, and all eighteen agree.
 
-### What the fixes broke, and how it showed
-
-Two of the fixes broke something. Neither was caught by a harness, and they
-failed to be caught in opposite ways, which is the useful part.
-
-**9.1 cost 48% of substitution, and every harness stayed green.**
-`casefold::eq_ignoring_blanks` has a hand-written fast path -- bytes, in one
-pass, for as long as both sides stay ASCII. `casefold::eq` had none, being
-three lines of iterator. That did not matter while nearly every string
-comparison went through the first. Ignoring blanks only where fontconfig is
-asked to moved the common case onto the second, and preparing three thousand
-queries went from 728 ms to 1076 ms.
-
-Nothing noticed because nothing was wrong: the answers were right, they had
-just become the right answers arrived at slowly. Parity harnesses compare
-outputs. A correctness fix that is quietly expensive is invisible to every one
-of them, and this one sat there through twenty commits and a published
-performance table it had silently invalidated. Found by bisecting the
-benchmark, after the README's figures stopped reproducing and the discrepancy
-was chased instead of restated.
-
-**9.2-9.5 moved a font forty places, and two harnesses caught it at once.**
-Parsing `:lang=en` into a language set -- correctly, as `FcNameParse` does --
-put a shape into queries that had never been there before, and one place was
-not ready for it. `add_default_langs` decides whether the query already asks
-for the locale's language by looking at its `lang` values, and it looked only
-at strings. A langset query therefore never counted as asking for its own
-language, so the locale's languages were appended beside it.
-
-One extra weak value, and `NotoSans[wght].ttf` moved from second place to
-forty-second in `fc-match -a :lang=en`. `sort_parity` and `cover_parity` both
-caught it; the unit tests did not, because none of them builds a query the way
-a command line does. Fontconfig checks both shapes in the same loop, and now
-so does this.
-
-Worth recording as the shape of the risk rather than as a single mistake: the
-fix was right, the regression was real, and what found it was the harness that
-drives whole queries through real fonts -- the kind of check the new
-`compare_parity` deliberately is not.
-
-Between them the two say something about what this suite does and does not
-watch. Whole-corpus harnesses catch a wrong answer that no unit test thought
-to ask about; operator-level ones catch a wrong answer no font provokes; and
-neither catches an answer that is right and twice as slow. Only the benchmark
-does, and only if somebody reruns it and believes the result over the
-published one.
-
-### Examined and found correct
-
-| # | Finding | What it actually does |
-| --- | --- | --- |
-| 3.1 | Include resolution | Already matches `FcConfigGetFilename` |
-| 25 | Application fonts | Already expressible; matching takes an iterator, not a config |
-
-### Version drift, not gaps
-
-| # | Finding | Why it stands |
-| --- | --- | --- |
-| 23 | Language data trails 2.18.3 (281 vs 339 entries) | The table is generated from 2.17.0 by design |
-| 24 | `genericfamily` absent | Confirmed absent from 2.17.0 entirely |
-
-The language table is an assumption about the writer, and `src/langs.rs` says
-so. CI demonstrated the *other* direction the first time it ran: on a runner
-shipping fontconfig 2.15.0, which has 279 entries, seven fonts differed
-because ours knows `got` and theirs cannot. See `docs/gaps.md`.
-
-**25 - application fonts.** Read against both trees and found to need no
-change at all, which is not what the report expected and not what this file
-expected either.
-
-`FcConfigAppFontAddFile` puts an application's own fonts in a second font set,
-and `FcFontMatch` builds `sets[] = { system, application }` and walks them in
-that order. Two things follow, and the second is the surprising one:
-`FcFontSetMatchInternal` replaces its incumbent only on a **strictly** better
-score, so on a tie the font seen first wins -- and system is seen first.
-Fontconfig's "application font preference", read literally, is a
-*de*-preference, and it offers no way to ask for the other order.
-
-This crate has no second set because matching does not take a configuration.
-`best`, `sort` and `sorted` take an *iterator of fonts*, so what is considered
-and in what order is the caller's to decide, and an application font set is a
-chained iterator:
-
-```rust
-let chained = system.fonts()?.chain(app.fonts()?);
-let (font, _) = best(&query, chained)?;
-```
-
-The one thing that needs saying is how to get from owned patterns -- which is
-what scanning produces -- to the borrowed ones matching scores. A `PatternRef`
-is a cursor into cache bytes, so the bridge is a cache built in memory, which
-`CacheWriter` and `Cache::new` already did and `Cache::rebased` already relied
-on. `Cache::from_fonts` is that, named:
-
-```rust
-let app = Cache::from_fonts("/app/fonts", &scanned)?;
-```
-
-`tests/app_fonts.rs` holds four tests that pin this: an application font is
-matched alongside the system's, it takes its place in a full sort, every
-property survives the round trip into the cache, and the chain order decides a
-tie -- in both directions, which is the thing fontconfig cannot express.
-
-The constructor is the whole of the change. Everything it does was already
-possible; what it adds is a name a reader looking for
-`FcConfigAppFontAddFile` can find, and a doc comment saying what the second
-font set was for.
-
-### Nothing open that fontconfig decides
-
-Every finding has now been read against both trees and either fixed, disputed
-with evidence, or shown to need no change. Nothing is open.
-
-**13 - `FcDontCare`.** Fontconfig's booleans have three states, and the third
-is not decorative: `FcCompareBool` takes the *font's* value when the pattern
-says `FcDontCare`, and scores it as a match either way. `FcNameBool` spells it
-`d`, `x`, `2` or `or`, so `<bool>dontcare</bool>` produces it.
-
-Ours has two states, and reads that spelling as `false` -- a different stored
-value and a different score. It is a genuine difference. It is also not
-reachable on the system this crate is measured against: of the fifty `<bool>`
-elements in every configuration file shipped there, forty-one say `false` and
-nine say `true`. None says anything else.
-
-The fix means giving `Value::Bool` a third state, which changes a public type
-and every match on it. That is the author's call, not one to make while
-running through a list.
-
 **14 - WOFF and bare CFF.** Fixed, in two halves, after two wrong predictions
 about it.
 
@@ -692,8 +558,132 @@ until something decompresses it -- which is why the fix is a feature and a
 dependency rather than a line of format sniffing. Gap 8 in
 `docs/fontations-gaps.md`.
 
-**25** is unexamined beyond the report. It wants an answer about public shape
-rather than about fontconfig.
+### What the fixes broke, and how it showed
+
+Two of the fixes broke something. Neither was caught by a harness, and they
+failed to be caught in opposite ways, which is the useful part.
+
+**9.1 cost 48% of substitution, and every harness stayed green.**
+`casefold::eq_ignoring_blanks` has a hand-written fast path -- bytes, in one
+pass, for as long as both sides stay ASCII. `casefold::eq` had none, being
+three lines of iterator. That did not matter while nearly every string
+comparison went through the first. Ignoring blanks only where fontconfig is
+asked to moved the common case onto the second, and preparing three thousand
+queries went from 728 ms to 1076 ms.
+
+Nothing noticed because nothing was wrong: the answers were right, they had
+just become the right answers arrived at slowly. Parity harnesses compare
+outputs. A correctness fix that is quietly expensive is invisible to every one
+of them, and this one sat there through twenty commits and a published
+performance table it had silently invalidated. Found by bisecting the
+benchmark, after the README's figures stopped reproducing and the discrepancy
+was chased instead of restated.
+
+**9.2-9.5 moved a font forty places, and two harnesses caught it at once.**
+Parsing `:lang=en` into a language set -- correctly, as `FcNameParse` does --
+put a shape into queries that had never been there before, and one place was
+not ready for it. `add_default_langs` decides whether the query already asks
+for the locale's language by looking at its `lang` values, and it looked only
+at strings. A langset query therefore never counted as asking for its own
+language, so the locale's languages were appended beside it.
+
+One extra weak value, and `NotoSans[wght].ttf` moved from second place to
+forty-second in `fc-match -a :lang=en`. `sort_parity` and `cover_parity` both
+caught it; the unit tests did not, because none of them builds a query the way
+a command line does. Fontconfig checks both shapes in the same loop, and now
+so does this.
+
+Worth recording as the shape of the risk rather than as a single mistake: the
+fix was right, the regression was real, and what found it was the harness that
+drives whole queries through real fonts -- the kind of check the new
+`compare_parity` deliberately is not.
+
+Between them the two say something about what this suite does and does not
+watch. Whole-corpus harnesses catch a wrong answer that no unit test thought
+to ask about; operator-level ones catch a wrong answer no font provokes; and
+neither catches an answer that is right and twice as slow. Only the benchmark
+does, and only if somebody reruns it and believes the result over the
+published one.
+
+### Examined and found correct
+
+| # | Finding | What it actually does |
+| --- | --- | --- |
+| 3.1 | Include resolution | Already matches `FcConfigGetFilename` |
+| 25 | Application fonts | Already expressible; matching takes an iterator, not a config |
+
+**3.1 - include resolution.** Read against both trees and found already
+correct. `FcConfigGetFilename` sends a `~` path to the home directory, an
+absolute path straight through, an `xdg` prefix to `XDG_CONFIG_HOME`, and
+anything else to each `FONTCONFIG_PATH` entry in turn and then the built-in
+configuration directory -- **not** to the including file's own directory,
+which is the plausible wrong answer. That is what `include_paths` does.
+
+**25 - application fonts.** Read against both trees and found to need no
+change at all, which is not what the report expected and not what this file
+expected either.
+
+`FcConfigAppFontAddFile` puts an application's own fonts in a second font set,
+and `FcFontMatch` builds `sets[] = { system, application }` and walks them in
+that order. Two things follow, and the second is the surprising one:
+`FcFontSetMatchInternal` replaces its incumbent only on a **strictly** better
+score, so on a tie the font seen first wins -- and system is seen first.
+Fontconfig's "application font preference", read literally, is a
+*de*-preference, and it offers no way to ask for the other order.
+
+This crate has no second set because matching does not take a configuration.
+`best`, `sort` and `sorted` take an *iterator of fonts*, so what is considered
+and in what order is the caller's to decide, and an application font set is a
+chained iterator:
+
+```rust
+let chained = system.fonts()?.chain(app.fonts()?);
+let (font, _) = best(&query, chained)?;
+```
+
+The one thing that needs saying is how to get from owned patterns -- which is
+what scanning produces -- to the borrowed ones matching scores. A `PatternRef`
+is a cursor into cache bytes, so the bridge is a cache built in memory, which
+`CacheWriter` and `Cache::new` already did and `Cache::rebased` already relied
+on. `Cache::from_fonts` is that, named:
+
+```rust
+let app = Cache::from_fonts("/app/fonts", &scanned)?;
+```
+
+`tests/app_fonts.rs` holds four tests that pin this: an application font is
+matched alongside the system's, it takes its place in a full sort, every
+property survives the round trip into the cache, and the chain order decides a
+tie -- in both directions, which is the thing fontconfig cannot express.
+
+The constructor is the whole of the change. Everything it does was already
+possible; what it adds is a name a reader looking for
+`FcConfigAppFontAddFile` can find, and a doc comment saying what the second
+font set was for.
+
+### Version drift, not gaps
+
+| # | Finding | Why it stands |
+| --- | --- | --- |
+| 23 | Language data trails 2.18.3 (281 vs 339 entries) | The table is generated from 2.17.0 by design |
+| 24 | `genericfamily` absent | Confirmed absent from 2.17.0 entirely |
+
+The language table is an assumption about the writer, and `src/langs.rs` says
+so. CI demonstrated the *other* direction the first time it ran: on a runner
+shipping fontconfig 2.15.0, which has 279 entries, seven fonts differed
+because ours knows `got` and theirs cannot. See `docs/gaps.md`.
+
+`genericfamily` is not a 2.17.0 property at all: neither `fcobjs.h` nor the
+public header mentions it anywhere, so there is no object for this crate to be
+missing. It arrived later, and adopting it would mean adopting a newer
+fontconfig to target -- which is the same decision as the language table
+above, and the same answer.
+
+### Nothing open
+
+Every finding has been read against both trees and either fixed, disputed with
+evidence, or shown to need no change. All twenty-five are accounted for in the
+tables above.
 
 ### On predicting which findings will survive
 
