@@ -81,6 +81,14 @@ impl std::error::Error for ConfigError {}
 /// The font and cache directories a system is configured to use.
 #[derive(Clone, Debug, Default)]
 pub struct Config {
+    /// A root to read everything under, from `FONTCONFIG_SYSROOT`.
+    ///
+    /// Set when inspecting a filesystem that is not the running one: an
+    /// image being built, an SDK, a chroot. Every path this configuration
+    /// names is read from under it, and none of them is rewritten to say so
+    /// -- a font in the target's `/usr/share/fonts` is recorded at that path,
+    /// because that is where it will be when the target is running.
+    sysroot: Option<PathBuf>,
     font_dirs: Vec<FontDir>,
     cache_dirs: Vec<PathBuf>,
     files: Vec<PathBuf>,
@@ -710,18 +718,75 @@ impl Config {
     /// `FONTCONFIG_FILE` names a config file outright; otherwise the file is
     /// `fonts.conf` under `FONTCONFIG_PATH`, falling back to `/etc/fonts`.
     pub fn load() -> Result<Self, ConfigError> {
-        Self::load_from(&default_config_path())
+        match sysroot() {
+            Some(root) => Self::load_from_sysroot(&default_config_path(), &root),
+            None => Self::load_from(&default_config_path()),
+        }
     }
 
     /// Load a specific configuration file, following its includes.
     pub fn load_from(path: &Path) -> Result<Self, ConfigError> {
-        if !path.exists() {
+        Self::read(path, None)
+    }
+
+    /// Load a configuration describing a filesystem rooted at `sysroot`.
+    ///
+    /// `path` is named as the target sees it, so `/etc/fonts/fonts.conf`
+    /// means that file inside `sysroot`. This is what `FONTCONFIG_SYSROOT`
+    /// selects, and [`Config::load`] uses it when that variable is set.
+    pub fn load_from_sysroot(path: &Path, sysroot: &Path) -> Result<Self, ConfigError> {
+        Self::read(path, Some(sysroot.to_path_buf()))
+    }
+
+    fn read(path: &Path, sysroot: Option<PathBuf>) -> Result<Self, ConfigError> {
+        let mut config = Self { sysroot, ..Self::default() };
+        let on_disk = config.host_path(path);
+        if !on_disk.exists() {
             return Err(ConfigError::NotFound(path.to_path_buf()));
         }
-        let mut config = Self::default();
         let mut seen = HashSet::new();
         config.read_file(path, 0, &mut seen)?;
         Ok(config)
+    }
+
+    /// The sysroot this configuration reads under, if any.
+    pub fn sysroot(&self) -> Option<&Path> {
+        self.sysroot.as_deref()
+    }
+
+    /// What the target calls `path`, which was reached under the sysroot.
+    ///
+    /// The inverse of [`Config::host_path`], and what gets recorded: a font
+    /// found at `/build/root/usr/share/fonts/x.ttf` is stored as
+    /// `/usr/share/fonts/x.ttf`, because that is where it will be.
+    pub(crate) fn target_path<'p>(&self, path: &'p Path) -> std::borrow::Cow<'p, Path> {
+        match &self.sysroot {
+            Some(root) => match path.strip_prefix(root) {
+                Ok(rest) => std::borrow::Cow::Owned(Path::new("/").join(rest)),
+                Err(_) => std::borrow::Cow::Borrowed(path),
+            },
+            None => std::borrow::Cow::Borrowed(path),
+        }
+    }
+
+    /// Where `path` actually is on the running filesystem.
+    ///
+    /// Configuration names paths as the target sees them, so reaching one
+    /// means putting the sysroot back in front. A path that already starts
+    /// with the sysroot is left alone, which is the guard fontconfig calls
+    /// "avoid adding sysroot repeatedly" -- an include resolved against a
+    /// file already found under the root arrives here prefixed.
+    pub(crate) fn host_path(&self, path: &Path) -> PathBuf {
+        let Some(root) = &self.sysroot else { return path.to_path_buf() };
+        if path.starts_with(root) {
+            return path.to_path_buf();
+        }
+        match path.strip_prefix("/") {
+            Ok(rest) => root.join(rest),
+            // A relative path is already relative to something that was
+            // resolved, so it is left as it is.
+            Err(_) => path.to_path_buf(),
+        }
     }
 
     /// The directories configured to hold fonts.
@@ -882,13 +947,14 @@ impl Config {
     /// the same way, and only on Unix.
     pub fn cache_path(&self, dir: &str) -> Option<PathBuf> {
         let mut names = vec![self.cache_basename(dir)];
-        if let Some(uuid) = uuid_name(Path::new(dir)) {
+        // The `.uuid` sits beside the font directory, so under the root.
+        if let Some(uuid) = uuid_name(&self.host_path(Path::new(dir))) {
             names.push(uuid);
         }
         self.cache_dirs
             .iter()
             .flat_map(|cache_dir| names.iter().map(move |name| cache_dir.join(name)))
-            .find(|path| path.is_file())
+            .find(|path| self.host_path(path).is_file())
     }
 
     /// Every cache this configuration reaches, roots and subdirectories both.
@@ -937,8 +1003,8 @@ impl Config {
             return Ok(());
         }
 
-        let source =
-            std::fs::read_to_string(path).map_err(|e| ConfigError::Io(path.to_path_buf(), e))?;
+        let source = std::fs::read_to_string(self.host_path(path))
+            .map_err(|e| ConfigError::Io(path.to_path_buf(), e))?;
         self.files.push(path.to_path_buf());
 
         // A frame per open element, so nested constructs like
@@ -1266,7 +1332,8 @@ impl Config {
         depth: usize,
         seen: &mut HashSet<PathBuf>,
     ) -> Result<(), ConfigError> {
-        if path.is_dir() {
+        let on_disk = self.host_path(path);
+        if on_disk.is_dir() {
             // Order matters: the numeric prefixes on conf.d files are there to
             // sequence the rules, so read them sorted by name.
             //
@@ -1274,7 +1341,7 @@ impl Config {
             // only names of the form `[0-9]*.conf`, so a `local.conf` or an
             // editor's `50-foo.conf.orig` left in `conf.d` is ignored -- and
             // picking it up would insert rules nothing else can see.
-            let mut entries: Vec<_> = std::fs::read_dir(path)
+            let mut entries: Vec<_> = std::fs::read_dir(&on_disk)
                 .map_err(|e| ConfigError::Io(path.to_path_buf(), e))?
                 .filter_map(|entry| entry.ok().map(|e| e.path()))
                 .filter(|p| {
@@ -1288,7 +1355,7 @@ impl Config {
             }
             return Ok(());
         }
-        if path.is_file() {
+        if on_disk.is_file() {
             self.read_file(path, depth + 1, seen)?;
         }
         // A missing include is not an error. Fontconfig marks most of them
@@ -1454,7 +1521,7 @@ impl Caches<'_> {
     fn open(&mut self, dir: &str) -> Option<Cache> {
         let path = self.config.cache_path(dir);
         let cache = match &path {
-            Some(path) => match Cache::open(path) {
+            Some(path) => match Cache::open(self.config.host_path(path)) {
                 Ok(cache) => Some(cache),
                 Err(_) => return self.give_up(dir, SkipReason::Unreadable),
             },
@@ -1561,6 +1628,19 @@ fn resolve(body: &str, base: Option<&Path>, home: Option<&Path>) -> Option<PathB
 
 fn home() -> Option<PathBuf> {
     std::env::var_os("HOME").map(PathBuf::from)
+}
+
+/// The root to read everything under, from `FONTCONFIG_SYSROOT`.
+///
+/// Canonicalised, as `FcConfigCreate` does through `FcStrRealPath`, so that
+/// the prefix test in [`Config::host_path`] compares like with like. A value
+/// naming somewhere that does not exist is no root at all.
+fn sysroot() -> Option<PathBuf> {
+    let raw = std::env::var_os("FONTCONFIG_SYSROOT")?;
+    if raw.is_empty() {
+        return None;
+    }
+    std::fs::canonicalize(&raw).ok()
 }
 
 /// An XDG base directory: the environment variable if it is an absolute path,

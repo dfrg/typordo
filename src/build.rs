@@ -22,6 +22,7 @@ use std::path::{Path, PathBuf};
 
 use crate::cache::Cache;
 use crate::config::Config;
+use crate::object::Object;
 use crate::rules::MatchKind;
 use crate::stamp::directory_stamp;
 use crate::write::CacheWriter;
@@ -99,7 +100,13 @@ impl<'a> Builder<'a> {
     /// treat that as an error either: a configuration naming a directory that
     /// does not exist is normal, since one config serves many machines.
     pub fn dir(&self, dir: &Path) -> io::Result<Option<Built>> {
-        if !dir.is_dir() {
+        // `dir` is named as the target sees it; `host` is where to read it.
+        // The two differ only under a sysroot, and everything recorded in the
+        // cache uses the target name -- fontconfig strips the sysroot back
+        // off `FC_FILE` for the same reason, so that a cache built for an
+        // image describes the image rather than the machine that built it.
+        let host = self.config.host_path(dir);
+        if !host.is_dir() {
             return Ok(None);
         }
         let name = dir.to_string_lossy().into_owned();
@@ -110,7 +117,7 @@ impl<'a> Builder<'a> {
             }
         }
 
-        let (subdirs, files) = entries(dir)?;
+        let (subdirs, files) = entries(&host)?;
         let mut fonts = Vec::new();
         for file in &files {
             // A font that cannot be read is skipped, not fatal: a directory
@@ -118,6 +125,12 @@ impl<'a> Builder<'a> {
             // scans whatever is there and keeps what parses.
             let Ok(patterns) = crate::scan_file(file) else { continue };
             for mut font in patterns {
+                // Recorded as the target names it, not as it was reached.
+                if self.config.sysroot().is_some() {
+                    let target = self.config.target_path(file);
+                    font.remove(Object::File);
+                    font.add(Object::File, target.to_string_lossy().as_ref());
+                }
                 // Configuration gets a pass over a font before it is cached.
                 // Metric aliases and the rules that take a language away from
                 // a font that only appears to have it are all `target="scan"`.
@@ -126,9 +139,12 @@ impl<'a> Builder<'a> {
             }
         }
 
-        let names: Vec<String> = subdirs.iter().map(|p| p.to_string_lossy().into_owned()).collect();
+        let names: Vec<String> = subdirs
+            .iter()
+            .map(|p| self.config.target_path(p).to_string_lossy().into_owned())
+            .collect();
         let mut writer = CacheWriter::new(&name);
-        let (stamp, nanoseconds) = directory_stamp(dir)?;
+        let (stamp, nanoseconds) = directory_stamp(&host)?;
         writer.mtime(stamp, nanoseconds);
         for subdir in &names {
             writer.subdir(subdir);
@@ -218,11 +234,16 @@ impl<'a> Builder<'a> {
     fn write(&self, name: &str, bytes: &[u8]) -> io::Result<PathBuf> {
         let dir = self.destination()?;
         let path = dir.join(self.config.cache_basename(name));
-        let temp = path.with_extension("NEW");
+        // The cache lands under the sysroot, where the target will find it.
+        let on_disk = self.config.host_path(&path);
+        if let Some(parent) = on_disk.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let temp = on_disk.with_extension("NEW");
         std::fs::write(&temp, bytes)?;
         // Rename over an existing file is atomic on Unix and, since Windows
         // 10, on NTFS as well.
-        match std::fs::rename(&temp, &path) {
+        match std::fs::rename(&temp, &on_disk) {
             Ok(()) => Ok(path),
             Err(e) => {
                 let _ = std::fs::remove_file(&temp);

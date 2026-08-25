@@ -331,3 +331,49 @@ fn a_conf_d_file_without_a_numeric_prefix_is_ignored() {
     // And the numerically prefixed neighbours in the same directory are.
     assert!(dirs.contains(&"/synthetic/first"), "{dirs:?}");
 }
+
+// --- FONTCONFIG_SYSROOT ---------------------------------------------------
+
+/// A configuration under a sysroot names paths as the target sees them.
+///
+/// The point of a sysroot is inspecting a filesystem that is not the running
+/// one, so a font found at `<root>/usr/share/fonts` has to be recorded at
+/// `/usr/share/fonts` -- fontconfig strips the prefix back off `FC_FILE` for
+/// the same reason. Recording where it was reached would bake the build
+/// machine into a cache meant for the image.
+#[test]
+fn a_sysroot_config_reads_under_the_root_and_records_target_paths() {
+    let root = std::env::temp_dir().join("typordo-sysroot-test");
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(root.join("etc/fonts")).unwrap();
+    std::fs::create_dir_all(root.join("usr/share/fonts")).unwrap();
+    std::fs::write(
+        root.join("etc/fonts/fonts.conf"),
+        "<?xml version=\"1.0\"?>\n<fontconfig>\n\
+         <dir>/usr/share/fonts</dir>\n\
+         <cachedir>/var/cache/fontconfig</cachedir>\n</fontconfig>\n",
+    )
+    .unwrap();
+
+    let config =
+        Config::load_from_sysroot(Path::new("/etc/fonts/fonts.conf"), &root).expect("loads");
+
+    // Named as the target sees them, with no trace of where they were read.
+    let dirs: Vec<_> = config.font_dirs().filter_map(|d| d.to_str()).collect();
+    assert_eq!(dirs, ["/usr/share/fonts"], "{dirs:?}");
+    let caches: Vec<_> = config.cache_dirs().iter().filter_map(|d| d.to_str()).collect();
+    assert_eq!(caches, ["/var/cache/fontconfig"], "{caches:?}");
+
+    // And the same config without the root cannot be found at all, which is
+    // what makes the sysroot the thing doing the work here.
+    assert!(Config::load_from(Path::new("/etc/fonts/does-not-exist.conf")).is_err());
+}
+
+/// Without a sysroot, nothing is rewritten.
+#[test]
+fn no_sysroot_leaves_paths_alone() {
+    let config = config();
+    assert!(config.sysroot().is_none());
+    let dirs: Vec<_> = config.font_dirs().filter_map(|d| d.to_str()).collect();
+    assert!(dirs.contains(&"/synthetic/fonts"), "{dirs:?}");
+}
