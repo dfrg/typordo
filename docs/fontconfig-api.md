@@ -68,11 +68,41 @@ orderings -- `less` asks whether the two differ and the right side is
 | `FcConfigGetCacheDirs` | `Config::cache_dirs()` |
 | `FcConfigGetConfigFiles` | `Config::files()` |
 | `FcConfigUptoDate` | partly: `CachePolicy` decides, `Caches::skipped()` reports |
+| `FcConfigAppFontAddFile` / `AddDir` | scan, then `CacheWriter` — see below |
+| `FcConfigAppFontClear` | drop the `Cache` |
+| `FcSetSystem` / `FcSetApplication` | — no font sets; matching takes an iterator |
 
 `FcConfigBuildFonts` scans and writes a cache for any directory that lacks a
 current one, silently, which is why the first application to start after a
 font is installed is slow. `build_fonts` does exactly that, but you have to
 ask; `Config::caches(CachePolicy::read_only())` never scans or writes.
+
+**Application fonts.** Fontconfig keeps them in a second font set and
+`FcFontMatch` walks `{ system, application }` in that order. Since
+`FcFontSetMatchInternal` replaces its incumbent only on a strictly better
+score, a system font wins a tie against an application font — the
+"preference", read literally, runs the other way, and there is no API to
+reverse it.
+
+Here there is no second set, because matching takes an iterator of fonts
+rather than a configuration. What is considered, and in what order, is the
+caller's:
+
+```rust
+// Owned patterns -- what scanning gives you -- as something matchable.
+let mut writer = CacheWriter::new("/app/fonts");
+for font in &scanned { writer.font(font); }
+let app = Cache::new(writer.finish().into_boxed_slice())?;
+
+let (font, _) = best(&query, system.fonts()?.chain(app.fonts()?))?;
+```
+
+Chaining the other way round puts the application's fonts first, which wins
+ties for them. `tests/app_fonts.rs` pins both orders.
+
+The cache is the bridge because a `PatternRef` is a cursor into cache bytes;
+there is nothing else for a borrowed pattern to borrow from. It costs one pass
+over the patterns and no font parsing.
 
 ## Building and reading a pattern
 

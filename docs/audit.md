@@ -12,9 +12,11 @@ checked, and where the fix is. It is kept because a finding marked "fixed" is
 worth no more than the evidence behind it, and because the ones left open are
 decisions somebody will want to revisit.
 
-Where it stands: **25 fixed**, one examined and already correct, two version
-drift rather than gaps, and **one open** — an API question nobody has needed
-answered yet. Twenty-two of the twenty-five were confirmed against
+Where it stands: **25 fixed**, two examined and already correct, two version
+drift rather than gaps, and **none open**. The last one turned out to need no
+change: what it asked for was already expressible, and a test now says so.
+
+Twenty-two of the twenty-five were confirmed against
 running fontconfig rather than against a reading of its source; the other
 three are cache-handling paths with no command that provokes them, and carry
 tests that fail when the fix is removed.
@@ -80,6 +82,7 @@ corpus does not contain.
 | 21 | Cache rebuilds took no inter-process lock | Tests fail on old behaviour | `18045e2` |
 | 13 | Tri-state boolean collapsed to two | 18 cases against `fc-pattern -c` | `dbc81db` |
 | 14 | WOFF, WOFF2 and bare CFF not scanned | 960/960 and 2568/2568 against `fc-query` | `2e456d9` |
+
 
 **9.1 — `ignore-blanks`.** `FcConfigCompareValue` uses
 `FcStrCmpIgnoreBlanksAndCase` only when `FcOpFlagIgnoreBlanks` is set and
@@ -544,6 +547,7 @@ published one.
 | # | Finding | What it actually does |
 | --- | --- | --- |
 | 3.1 | Include resolution | Already matches `FcConfigGetFilename` |
+| 25 | Application fonts | Already expressible; matching takes an iterator, not a config |
 
 ### Version drift, not gaps
 
@@ -557,13 +561,57 @@ so. CI demonstrated the *other* direction the first time it ran: on a runner
 shipping fontconfig 2.15.0, which has 279 entries, seven fonts differed
 because ours knows `got` and theirs cannot. See `docs/gaps.md`.
 
-### Open, with a reason
+**25 - application fonts.** Read against both trees and found to need no
+change at all, which is not what the report expected and not what this file
+expected either.
 
-What is left, and why it is still open rather than fixed.
+`FcConfigAppFontAddFile` puts an application's own fonts in a second font set,
+and `FcFontMatch` builds `sets[] = { system, application }` and walks them in
+that order. Two things follow, and the second is the surprising one:
+`FcFontSetMatchInternal` replaces its incumbent only on a **strictly** better
+score, so on a tie the font seen first wins -- and system is seen first.
+Fontconfig's "application font preference", read literally, is a
+*de*-preference, and it offers no way to ask for the other order.
 
-| # | Finding | Why it is still here |
-| --- | --- | --- |
-| 25 | Application-font preference not representable | API design |
+This crate has no second set because matching does not take a configuration.
+`best`, `sort` and `sorted` take an *iterator of fonts*, so what is considered
+and in what order is the caller's to decide, and an application font set is a
+chained iterator:
+
+```rust
+let chained = system.fonts()?.chain(app.fonts()?);
+let (font, _) = best(&query, chained)?;
+```
+
+The one thing that needs saying is how to get from owned patterns -- which is
+what scanning produces -- to the borrowed ones matching scores. A `PatternRef`
+is a cursor into cache bytes, so the bridge is to build a cache in memory,
+which `CacheWriter` and `Cache::new` already do and `Cache::rebased` already
+relies on:
+
+```rust
+let mut writer = CacheWriter::new(dir);
+for font in &scanned { writer.font(font); }
+let app = Cache::new(writer.finish().into_boxed_slice())?;
+```
+
+`tests/app_fonts.rs` holds four tests that pin this: an application font is
+matched alongside the system's, it takes its place in a full sort, every
+property survives the round trip into the cache, and the chain order decides a
+tie -- in both directions, which is the thing fontconfig cannot express.
+
+What is left is ergonomics, not capability. A caller has to know to build the
+cache, and nothing in the API points at it. Whether that deserves a named
+constructor is a question about this crate's surface rather than about
+fontconfig, and it is the last thing on this list.
+
+### Nothing open that fontconfig decides
+
+Every finding has now been read against both trees and either fixed, disputed
+with evidence, or shown to need no change. What remains is one question about
+this crate's own ergonomics -- whether supplying application fonts deserves a
+named constructor rather than three lines of `CacheWriter` -- which fontconfig
+has no opinion about.
 
 **13 - `FcDontCare`.** Fontconfig's booleans have three states, and the third
 is not decorative: `FcCompareBool` takes the *font's* value when the pattern
@@ -654,14 +702,16 @@ rather than about fontconfig.
 
 ### On predicting which findings will survive
 
-Five were expected to end as arguments or as questions rather than fixes.
+Six were expected to end as arguments or as questions rather than fixes.
 **20** was a decision this crate had written down and defended, and it did not
 hold up. **21** turned out to be spelled out in `FcAtomicLock`. **14** was
 predicted on reasoning that had never been tested, the test went the other way,
 and it is now fixed for both formats. **17** looked like it needed a decision about what `Caches` yields, and
 stopped needing one as soon as the question changed from "how do I rewrite a
 path" to "how do I rewrite a cache". **13** genuinely did need a decision, and
-the answer was yes.
+the answer was yes. **25** was filed under "API design" and needed no API at
+all -- matching already takes an iterator, so the thing it asked for was three
+lines of existing machinery away.
 
-That is one for five, and the one is the case where the answer was simply to
+That is one for six, and the one is the case where the answer was simply to
 ask. Reading a finding is cheap and guessing at it is worth nothing.
