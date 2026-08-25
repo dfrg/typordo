@@ -442,8 +442,28 @@ machines sharing a filesystem keep their clocks close enough.
 It is released on drop, error paths included, which is the difference between
 a failed rebuild and a directory nothing can rebuild for the next ten minutes.
 
-### What fixing 9.2-9.5 broke, and how it showed
+### What the fixes broke, and how it showed
 
+Two of the fixes broke something. Neither was caught by a harness, and they
+failed to be caught in opposite ways, which is the useful part.
+
+**9.1 cost 48% of substitution, and every harness stayed green.**
+`casefold::eq_ignoring_blanks` has a hand-written fast path -- bytes, in one
+pass, for as long as both sides stay ASCII. `casefold::eq` had none, being
+three lines of iterator. That did not matter while nearly every string
+comparison went through the first. Ignoring blanks only where fontconfig is
+asked to moved the common case onto the second, and preparing three thousand
+queries went from 728 ms to 1076 ms.
+
+Nothing noticed because nothing was wrong: the answers were right, they had
+just become the right answers arrived at slowly. Parity harnesses compare
+outputs. A correctness fix that is quietly expensive is invisible to every one
+of them, and this one sat there through twenty commits and a published
+performance table it had silently invalidated. Found by bisecting the
+benchmark, after the README's figures stopped reproducing and the discrepancy
+was chased instead of restated.
+
+**9.2-9.5 moved a font forty places, and two harnesses caught it at once.**
 Parsing `:lang=en` into a language set -- correctly, as `FcNameParse` does --
 put a shape into queries that had never been there before, and one place was
 not ready for it. `add_default_langs` decides whether the query already asks
@@ -461,6 +481,13 @@ Worth recording as the shape of the risk rather than as a single mistake: the
 fix was right, the regression was real, and what found it was the harness that
 drives whole queries through real fonts -- the kind of check the new
 `compare_parity` deliberately is not.
+
+Between them the two say something about what this suite does and does not
+watch. Whole-corpus harnesses catch a wrong answer that no unit test thought
+to ask about; operator-level ones catch a wrong answer no font provokes; and
+neither catches an answer that is right and twice as slow. Only the benchmark
+does, and only if somebody reruns it and believes the result over the
+published one.
 
 ### Examined and found correct
 
