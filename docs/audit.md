@@ -58,11 +58,11 @@ corpus does not contain.
 | 8 | `prgname`, `desktop` and `order` never set | Both agree against `fc-pattern -c -d` | `702677d` |
 | 3.2 | `ignore_missing` never read; a missing include was silent | Test fails on old behaviour | `207a0fe` |
 | 10 | `<const>` was case-sensitive, and an unknown one poisoned | DIFF->MATCH against `fc-list` | `f3245a4` |
-| 11 | Element text was trimmed; no CDATA, no numeric references | DIFF->MATCH against `fc-list` | *this commit* |
-| 12 | Values were stored against properties that cannot hold them | DIFF->MATCH against `fc-list` | *this commit* |
-| 2 | No startup fallback when the configuration will not load | DIFF->MATCH against `fc-list` | *this commit* |
-| 22 | Language comparison ignored country sets and extra strings | Tests fail on old behaviour | *this commit* |
-| 21 | Cache rebuilds took no inter-process lock | Tests fail on old behaviour | *this commit* |
+| 11 | Element text was trimmed; no CDATA, no numeric references | DIFF->MATCH against `fc-list` | `8b05eca` |
+| 12 | Values were stored against properties that cannot hold them | DIFF->MATCH against `fc-list` | `8b05eca` |
+| 2 | No startup fallback when the configuration will not load | DIFF->MATCH against `fc-list` | `8b05eca` |
+| 22 | Language comparison ignored country sets and extra strings | Tests fail on old behaviour | `a6543f9` |
+| 21 | Cache rebuilds took no inter-process lock | Tests fail on old behaviour | `18045e2` |
 
 **9.1 — `ignore-blanks`.** `FcConfigCompareValue` uses
 `FcStrCmpIgnoreBlanksAndCase` only when `FcOpFlagIgnoreBlanks` is set and
