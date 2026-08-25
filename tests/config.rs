@@ -9,6 +9,7 @@ use std::path::{Path, PathBuf};
 
 use typordo::CachePolicy;
 use typordo::Config;
+use typordo::ConfigError;
 use typordo::ConfigWarning;
 
 fn fixture_dir() -> PathBuf {
@@ -618,4 +619,71 @@ fn a_missing_include_is_reported_unless_it_says_not_to() {
     std::fs::write(root.join("real.conf"), "<?xml version=\"1.0\"?>\n<fontconfig/>\n").unwrap();
     let real = root.join("real.conf");
     assert_eq!(load(&format!("<include>{}</include>", real.display())).warnings(), &[]);
+}
+
+/// A `<patelt>` holding a value its property cannot store is fatal.
+///
+/// `FcPatternAdd` refuses it, and `FcParsePatelt` reports the refusal at
+/// `FcSevereError`, which fails the whole configuration -- not just that
+/// selector. Measured against `fc-list`: with a `<dir>` naming a single font,
+/// a config carrying `<patelt name="family"><int>1</int></patelt>` reports
+/// the entire system's fonts, because fontconfig fell back to its defaults.
+#[test]
+fn a_patelt_of_the_wrong_type_fails_the_configuration() {
+    let root = std::env::temp_dir().join("typordo-bad-patelt");
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&root).unwrap();
+    let path = root.join("fonts.conf");
+
+    let write = |patelt: &str| {
+        std::fs::write(
+            &path,
+            format!(
+                "<?xml version=\"1.0\"?>\n<fontconfig>\n<selectfont><rejectfont><pattern>\n\
+                 {patelt}\n</pattern></rejectfont></selectfont>\n</fontconfig>\n"
+            ),
+        )
+        .unwrap();
+        Config::load_from(&path)
+    };
+
+    // The types a property does accept: a number reaches a range, and a
+    // string reaches a language set, because matching converts them anyway.
+    assert!(write("<patelt name=\"weight\"><int>200</int></patelt>").is_ok());
+    assert!(write("<patelt name=\"lang\"><string>ja</string></patelt>").is_ok());
+    assert!(write("<patelt name=\"pixelsize\"><int>12</int></patelt>").is_ok());
+    assert!(write("<patelt name=\"family\"><string>Foo</string></patelt>").is_ok());
+
+    for bad in [
+        "<patelt name=\"family\"><int>1</int></patelt>",
+        "<patelt name=\"scalable\"><int>1</int></patelt>",
+        "<patelt name=\"weight\"><string>heavy</string></patelt>",
+    ] {
+        assert!(matches!(write(bad), Err(ConfigError::Rejected(..))), "{bad}");
+    }
+}
+
+/// The configuration fontconfig runs on when the real one will not load.
+///
+/// `FcInitLoadOwnConfig` does not give up: it builds `FcInitFallbackConfig`
+/// and carries on, which is why `fc-list` still finds fonts on a machine with
+/// a broken `/etc/fonts`. Reproducing that is what keeps a comparison against
+/// it meaningful in exactly the case where a configuration is at fault.
+#[test]
+fn the_fallback_configuration_names_the_usual_places() {
+    let config = Config::fallback(None).expect("the built-in document must parse");
+    // Compared by component, since the separator is the host's.
+    let dirs: Vec<Vec<String>> = config
+        .font_dirs()
+        .map(|d| d.components().map(|c| c.as_os_str().to_string_lossy().into_owned()).collect())
+        .collect();
+    assert!(dirs.iter().any(|parts| parts.windows(2).any(|w| w == ["share", "fonts"])), "{dirs:?}");
+    assert!(!config.cache_dirs().is_empty(), "the fallback names its own cache dirs");
+    // Every include in it is `ignore_missing`, so a machine that has none of
+    // them still loads it without complaint.
+    assert!(
+        !config.warnings().iter().any(|w| matches!(w, ConfigWarning::MissingInclude(_))),
+        "{:?}",
+        config.warnings()
+    );
 }

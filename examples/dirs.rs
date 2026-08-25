@@ -27,7 +27,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
     let config = match &path {
-        Some(p) => Config::load_from(p)?,
+        // fc-list and friends do not stop when a configuration will not
+        // load: `FcInitLoadOwnConfig` runs on the built-in fallback
+        // instead. Doing the same is what makes a comparison against
+        // them meaningful when the config under test is a broken one.
+        Some(p) => match Config::load_from(p) {
+            Ok(config) => config,
+            Err(e) => {
+                eprintln!("cannot load {}: {e}", p.display());
+                Config::fallback(None)?
+            }
+        },
         None => Config::load()?,
     };
 

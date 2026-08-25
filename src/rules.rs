@@ -570,7 +570,17 @@ impl Edit {
         let binding = self.resolve_binding(query, positional);
         let tagged = &mut pass.tagged;
         tagged.clear();
-        tagged.extend(values.into_iter().map(|v| (v, binding)));
+        // `FcPatternObjectAddWithBinding` refuses a value the property cannot
+        // hold -- and refuses `FcTypeVoid` outright -- so an edit assigning
+        // an integer to `family` has no effect rather than putting an integer
+        // there. A property a configuration invented has no declared type and
+        // accepts anything.
+        let allowed = |value: &Value| match (&self.object, value.kind()) {
+            (_, None) => false,
+            (Property::Known(object), Some(kind)) => object.accepts(kind),
+            (Property::Custom(_), Some(_)) => true,
+        };
+        tagged.extend(values.into_iter().filter(allowed).map(|v| (v, binding)));
 
         // What the index gains is known before the move; what it loses is
         // known only at the point each mode drops it.

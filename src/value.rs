@@ -7,6 +7,7 @@ use crate::bytes::Bytes;
 use crate::charset::{AnyCharSet, CharSet, CharSetRef};
 use crate::error::{Error, Result};
 use crate::langset::{AnyLangSet, LangSet, LangSetRef};
+use crate::object::ValueType;
 
 /// A 2x2 transform, fontconfig's `FcMatrix`.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -279,6 +280,27 @@ impl Value {
             }
             ValueRef::LangSet(l) => Self::LangSet(LangSet::from_languages(l)),
         }
+    }
+}
+
+impl Value {
+    /// Which kind of value this is, or `None` for [`Value::Void`].
+    ///
+    /// Void has no kind because it is not one a property can hold:
+    /// `FcPatternObjectAddWithBinding` throws it away before it looks at the
+    /// type at all, so a `Void` never reaches a pattern.
+    pub fn kind(&self) -> Option<ValueType> {
+        Some(match self {
+            Self::Void => return None,
+            Self::Int(_) => ValueType::Int,
+            Self::Double(_) => ValueType::Double,
+            Self::String(_) => ValueType::String,
+            Self::Bool(_) => ValueType::Bool,
+            Self::Matrix(_) => ValueType::Matrix,
+            Self::Range(_) => ValueType::Range,
+            Self::CharSet(_) => ValueType::CharSet,
+            Self::LangSet(_) => ValueType::LangSet,
+        })
     }
 }
 

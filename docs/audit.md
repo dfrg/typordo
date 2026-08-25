@@ -57,7 +57,12 @@ corpus does not contain.
 | 7 | Empty selector patterns inverted accept/reject | DIFF->MATCH against `fc-list` | `7d16166` |
 | 8 | `prgname`, `desktop` and `order` never set | Both agree against `fc-pattern -c -d` | `702677d` |
 | 3.2 | `ignore_missing` never read; a missing include was silent | Test fails on old behaviour | `207a0fe` |
-| 10 | `<const>` was case-sensitive, and an unknown one poisoned | DIFF->MATCH against `fc-list` | *this commit* |
+| 10 | `<const>` was case-sensitive, and an unknown one poisoned | DIFF->MATCH against `fc-list` | `f3245a4` |
+| 11 | Element text was trimmed; no CDATA, no numeric references | DIFF->MATCH against `fc-list` | *this commit* |
+| 12 | Values were stored against properties that cannot hold them | DIFF->MATCH against `fc-list` | *this commit* |
+| 2 | No startup fallback when the configuration will not load | DIFF->MATCH against `fc-list` | *this commit* |
+| 22 | Language comparison ignored country sets and extra strings | Tests fail on old behaviour | *this commit* |
+| 21 | Cache rebuilds took no inter-process lock | Tests fail on old behaviour | *this commit* |
 
 **9.1 — `ignore-blanks`.** `FcConfigCompareValue` uses
 `FcStrCmpIgnoreBlanksAndCase` only when `FcOpFlagIgnoreBlanks` is set and
@@ -305,6 +310,123 @@ it was encoding this crate's guess, not upstream's behaviour, which is the
 failure mode worth naming -- a test can pin a mistake as firmly as it pins a
 fix.
 
+**11 - character data.** Three things, one of them a real change of
+behaviour.
+
+Fontconfig hands each parse function the element's buffer exactly as it
+accumulated. It does not trim. So `<dir>` written across three lines with an
+indent names a directory that does not exist, `<bool>  true  </bool>` is not a
+boolean -- `FcNameBool` looks at the first character and finds a space -- and
+`<const>  bold  </const>` resolves to nothing. This crate trimmed, in two
+places, and so accepted configurations fontconfig rejects. That is a
+difference in which fonts exist, not a kindness. Measured both ways: a padded
+`<dir>` yields no fonts in either implementation now, and each of the padded
+`<int>`, `<bool>` and `<const>` fails in its own distinct way, which is what
+makes them worth comparing one at a time.
+
+The reader kept a deliberate deviation and it is now written down: a text run
+that is *entirely* whitespace is dropped rather than reported. Fontconfig
+keeps it in a buffer it then ignores for every element that has children, so
+the only value this changes is one written as nothing but spaces -- and
+dropping it is what keeps indentation out of every enclosing element's text.
+
+CDATA was silently producing nothing, which is worse than the module's own
+promise to "report an error rather than guess". Numeric character references
+were left as written. Both work now, in both spellings, with a reference that
+leads nowhere still left alone the way any unrecognised entity is.
+
+**12 - values a property cannot hold.** `FcPatternObjectAddWithBinding`
+refuses a value whose type the object does not accept, and refuses
+`FcTypeVoid` outright. The rule is not simply "the declared type": a number
+goes into either numeric property and into a range, and a string goes into a
+language set, because those are conversions matching performs anyway.
+
+The two paths differ in how loudly they fail, and both were measured rather
+than guessed. In an `<edit>` the value is dropped and the rest of the rule
+still runs, so `<edit name="family"><int>1</int></edit>` has no effect. In a
+`<patelt>` the refusal is reported at `FcSevereError`, which fails the
+**entire configuration**: with a `<dir>` naming one font, a config carrying
+`<patelt name="family"><int>1</int></patelt>` makes `fc-list` report the
+whole system's fonts, because it fell back to the defaults.
+
+Beside it, a gap that had been there all along: a selector's plain string
+compared against a font's language set matched nothing, because there was no
+arm for the pair. It is `FcConfigPromote` again -- the string becomes the set
+naming that language -- and `<patelt name="lang"><string>ja</string></patelt>`
+now rejects the 38 fonts it should.
+
+**2 - the startup fallback.** `FcInitLoadOwnConfig` does not give up when the
+configuration will not load. It builds `FcInitFallbackConfig` -- a fixed
+document naming the default font directories, the default cache directories
+and the usual includes, every one of them `ignore_missing` -- and runs on
+that. It is why `fc-list` still finds fonts on a machine whose `/etc/fonts` is
+broken, and it is what made the `<patelt>` measurement above read 2385 rather
+than 0.
+
+`Config::fallback` is that document, and `Config::load` reaches for it on
+failure. The library still hands the error back rather than swallowing it; the
+example programs fall back the way `fc-list` does, which is what makes a
+comparison against them meaningful in exactly the case where a configuration
+is at fault.
+
+`FcInitLoadOwnConfig` also supplies `FC_CACHEDIR` and the XDG cache directory
+when the loaded configuration named none, warning unless `FONTCONFIG_FILE` or
+`FONTCONFIG_PATH` says the caller meant it. A configuration with nowhere to
+put a cache rescans every directory on every run, so this is not cosmetic.
+
+**22 - language sets.** Copying was already right; comparison was not, in two
+places, and the *reason* the first one had been left is the interesting part.
+
+`FcLangSetCompare` does not stop at "no language in common". It then asks
+whether the two sets name regional variants of one language -- `zh-CN` against
+`zh-TW` -- and answers `DifferentTerritory` rather than `DifferentLang` if so.
+Without that a Simplified Chinese font scores no closer to a Traditional
+Chinese request than a Greek one does. This crate skipped the step, and said
+so in a doc comment, on the grounds that "a query built with `Pattern` cannot
+carry a langset, so this is only reachable when comparing two fonts".
+
+That was true when it was written and stopped being true earlier in this same
+audit: parsing `:lang=en` by the object's declared type puts a langset into
+every query that names a language. A documented limitation is only as good as
+the assumption under it, and nothing rechecks the assumption when the code
+around it moves.
+
+The table upstream generates is derivable from the language list -- group by
+what precedes the hyphen, which is all `fc-lang.py` does with it -- so it is
+built once from `LANGS` rather than vendored.
+
+The second place: `FcLangSetHasLang` finishes by comparing against the
+languages the table cannot name, and ours never looked at them. A set holding
+only `en-GB` -- not in the table, so it lives as a string -- answered
+"unrelated" to every request, including one for `en-GB` itself.
+
+Worth recording that the obvious expectation here was wrong twice over. `en`
+against `en-GB` is `DifferentTerritory`, not `Equal`: `FcLangSetHasLang`
+reaches `en` through `FcLangCompare`, which calls the same language in a
+different region exactly that. Both tests were written asserting `Equal` and
+both were corrected against the source, not the other way round.
+
+**21 - the rebuild lock.** This one was expected to be a design question and
+is not; `FcAtomicLock` spells the whole thing out.
+
+Writing was already atomic here -- bytes to a temporary, then a rename -- but
+the temporary had a fixed name, `<cache>.NEW`, which is the same name
+fontconfig uses. Upstream that is safe because a `<cache>.LCK` beside it
+serialises writers; here nothing did, so two processes rebuilding one
+directory would write the same temporary file and either could rename the
+other's half of it into place. `fc-cache` and a desktop session starting at
+once is not hypothetical, it is how a machine boots.
+
+The lock is a hard link: `link` fails when the destination exists, and fails
+for every process but one, which is what makes it atomic. Filesystems that
+refuse hard links fall back to `mkdir`, atomic for the same reason. A lock
+older than ten minutes is assumed to belong to a process that died and is
+taken over -- fontconfig's timeout and fontconfig's assumption with it, that
+machines sharing a filesystem keep their clocks close enough.
+
+It is released on drop, error paths included, which is the difference between
+a failed rebuild and a directory nothing can rebuild for the next ten minutes.
+
 ### What fixing 9.2-9.5 broke, and how it showed
 
 Parsing `:lang=en` into a language set -- correctly, as `FcNameParse` does --
@@ -343,27 +465,64 @@ so. CI demonstrated the *other* direction the first time it ran: on a runner
 shipping fontconfig 2.15.0, which has 279 entries, seven fonts differed
 because ours knows `got` and theirs cannot. See `docs/gaps.md`.
 
-### Not yet examined
+### Open, with a reason
 
-Read against both trees but not yet acted on. Listed so that "fixed" above
-cannot be mistaken for "all of it".
+What is left, and why each is still open rather than fixed.
 
-| # | Finding | Priority as reported |
+| # | Finding | Why it is still here |
 | --- | --- | --- |
-| 2 | Root configuration search and startup fallback | High |
-| 11 | XML character data | Low-medium |
-| 12 | `Pattern` equality and insertion | Medium |
-| 13 | Tri-state boolean collapsed | Medium |
-| 14 | WOFF/WOFF2 and standalone CFF not scanned | Medium-high |
-| 17 | Relocated caches keep embedded font paths (subdirectories fixed) | High |
-| 21 | Rebuilds lack an inter-process lock | Medium |
-| 22 | LangSet copying, comparison, default insertion | Medium |
-| 25 | Application-font preference not representable | API |
+| 13 | Tri-state boolean collapsed | Real, unreachable on any config measured; the fix changes a public type |
+| 14 | WOFF and standalone CFF not scanned | Real and confirmed by measurement; blocked on `read-fonts` |
+| 17 | Relocated caches keep embedded font paths | Needs a decision about what `Caches` yields |
+| 25 | Application-font preference not representable | API design |
 
-**14** is expected to end as an argument rather than a fix: it depends on
-`read-fonts`, which recognises only SFNT and collections. See
-`docs/fontations-gaps.md`.
+**13 - `FcDontCare`.** Fontconfig's booleans have three states, and the third
+is not decorative: `FcCompareBool` takes the *font's* value when the pattern
+says `FcDontCare`, and scores it as a match either way. `FcNameBool` spells it
+`d`, `x`, `2` or `or`, so `<bool>dontcare</bool>` produces it.
 
-**20** was also expected to be an argument, and was not. Predicting which
-findings will survive scrutiny is worth less than reading them; that one was
-a decision I had written down and defended, and it did not hold up.
+Ours has two states, and reads that spelling as `false` -- a different stored
+value and a different score. It is a genuine difference. It is also not
+reachable on the system this crate is measured against: of the fifty `<bool>`
+elements in every configuration file shipped there, forty-one say `false` and
+nine say `true`. None says anything else.
+
+The fix means giving `Value::Bool` a third state, which changes a public type
+and every match on it. That is the author's call, not one to make while
+running through a list.
+
+**14 - WOFF.** This was written down as "expected to end as an argument rather
+than a fix", and the prediction was wrong twice over.
+
+First, the reasoning was never tested. It has been now: a valid WOFF wrapper
+around a font already in the corpus is read by `fc-query` in full -- family,
+style, weight, charset, languages -- and rejected by this crate as "not a font
+file". So it is a real gap, not a difference of opinion about what a font is.
+
+Second, and worth keeping: an earlier version of that measurement said the two
+agreed. Two things were wrong with it. The WOFF was malformed -- the table
+directory was offset by the size of a header I had forgotten -- so *both*
+implementations rejected it, for different reasons. And when the file was
+fixed, a directory listing appeared to show both finding it, because the two
+were sharing a cache directory and this crate was reading the cache
+`fc-list` had just written. Neither error would have survived a comparison
+that queried the file directly, which is what settled it.
+
+The gap itself stands where it was: `read-fonts` recognises SFNT and
+collections, and a WOFF is neither until something decompresses it. Written up
+with the measurement as gap 8 in `docs/fontations-gaps.md`.
+
+**17** and **25** are described where they belong -- 17 above, 25 unexamined
+beyond the report. Both want an answer about public shape rather than about
+fontconfig.
+
+### On predicting which findings will survive
+
+Three were expected to end as arguments. **20** did not -- it was a decision
+this crate had written down and defended, and it did not hold up. **21** did
+not either; `FcAtomicLock` simply spells out what to do. **14** did not, and
+the reasoning behind the prediction turned out never to have been tested at
+all.
+
+That is nought for three. Reading a finding is cheap and guessing at it is
+worth nothing.

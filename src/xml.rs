@@ -2,13 +2,19 @@
 //!
 //! This is not a general XML parser and does not try to be. It handles what
 //! `fonts.conf` and `conf.d/*.conf` actually contain — elements, attributes,
-//! text, comments, the declaration and a doctype — and reports an error on
-//! anything else rather than guessing. Namespaces, CDATA, processing
-//! instructions and custom entities do not appear in fontconfig configs and
-//! are not supported.
+//! text, CDATA, comments, the declaration and a doctype — and reports an
+//! error on anything else rather than guessing. Namespaces, processing
+//! instructions and entities a document defines for itself do not appear in
+//! fontconfig configs and are not supported.
+//!
+//! One deliberate deviation: a text run that is entirely whitespace is
+//! dropped rather than reported. Fontconfig keeps it, in a buffer it then
+//! ignores for every element that has children — so the only value this
+//! changes is one written as nothing but spaces, and dropping it here is what
+//! keeps indentation out of every enclosing element's text.
 //!
 //! Everything borrows from the source. Text allocates only when it contains
-//! an entity reference that has to be expanded.
+//! an entity reference that has to be expanded, or arrives as CDATA.
 
 use std::borrow::Cow;
 use std::fmt;
@@ -127,10 +133,10 @@ fn unescape(text: &str) -> Cow<'_, str> {
             .iter()
             .zip(['&', '<', '>', '"', '\''])
             .find(|(entity, _)| tail.starts_with(**entity));
-        match expanded {
-            Some((entity, ch)) => {
+        match expanded.map(|(entity, ch)| (entity.len(), ch)).or_else(|| char_ref(tail)) {
+            Some((len, ch)) => {
                 out.push(ch);
-                rest = &tail[entity.len()..];
+                rest = &tail[len..];
             }
             None => {
                 out.push('&');
@@ -140,6 +146,25 @@ fn unescape(text: &str) -> Cow<'_, str> {
     }
     out.push_str(rest);
     Cow::Owned(out)
+}
+
+/// Read a numeric character reference at the start of `tail`.
+///
+/// `&#65;` and `&#x41;` are both `A`. Returns the length consumed and the
+/// character, or `None` if this is not one -- a bare `&#` that leads nowhere
+/// is left as written, the same as any other unrecognised entity.
+fn char_ref(tail: &str) -> Option<(usize, char)> {
+    let body = tail.strip_prefix("&#")?;
+    let (radix, digits) = match body.strip_prefix(['x', 'X']) {
+        Some(hex) => (16, hex),
+        None => (10, body),
+    };
+    let end = digits.find(';')?;
+    // No digits is not a reference, and `from_str_radix` says so; the
+    // surrogate range and anything past U+10FFFF are rejected by `from_u32`.
+    let code = u32::from_str_radix(&digits[..end], radix).ok()?;
+    let ch = char::from_u32(code)?;
+    Some((tail.len() - digits.len() + end + 1, ch))
 }
 
 /// A scanner over one configuration file.
@@ -219,6 +244,21 @@ impl<'a> Iterator for Reader<'a> {
                     Some(_) => self.error(self.pos, XmlErrorKind::Unterminated("element")),
                     None => None,
                 };
+            }
+
+            // `<![CDATA[ ... ]]>` is text that has stopped meaning markup.
+            // Nothing expands inside it, so the run is taken as it stands.
+            if self.source[self.pos..].starts_with("<![CDATA[") {
+                let body = self.pos + "<![CDATA[".len();
+                let Some(close) = self.source[body..].find("]]>") else {
+                    return self.error(self.pos, XmlErrorKind::Unterminated("CDATA"));
+                };
+                let text = &self.source[body..body + close];
+                self.pos = body + close + "]]>".len();
+                if text.is_empty() {
+                    continue;
+                }
+                return Some(Ok(Event::Text(Cow::Borrowed(text))));
             }
 
             // Text runs up to the next '<'.
@@ -381,5 +421,61 @@ mod tests {
             let result: Result<Vec<_>, _> = Reader::new(source).collect();
             assert!(result.is_err(), "{source:?} should not parse");
         }
+    }
+}
+
+#[cfg(test)]
+mod character_data_tests {
+    use super::*;
+
+    fn text_of(source: &str) -> Vec<String> {
+        Reader::new(source)
+            .map(|e| e.unwrap())
+            .filter_map(|e| match e {
+                Event::Text(t) => Some(t.into_owned()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn cdata_is_text_that_has_stopped_meaning_markup() {
+        assert_eq!(text_of("<a><![CDATA[raw <stuff> & more]]></a>"), ["raw <stuff> & more"]);
+        // Nothing expands inside it.
+        assert_eq!(text_of("<a><![CDATA[&amp;]]></a>"), ["&amp;"]);
+        // Empty is not an event, and it does not swallow what follows.
+        assert_eq!(text_of("<a><![CDATA[]]>after</a>"), ["after"]);
+        // Adjacent runs both arrive; the caller joins them.
+        assert_eq!(text_of("<a>x<![CDATA[y]]>z</a>"), ["x", "y", "z"]);
+    }
+
+    #[test]
+    fn an_unterminated_cdata_is_an_error() {
+        assert!(Reader::new("<a><![CDATA[no end</a>").any(|e| e.is_err()));
+    }
+
+    #[test]
+    fn numeric_character_references_expand() {
+        assert_eq!(text_of("<a>a&#65;b</a>"), ["aAb"]);
+        assert_eq!(text_of("<a>a&#x41;b</a>"), ["aAb"]);
+        assert_eq!(text_of("<a>a&#X41;b</a>"), ["aAb"]);
+        assert_eq!(text_of("<a>&#960;</a>"), ["\u{3c0}"]);
+        // Beside a named entity, and more than one in a row.
+        assert_eq!(text_of("<a>&#65;&amp;&#66;</a>"), ["A&B"]);
+    }
+
+    /// A reference that leads nowhere is left as written, which is what this
+    /// reader does with any unrecognised entity: a stray `&` in a description
+    /// should not fail a configuration file.
+    #[test]
+    fn a_reference_that_leads_nowhere_is_left_alone() {
+        for source in ["<a>&#;</a>", "<a>&#zz;</a>", "<a>&#65</a>", "<a>&#</a>", "<a>&#x;</a>"] {
+            let text = text_of(source);
+            assert_eq!(text.len(), 1, "{source}");
+            assert!(text[0].starts_with("&#"), "{source} became {:?}", text[0]);
+        }
+        // Out of range, and the surrogate range, are not characters.
+        assert_eq!(text_of("<a>&#x110000;</a>"), ["&#x110000;"]);
+        assert_eq!(text_of("<a>&#xD800;</a>"), ["&#xD800;"]);
     }
 }

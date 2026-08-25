@@ -118,3 +118,30 @@ Arguably the caller's job, but every caller has to do it, so it may belong
 in `localized_strings`.
 
 Workaround here: `.trim()` in `collect_names` and `any_name`.
+
+## 8. WOFF is not recognised
+
+`FileRef`/`FontRef` accept SFNT (`0x00010000`, `OTTO`, `true`) and collections
+(`ttcf`). A WOFF file starts `wOFF` and holds the same tables compressed with
+zlib, one per directory entry; WOFF2 starts `wOF2` and uses Brotli with a
+transformed glyf.
+
+Consequence: a `.woff` in a font directory is skipped entirely -- this crate
+reports "not a font file" for one that `fc-query` reads in full, family,
+style, weight, charset and languages alike. Fontconfig gets it through
+FreeType, which decompresses WOFF into an SFNT in memory and queries that.
+
+Measured with a WOFF wrapper built around `Vazirmatn-NL[wght].ttf` from the
+Fedora 44 set. Two false negatives are worth recording alongside it, because
+both nearly closed the question the wrong way: a first attempt built the
+wrapper with the table directory offset by the size of the WOFF header, and
+*both* implementations rejected it; and a directory-level comparison appeared
+to show the two agreeing, because they shared a cache directory and this crate
+was reading the cache `fc-list` had just written. Querying the file directly
+is what settled it.
+
+No workaround here. WOFF1 would be a small decompressor -- zlib per table into
+a rebuilt SFNT -- but it belongs upstream, where the format sniffing already
+lives, rather than in a fontconfig port.
+
+See `docs/audit.md`, finding 14.

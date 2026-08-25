@@ -33,6 +33,7 @@ use crate::langset::LangSet;
 use crate::md5;
 use crate::object::Object;
 use crate::object::Property;
+use crate::object::ValueType;
 use crate::pattern::Pattern;
 use crate::pattern::PatternRef;
 use crate::rules::{
@@ -53,6 +54,34 @@ pub const ARCHITECTURE: &str = crate::layout::ARCHITECTURE;
 /// The configuration directory compiled into fontconfig on Unix.
 const CONFIG_DIR: &str = "/etc/fonts";
 
+/// The system cache directory, fontconfig's `FC_CACHEDIR`.
+///
+/// A build-time constant upstream. Every distribution this crate has been
+/// measured against uses this path.
+const CACHE_DIR: &str = "/var/cache/fontconfig";
+
+/// The configuration fontconfig falls back to when the real one will not load.
+///
+/// `FcInitFallbackConfig` parses this exact document from memory. It is not a
+/// simplification of the system configuration: it is what a machine whose
+/// `/etc/fonts` is missing or broken actually runs on, so a font list taken
+/// from it is the one fontconfig would produce in the same situation.
+///
+/// The paths are written out because `concat!` takes literals: `/usr/share/fonts`
+/// is `FC_DEFAULT_FONTS`, `/var/cache/fontconfig` is [`CACHE_DIR`], and
+/// `/etc/fonts/conf.d` is [`CONFIG_DIR`] with fontconfig's `CONFIGDIR` suffix.
+const FALLBACK_CONFIG: &str = concat!(
+    "<fontconfig>",
+    "<dir>/usr/share/fonts</dir>",
+    "<dir prefix=\"xdg\">fonts</dir>",
+    "<cachedir>/var/cache/fontconfig</cachedir>",
+    "<cachedir prefix=\"xdg\">fontconfig</cachedir>",
+    "<include ignore_missing=\"yes\">/etc/fonts/conf.d</include>",
+    "<include ignore_missing=\"yes\" prefix=\"xdg\">fontconfig/conf.d</include>",
+    "<include ignore_missing=\"yes\" prefix=\"xdg\">fontconfig/fonts.conf</include>",
+    "</fontconfig>",
+);
+
 /// How deep `<include>` may nest before we assume a loop.
 const MAX_INCLUDE_DEPTH: usize = 32;
 
@@ -65,6 +94,14 @@ pub enum ConfigError {
     Xml(PathBuf, XmlError),
     /// No configuration file was found at all.
     NotFound(PathBuf),
+    /// A configuration file said something fontconfig treats as fatal.
+    ///
+    /// `FcConfigMessage` at `FcSevereError` sets `parse->error`, which fails
+    /// the whole load -- the including file's too, so one bad element
+    /// anywhere discards every rule in the tree. Fontconfig then falls back
+    /// to its built-in configuration; this crate hands the error back
+    /// instead, and leaves the choice to the caller.
+    Rejected(PathBuf, String),
 }
 
 impl std::fmt::Display for ConfigError {
@@ -73,6 +110,7 @@ impl std::fmt::Display for ConfigError {
             Self::Io(path, e) => write!(f, "{}: {e}", path.display()),
             Self::Xml(path, e) => write!(f, "{}: {e}", path.display()),
             Self::NotFound(path) => write!(f, "no configuration file at {}", path.display()),
+            Self::Rejected(path, why) => write!(f, "{}: {why}", path.display()),
         }
     }
 }
@@ -96,12 +134,19 @@ pub enum ConfigWarning {
     /// configuration directory, and is reported missing only when none of
     /// them had it.
     MissingInclude(String),
+    /// The configuration named no `<cachedir>`, so the defaults were used.
+    ///
+    /// Fontconfig prints this unless `FONTCONFIG_FILE` or `FONTCONFIG_PATH`
+    /// is set, on the reasoning that a caller who pointed it at a
+    /// configuration of their own meant what they wrote.
+    NoCacheDir,
 }
 
 impl std::fmt::Display for ConfigWarning {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::MissingInclude(path) => write!(f, "cannot load config file \"{path}\""),
+            Self::NoCacheDir => f.write_str("no <cachedir> elements found; using the defaults"),
         }
     }
 }
@@ -255,12 +300,37 @@ enum SelectorValue {
 }
 
 impl SelectorValue {
+    /// Whether `object` may hold a value of this kind.
+    ///
+    /// `FcObjectValidType`, reached through [`Object::accepts`]. An
+    /// [`Unsupported`](SelectorValue::Unsupported) value is allowed through
+    /// here so that it can go on poisoning the selector, which is a stronger
+    /// answer than dropping the element.
+    fn fits(&self, object: Object) -> bool {
+        let kind = match self {
+            Self::String(_) => ValueType::String,
+            Self::Int(_) => ValueType::Int,
+            Self::Double(_) => ValueType::Double,
+            Self::Bool(_) => ValueType::Bool,
+            Self::Matrix(_) => ValueType::Matrix,
+            Self::CharSet(_) => ValueType::CharSet,
+            Self::Range(_) => ValueType::Range,
+            Self::LangSet(_) => ValueType::LangSet,
+            Self::Void | Self::Unsupported => return true,
+        };
+        object.accepts(kind)
+    }
+
     /// Parse one value element of a `<patelt>`.
     ///
     /// The property the `<patelt>` names is deliberately not consulted: see
     /// [`constant`] for why `<const>` ignores it.
+    ///
+    /// `body` is the element's text as written, spaces included. Fontconfig
+    /// parses the buffer it accumulated and nothing tidies it first, so
+    /// `<int>  200  </int>` is not an integer and `<bool>  true  </bool>` is
+    /// not a boolean.
     fn parse(kind: &str, body: &str) -> Self {
-        let body = body.trim();
         match kind {
             "string" => Self::String(body.to_string()),
             "int" => parse_int(body).map_or(Self::Unsupported, Self::Int),
@@ -304,6 +374,11 @@ impl SelectorValue {
             (Self::LangSet(want), ValueRef::LangSet(got)) => {
                 LangSet::from_languages(got).contains_set(want)
             }
+            // A plain string against a language set is `FcConfigPromote`
+            // turning it into the set naming just that language, so
+            // `<patelt name="lang"><string>ja</string></patelt>` asks the
+            // same question a `<langset>` of one entry would.
+            (Self::String(want), ValueRef::LangSet(got)) => got.contains(want),
             // A listing comparison asks the font to sit *inside* what the
             // selector names, so a scalar matches any span covering it while
             // a span matches only a span that covers all of it.
@@ -813,10 +888,59 @@ impl Config {
     /// `FONTCONFIG_FILE` names a config file outright; otherwise the file is
     /// `fonts.conf` under `FONTCONFIG_PATH`, falling back to `/etc/fonts`.
     pub fn load() -> Result<Self, ConfigError> {
-        match sysroot() {
-            Some(root) => Self::load_from_sysroot(&default_config_path(), &root),
+        let root = sysroot();
+        let loaded = match &root {
+            Some(root) => Self::load_from_sysroot(&default_config_path(), root),
             None => Self::load_from(&default_config_path()),
+        };
+        match loaded {
+            Ok(config) => Ok(config.with_default_cache_dirs()),
+            // `FcInitLoadOwnConfig` does not give up when the configuration
+            // will not load -- it runs on `FcInitFallbackConfig` instead, so
+            // a machine with a broken `/etc/fonts` still finds its fonts.
+            // Reproducing that is what makes a font list from this crate
+            // match `fc-list` in the same situation rather than being empty.
+            Err(_) => Self::fallback(root),
         }
+    }
+
+    /// The configuration fontconfig runs on when the real one will not load.
+    ///
+    /// `FcInitFallbackConfig`: a fixed document naming the default font
+    /// directories, the default cache directories, and the usual includes,
+    /// every one of them `ignore_missing`. [`Config::load`] falls back to
+    /// this on its own; this is here for a caller that wants it deliberately.
+    pub fn fallback(sysroot: Option<PathBuf>) -> Result<Self, ConfigError> {
+        let mut config = Self { sysroot, ..Self::default() };
+        let mut seen = HashSet::new();
+        // `FcConfigParseAndLoadFromMemory` passes no filename, so nothing in
+        // this document may be relative to one -- and nothing in it is.
+        config.read_source(FALLBACK_CONFIG, Path::new(CONFIG_DIR), 0, &mut seen)?;
+        Ok(config.with_default_cache_dirs())
+    }
+
+    /// Supply the default cache directories if the configuration named none.
+    ///
+    /// `FcInitLoadOwnConfig` adds `FC_CACHEDIR` and the XDG one when the
+    /// loaded configuration has an empty cache directory list, warning unless
+    /// `FONTCONFIG_FILE` or `FONTCONFIG_PATH` says the caller meant it. A
+    /// configuration with nowhere to put a cache would otherwise rescan every
+    /// directory on every run.
+    fn with_default_cache_dirs(mut self) -> Self {
+        if !self.cache_dirs.is_empty() {
+            return self;
+        }
+        let deliberate = ["FONTCONFIG_FILE", "FONTCONFIG_PATH"]
+            .iter()
+            .any(|var| std::env::var_os(var).is_some_and(|v| !v.is_empty()));
+        if !deliberate {
+            self.warnings.push(ConfigWarning::NoCacheDir);
+        }
+        self.cache_dirs.push(PathBuf::from(CACHE_DIR));
+        if let Some(xdg) = xdg_cache_home() {
+            self.cache_dirs.push(xdg.join("fontconfig"));
+        }
+        self
     }
 
     /// Load a specific configuration file, following its includes.
@@ -1135,12 +1259,27 @@ impl Config {
         let source = std::fs::read_to_string(self.host_path(path))
             .map_err(|e| ConfigError::Io(path.to_path_buf(), e))?;
         self.files.push(path.to_path_buf());
+        self.read_source(&source, path, depth, seen)
+    }
 
+    /// Parse one configuration document, wherever its text came from.
+    ///
+    /// `path` names it for diagnostics and for resolving `prefix="relative"`;
+    /// the built-in fallback passes a directory that exists so those still
+    /// resolve, since `FcConfigParseAndLoadFromMemory` gives it no filename
+    /// at all.
+    fn read_source(
+        &mut self,
+        source: &str,
+        path: &Path,
+        depth: usize,
+        seen: &mut HashSet<PathBuf>,
+    ) -> Result<(), ConfigError> {
         // A frame per open element, so nested constructs like
         // <selectfont><rejectfont><pattern><patelt> can be assembled as their
         // tags close. Text arrives in pieces and is collected per frame.
         let mut stack: Vec<Frame> = Vec::new();
-        for event in Reader::new(&source) {
+        for event in Reader::new(source) {
             let event = event.map_err(|e| ConfigError::Xml(path.to_path_buf(), e))?;
             match event {
                 Event::Start { name, attrs } => {
@@ -1184,7 +1323,18 @@ impl Config {
         depth: usize,
         seen: &mut HashSet<PathBuf>,
     ) -> Result<(), ConfigError> {
-        let body = frame.text.trim();
+        // Not trimmed. Fontconfig hands each parse function the element's
+        // character-data buffer exactly as it accumulated, so `<dir>` with a
+        // newline and an indent in it names a directory that does not exist,
+        // `<bool>  true  </bool>` is not a boolean at all, and `<const>  bold
+        // </const>` resolves to nothing. Trimming here made this crate accept
+        // configurations fontconfig rejects, which is a difference in which
+        // fonts exist rather than a kindness.
+        //
+        // Runs that are *entirely* whitespace never arrive: the reader drops
+        // them, which is what keeps indentation out of every enclosing
+        // element's text. See the note in `xml`.
+        let body = frame.text.as_str();
         match frame.name.as_str() {
             // `FcParseResetDirs` calls `FcConfigResetFontDirs`, which empties
             // the font directory list and nothing else -- cache directories
@@ -1270,6 +1420,20 @@ impl Config {
                         return Ok(());
                     }
                     match frame.object.as_deref().and_then(Object::from_name) {
+                        // `FcPatternAdd` refuses a value the property cannot
+                        // hold, and `FcParsePatelt` reports that refusal at
+                        // `FcSevereError` -- which fails the entire
+                        // configuration, not just this selector. Measured:
+                        // with a `<dir>` naming one font, a config carrying
+                        // `<patelt name="family"><int>1</int></patelt>` makes
+                        // `fc-list` report the whole system's fonts, because
+                        // it fell back to the default configuration.
+                        Some(object) if !values.iter().all(|v| v.fits(object)) => {
+                            return Err(ConfigError::Rejected(
+                                path.to_path_buf(),
+                                format!("property {} does not accept that value", object.name()),
+                            ));
+                        }
                         Some(object) => parent.elements.push((object, values)),
                         // A property name fontconfig assigns at runtime cannot
                         // be resolved here, so the selector must not narrow to

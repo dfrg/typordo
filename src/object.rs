@@ -325,6 +325,28 @@ impl Object {
         }
     }
 
+    /// Whether a value of this kind may be stored against this property.
+    ///
+    /// `FcObjectValidType`. Fontconfig refuses the add and warns, so a
+    /// `<edit name="family"><int>1</int></edit>` has no effect at all -- and
+    /// a `<patelt>` holding one contributes nothing to its selector.
+    ///
+    /// The rule is not simply "the declared type": a number goes into either
+    /// numeric property and into a range, and a string goes into a language
+    /// set, because those are the conversions matching performs anyway.
+    pub fn accepts(self, kind: ValueType) -> bool {
+        match self.value_type() {
+            ValueType::Int | ValueType::Double => {
+                matches!(kind, ValueType::Int | ValueType::Double)
+            }
+            ValueType::LangSet => matches!(kind, ValueType::LangSet | ValueType::String),
+            ValueType::Range => {
+                matches!(kind, ValueType::Range | ValueType::Int | ValueType::Double)
+            }
+            declared => kind == declared,
+        }
+    }
+
     /// The object with this fontconfig property name.
     pub fn from_name(name: &str) -> Option<Self> {
         (1..=Self::MAX).filter_map(Self::from_id).find(|o| o.name() == name)

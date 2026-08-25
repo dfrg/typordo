@@ -296,6 +296,53 @@ for spell in bold Bold BOLD nosuchconst; do
   check "const-$spell.conf"
 done
 
+# Character data reaches each parse function exactly as it accumulated:
+# fontconfig does not trim it. So a padded <int> is not an integer, a padded
+# <bool> is not a boolean, and a padded <const> resolves to nothing -- each
+# failing in its own way, which is what makes them worth comparing separately.
+write_conf padded-int.conf '    <rejectfont>
+      <pattern>
+        <patelt name="weight"><int>  200  </int></patelt>
+      </pattern>
+    </rejectfont>'
+check padded-int.conf
+
+write_conf padded-bool.conf '    <rejectfont>
+      <pattern>
+        <patelt name="scalable"><bool>  true  </bool></patelt>
+      </pattern>
+    </rejectfont>'
+check padded-bool.conf
+
+write_conf padded-const.conf '    <rejectfont>
+      <pattern>
+        <patelt name="weight"><const>  bold  </const></patelt>
+      </pattern>
+    </rejectfont>'
+check padded-const.conf
+
+# CDATA is text, and numeric character references expand -- in both spellings.
+write_conf cdata.conf '    <rejectfont>
+      <pattern>
+        <patelt name="family"><string><![CDATA[DejaVu Sans]]></string></patelt>
+      </pattern>
+    </rejectfont>'
+check cdata.conf
+
+write_conf charref-decimal.conf '    <rejectfont>
+      <pattern>
+        <patelt name="family"><string>DejaVu&#32;Sans</string></patelt>
+      </pattern>
+    </rejectfont>'
+check charref-decimal.conf
+
+write_conf charref-hex.conf '    <rejectfont>
+      <pattern>
+        <patelt name="family"><string>DejaVu&#x20;Sans</string></patelt>
+      </pattern>
+    </rejectfont>'
+check charref-hex.conf
+
 if [ "$FAILURES" -gt 0 ]; then
   echo
   echo "FAILED: $FAILURES difference(s) -- see above"
