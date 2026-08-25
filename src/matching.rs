@@ -316,7 +316,12 @@ fn compare_size(a: &ValueRef<'_>, b: &ValueRef<'_>) -> Option<f64> {
 
 fn compare_bool(a: &ValueRef<'_>, b: &ValueRef<'_>) -> Option<f64> {
     match (a, b) {
-        (ValueRef::Bool(a), ValueRef::Bool(b)) => Some(f64::from(a != b)),
+        // `(v2->u.b ^ v1->u.b) == 1`, which is not `a != b`: exclusive-or on
+        // the integers means `DontCare` -- 2 -- differs from both states by
+        // more than one bit and so scores as a match against either. That is
+        // what makes it mean "either answer will do" rather than "a third
+        // answer nothing has".
+        (ValueRef::Bool(a), ValueRef::Bool(b)) => Some(f64::from((a.as_i32() ^ b.as_i32()) == 1)),
         _ => None,
     }
 }
@@ -1067,5 +1072,34 @@ mod family_tests {
         assert_eq!(names, ["Alpha", "Beta"]);
         assert_eq!(families.find("Alpha").map(|f| f.strong), Some(0.0));
         assert_eq!(families.find("Beta").map(|f| f.strong), Some(1.0));
+    }
+}
+
+#[cfg(test)]
+mod bool_score_tests {
+    use super::compare_bool;
+    use crate::value::{Tristate, ValueRef};
+
+    fn score(font: Tristate, query: Tristate) -> Option<f64> {
+        compare_bool(&ValueRef::Bool(font), &ValueRef::Bool(query))
+    }
+
+    /// `FcCompareBool` is `(v2->u.b ^ v1->u.b) == 1`, and the exclusive-or is
+    /// load-bearing. `a != b` would score `DontCare` against `true` as a
+    /// mismatch; the xor makes it 3, not 1, so it matches. That is what
+    /// "either answer will do" is made of.
+    #[test]
+    fn dontcare_matches_whichever_way_the_font_answers() {
+        use Tristate::{DontCare, False, True};
+        assert_eq!(score(True, True), Some(0.0));
+        assert_eq!(score(False, False), Some(0.0));
+        assert_eq!(score(True, False), Some(1.0));
+        assert_eq!(score(False, True), Some(1.0));
+
+        assert_eq!(score(True, DontCare), Some(0.0), "a query that does not care");
+        assert_eq!(score(False, DontCare), Some(0.0));
+        assert_eq!(score(DontCare, True), Some(0.0), "a font that does not say");
+        assert_eq!(score(DontCare, False), Some(0.0));
+        assert_eq!(score(DontCare, DontCare), Some(0.0));
     }
 }

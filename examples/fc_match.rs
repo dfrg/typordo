@@ -12,8 +12,8 @@
 use std::path::PathBuf;
 
 use typordo::{
-    render_prepare, CachePolicy, Config, LangSet, Object, Pattern, PatternRef, Range, Score, Value,
-    ValueType,
+    render_prepare, CachePolicy, Config, LangSet, Object, Pattern, PatternRef, Range, Score,
+    Tristate, Value, ValueType,
 };
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -180,7 +180,8 @@ fn show(pattern: &Pattern, field: Object) -> String {
             Value::String(s) => s.clone(),
             Value::Int(i) => i.to_string(),
             Value::Double(d) => format_g(*d),
-            Value::Bool(b) => if *b { "True" } else { "False" }.to_string(),
+            // `Tristate` prints the spellings fontconfig prints.
+            Value::Bool(b) => b.to_string(),
             Value::Range(r) => format!("[{} {}]", format_g(r.begin), format_g(r.end)),
             Value::Matrix(m) => {
                 format!("[{} {}; {} {}]", m.xx, m.xy, m.yx, m.yy)
@@ -273,7 +274,8 @@ fn add_typed(query: &mut Pattern, object: Object, value: &str) {
     let value = value.trim();
     match object.value_type() {
         ValueType::Bool => {
-            query.add(object, parse_bool(value).unwrap_or(false));
+            // `FcNameBool`, so `True`, `yes`, `on`, `1` and `dontcare` all work.
+            query.add(object, Tristate::parse(value).unwrap_or(Tristate::False));
         }
         // A number that will not parse is left as text. `FcNameConvert`
         // would look it up as a constant -- `slant=italic` is 100 -- but that
@@ -314,23 +316,6 @@ fn add_typed(query: &mut Pattern, object: Object, value: &str) {
         ValueType::String | ValueType::CharSet | ValueType::Matrix => {
             query.add(object, value);
         }
-    }
-}
-
-/// `FcNameBool`: the first letter decides, so `True`, `yes`, `on` and `1` are
-/// all true. Fontconfig also accepts `d`, `x`, `2` and `or` for its
-/// three-valued `FcDontCare`, which this crate's booleans cannot hold.
-fn parse_bool(value: &str) -> Option<bool> {
-    let mut chars = value.chars().map(|c| c.to_ascii_lowercase());
-    match chars.next()? {
-        't' | 'y' | '1' => Some(true),
-        'f' | 'n' | '0' => Some(false),
-        'o' => match chars.next()? {
-            'n' => Some(true),
-            'f' => Some(false),
-            _ => None,
-        },
-        _ => None,
     }
 }
 

@@ -86,7 +86,8 @@ fn show(pattern: &Pattern, field: Option<Object>) -> String {
             Value::String(s) => s.clone(),
             Value::Int(i) => i.to_string(),
             Value::Double(d) => format_g(*d),
-            Value::Bool(b) => if *b { "True" } else { "False" }.to_string(),
+            // `Tristate` prints the spellings fontconfig prints.
+            Value::Bool(b) => b.to_string(),
             Value::Range(r) => format!("[{} {}]", format_g(r.begin), format_g(r.end)),
             Value::Matrix(m) => format!("[{} {}; {} {}]", m.xx, m.xy, m.yx, m.yy),
             Value::CharSet(c) => typordo::AnyCharSet::Owned(c).to_string(),

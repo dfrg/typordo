@@ -154,5 +154,5 @@ pub use prepare::render_prepare;
 pub use rules::MatchKind;
 #[cfg(feature = "scan")]
 pub use scan::{scan_bytes, scan_file, ScanError};
-pub use value::{Binding, Matrix, Range, Value, ValueRef};
+pub use value::{Binding, Matrix, Range, Tristate, Value, ValueRef};
 pub use write::CacheWriter;

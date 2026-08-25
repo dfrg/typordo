@@ -5,7 +5,7 @@
 
 use std::path::{Path, PathBuf};
 
-use typordo::{Cache, Object, Pattern, Value};
+use typordo::{Cache, Object, Pattern, Tristate, Value};
 
 fn fixture_font() -> Option<PathBuf> {
     // The font itself is not vendored -- only the cache fontconfig built from
@@ -89,7 +89,7 @@ fn the_variable_pattern_carries_ranges_and_the_others_do_not() {
 
     let variable = scanned
         .iter()
-        .find(|p| p.value(Object::Variable) == Some(&Value::Bool(true)))
+        .find(|p| p.value(Object::Variable) == Some(&Value::Bool(Tristate::True)))
         .expect("one variable pattern");
     assert!(
         matches!(variable.value(Object::Weight), Some(Value::Range(_))),
@@ -98,7 +98,7 @@ fn the_variable_pattern_carries_ranges_and_the_others_do_not() {
     // A named instance pins a value instead.
     let instance = scanned
         .iter()
-        .find(|p| p.value(Object::NamedInstance) == Some(&Value::Bool(true)))
+        .find(|p| p.value(Object::NamedInstance) == Some(&Value::Bool(Tristate::True)))
         .expect("a named instance");
     assert!(matches!(instance.value(Object::Weight), Some(Value::Double(_))));
 }
@@ -118,8 +118,8 @@ fn an_empty_glyf_table_is_not_an_outline_font() {
     }
     let scanned = typordo::scan_file(&path).expect("scan");
     let font = &scanned[0];
-    assert_eq!(font.value(Object::Outline), Some(&Value::Bool(false)));
-    assert_eq!(font.value(Object::Scalable), Some(&Value::Bool(false)));
+    assert_eq!(font.value(Object::Outline), Some(&Value::Bool(Tristate::False)));
+    assert_eq!(font.value(Object::Scalable), Some(&Value::Bool(Tristate::False)));
 }
 
 // --- coverage -------------------------------------------------------------

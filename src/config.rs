@@ -39,7 +39,7 @@ use crate::rules::{
     BinaryOp, Compare, Edit, EditMode, Expr, MatchKind, Qual, Rule, Step, Test, UnaryOp,
 };
 use crate::value::Value;
-use crate::value::{Binding, Matrix, Range, ValueRef};
+use crate::value::{Binding, Matrix, Range, Tristate, ValueRef};
 use crate::xml::{Event, Reader, XmlError};
 
 /// The architecture tag fontconfig builds into a cache file name.
@@ -272,7 +272,7 @@ enum SelectorValue {
     String(String),
     Int(i32),
     Double(f64),
-    Bool(bool),
+    Bool(Tristate),
     Matrix(Matrix),
     /// Codepoints, from `<charset>`.
     CharSet(Vec<char>),
@@ -342,7 +342,7 @@ impl SelectorValue {
             // `<bool>bogus</bool>` selects the non-scalable fonts rather than
             // selecting nothing -- poisoning the selector here would leave
             // more fonts in the list than fontconfig leaves.
-            "bool" => Self::Bool(name_bool(body).unwrap_or(false)),
+            "bool" => Self::Bool(Tristate::parse(body).unwrap_or(Tristate::False)),
             // A name the table does not hold is `FcTypeVoid`, and `FcPopValue`
             // returning Void makes `FcParsePatelt` stop taking values -- so
             // the element contributes nothing at all rather than contributing
@@ -361,10 +361,14 @@ impl SelectorValue {
             (Self::String(want), ValueRef::String(got)) => casefold::eq_ignoring_blanks(want, got),
             (Self::Int(want), ValueRef::Int(got)) => want == got,
             (Self::Int(want), ValueRef::Double(got)) => f64::from(*want) == *got,
-            (Self::Int(want), ValueRef::Bool(got)) => (*want != 0) == *got,
+            (Self::Int(want), ValueRef::Bool(got)) => Tristate::from(*want != 0) == *got,
             (Self::Double(want), ValueRef::Double(got)) => want == got,
             (Self::Double(want), ValueRef::Int(got)) => *want == f64::from(*got),
-            (Self::Bool(want), ValueRef::Bool(got)) => want == got,
+            // `FcOpListing` on a boolean is `l == r || l >= FcDontCare`, so
+            // a font whose flag is `DontCare` answers a selector asking for
+            // either state. Nothing that scans a font produces one, but a
+            // `target="scan"` rule can put one in a cache.
+            (Self::Bool(want), ValueRef::Bool(got)) => want == got || *got == Tristate::DontCare,
             (Self::Matrix(want), ValueRef::Matrix(got)) => want == got,
             (Self::CharSet(want), ValueRef::CharSet(got)) => want.iter().all(|c| got.contains(*c)),
             // The font has to answer everything the selector asks for, and a
@@ -761,30 +765,6 @@ fn constant(name: &str) -> Option<i32> {
         .iter()
         .find(|(constant, _)| constant.eq_ignore_ascii_case(name))
         .map(|(_, value)| *value)
-}
-
-/// Read a boolean the way `FcNameBool` does.
-///
-/// The first letter decides, so `true`, `True`, `yes`, `on` and `1` all mean
-/// true, and `false`, `no`, `off` and `0` all mean false. `None` for anything
-/// it does not recognise, which fontconfig warns about and then treats as
-/// false.
-///
-/// Fontconfig also accepts `d`, `x`, `2` and `or` for the third state of its
-/// three-valued `FcBool`; this crate's booleans have two, so those read as
-/// unrecognised rather than being silently flattened to one side.
-fn name_bool(value: &str) -> Option<bool> {
-    let mut chars = value.chars().map(|c| c.to_ascii_lowercase());
-    match chars.next()? {
-        't' | 'y' | '1' => Some(true),
-        'f' | 'n' | '0' => Some(false),
-        'o' => match chars.next()? {
-            'n' => Some(true),
-            'f' => Some(false),
-            _ => None,
-        },
-        _ => None,
-    }
 }
 
 /// Parse an integer the way `FcParseInt` does, with `strtol` base 0.
@@ -1356,10 +1336,11 @@ impl Config {
                     body,
                     salt,
                     as_path,
+                    // Read as C reads it: `FcDontCare` is 2, which is true.
                     ignore_missing: frame
                         .attr("ignore_missing")
-                        .and_then(name_bool)
-                        .unwrap_or(false),
+                        .and_then(Tristate::parse)
+                        .is_some_and(|flag| flag.as_i32() != 0),
                     from: path,
                     depth,
                     seen,
@@ -1475,7 +1456,10 @@ impl Config {
                     // `FcNameBool` again, and an unreadable value leaves
                     // blanks significant -- fontconfig warns and keeps the
                     // false it started with.
-                    ignore_blanks: frame.attr("ignore-blanks").and_then(name_bool).unwrap_or(false),
+                    ignore_blanks: frame
+                        .attr("ignore-blanks")
+                        .and_then(Tristate::parse)
+                        .is_some_and(|f| f.as_i32() != 0),
                     expr: frame.expr(),
                 };
                 if let Some(parent) = stack.last_mut() {

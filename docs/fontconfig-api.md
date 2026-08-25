@@ -42,6 +42,16 @@ result and documents it; it just cannot express it in the type.
 `Pattern::from_pattern` copies one into the other when a borrowed font needs to
 outlive its cache.
 
+**`FcBool` has three states, and so does `Tristate`.** It is easy to read
+`FcBool` as C's usual int-shaped boolean and lose the third one. `FcDontCare`
+means "either answer will do", and two things depend on it: `FcCompareBool`
+scores it as a match whichever way the font answers, and the ordering
+operators in `FcConfigCompareValue` are questions about it rather than
+orderings -- `less` asks whether the two differ and the right side is
+`FcDontCare`. A configuration writes it `<bool>dontcare</bool>`.
+
+`Pattern::add` still takes a plain `bool`, so the common case reads the same.
+
 ## Starting up
 
 | fontconfig | here |
@@ -72,6 +82,7 @@ ask; `Config::caches(CachePolicy::read_only())` never scans or writes.
 | `FcPatternDestroy` | drop |
 | `FcPatternDuplicate` | `Pattern::clone()` |
 | `FcPatternAddInteger` / `Double` / `String` / `Bool` / `Matrix` / `Range` / `CharSetRef` / `LangSetRef` | `Pattern::add(Object, value)` |
+| `FcBool` (`FcTrue` / `FcFalse` / `FcDontCare`) | `Tristate` — `add` also takes a plain `bool` |
 | `FcPatternAddWeak` | `Pattern::add_weak` |
 | `FcPatternAdd` with a binding | `Pattern::add_with_binding` |
 | `FcPatternDel` | `Pattern::remove` |

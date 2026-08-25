@@ -125,6 +125,29 @@ run_case "$(t scalable less_eq '<bool>false</bool>')" ':scalable=True' "true les
 run_case "$(t scalable less '<bool>false</bool>')"    ':scalable=True' "true less false"
 run_case "$(t scalable eq '<bool>true</bool>')"       ':scalable=True' "true eq true"
 
+echo "=== the third state of a boolean (FcDontCare)"
+# `FcNameBool` spells it `dontcare`, `d`, `x`, `2` or `or`, and the ordering
+# operators exist to ask about it: `less` is "they differ and the right side
+# is DontCare", which is the only reading under which `less` on a flag means
+# anything at all.
+b() { echo "<bool>$1</bool>"; }
+run_case "$(t scalable eq "$(b dontcare)")"       ':scalable=dontcare' "dontcare eq dontcare"
+run_case "$(t scalable eq "$(b true)")"           ':scalable=dontcare' "dontcare eq true"
+run_case "$(t scalable not_eq "$(b true)")"       ':scalable=dontcare' "dontcare not_eq true"
+run_case "$(t scalable contains "$(b true)")"     ':scalable=dontcare' "dontcare contains true"
+run_case "$(t scalable contains "$(b true)")"     ':scalable=false'    "false contains true"
+run_case "$(t scalable not_contains "$(b true)")" ':scalable=dontcare' "dontcare not_contains true"
+run_case "$(t scalable less "$(b dontcare)")"     ':scalable=true'     "true less dontcare"
+run_case "$(t scalable less "$(b dontcare)")"     ':scalable=dontcare' "dontcare less dontcare"
+run_case "$(t scalable less_eq "$(b dontcare)")"  ':scalable=true'     "true less_eq dontcare"
+run_case "$(t scalable more "$(b true)")"         ':scalable=dontcare' "dontcare more true"
+run_case "$(t scalable more "$(b true)")"         ':scalable=false'    "false more true"
+run_case "$(t scalable more_eq "$(b true)")"      ':scalable=dontcare' "dontcare more_eq true"
+# The spellings, every one fontconfig accepts.
+for spell in dontcare d x 2 or DontCare; do
+  run_case "$(t scalable eq "$(b "$spell")")" ':scalable=dontcare' "spelling <bool>$spell</bool>"
+done
+
 echo "=== types that cannot be brought together"
 run_case "$(t family not_eq '<int>1</int>')"       ':family=Foo' "'Foo' not_eq 1"
 run_case "$(t family eq '<int>1</int>')"           ':family=Foo' "'Foo' eq 1"

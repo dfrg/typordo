@@ -12,10 +12,9 @@ checked, and where the fix is. It is kept because a finding marked "fixed" is
 worth no more than the evidence behind it, and because the ones left open are
 decisions somebody will want to revisit.
 
-Where it stands: **22 fixed**, one examined and already correct, two version
-drift rather than gaps, and **four open** — three of which want a decision
-about this crate's public shape rather than about fontconfig, and one of which
-is blocked on `read-fonts`. Nineteen of the twenty-two were confirmed against
+Where it stands: **24 fixed**, one examined and already correct, two version
+drift rather than gaps, and **two open** — one blocked on `read-fonts`, one
+an API question nobody has needed answered yet. Twenty-one of the twenty-four were confirmed against
 running fontconfig rather than against a reading of its source; the other
 three are cache-handling paths with no command that provokes them, and carry
 tests that fail when the fix is removed.
@@ -78,6 +77,7 @@ corpus does not contain.
 | 2 | No startup fallback when the configuration will not load | DIFF->MATCH against `fc-list` | `8b05eca` |
 | 22 | Language comparison ignored country sets and extra strings | Tests fail on old behaviour | `a6543f9` |
 | 21 | Cache rebuilds took no inter-process lock | Tests fail on old behaviour | `18045e2` |
+| 13 | Tri-state boolean collapsed to two | 18 cases against `fc-pattern -c` | *this commit* |
 
 **9.1 — `ignore-blanks`.** `FcConfigCompareValue` uses
 `FcStrCmpIgnoreBlanksAndCase` only when `FcOpFlagIgnoreBlanks` is set and
@@ -462,6 +462,34 @@ machines sharing a filesystem keep their clocks close enough.
 It is released on drop, error paths included, which is the difference between
 a failed rebuild and a directory nothing can rebuild for the next ten minutes.
 
+**13 - the third state of a boolean.** Set aside once as needing a decision
+about a public type, and the decision was yes. `Value::Bool` now holds a
+`Tristate` -- `FcBool`, with `False`, `True` and `DontCare`.
+
+`FcDontCare` is not padding, and the audit was right that collapsing it loses
+real behaviour. Two things depend on it. `FcCompareBool` is
+`(v2->u.b ^ v1->u.b) == 1`, and the exclusive-or is load-bearing: `a != b`
+would score `DontCare` against `true` as a mismatch, while the xor makes it 3
+rather than 1, so it matches. And the four ordering operators in
+`FcConfigCompareValue` are not orderings at all -- `less` is "they differ and
+the right side is `DontCare`", which is the only reading under which `less` on
+a flag means anything.
+
+The estimate that it was unreachable held up: no configuration file shipped on
+the test system writes it. That is a reason it went unnoticed, not a reason it
+was not wrong.
+
+Implementing it surfaced the duplication that had been noted and left alone.
+`FcNameBool` reads both `<bool>` in a configuration and `:scalable=True` in a
+name, and this crate had two copies -- one in the config parser and one in the
+example's query parser. Only the first learned the third state, so a query
+written `:scalable=dontcare` arrived as `false` and every comparison against
+it was wrong for a reason that had nothing to do with the comparison. There is
+one `Tristate::parse` now.
+
+Eighteen cases in `compare_parity` cover the operators and every spelling
+fontconfig accepts, and all eighteen agree.
+
 ### What the fixes broke, and how it showed
 
 Two of the fixes broke something. Neither was caught by a harness, and they
@@ -533,7 +561,6 @@ What is left, and why each is still open rather than fixed.
 
 | # | Finding | Why it is still here |
 | --- | --- | --- |
-| 13 | Tri-state boolean collapsed | Real, unreachable on any config measured; the fix changes a public type |
 | 14 | WOFF and standalone CFF not scanned | Real and confirmed by measurement; blocked on `read-fonts` |
 | 25 | Application-font preference not representable | API design |
 
@@ -573,16 +600,19 @@ The gap itself stands where it was: `read-fonts` recognises SFNT and
 collections, and a WOFF is neither until something decompresses it. Written up
 with the measurement as gap 8 in `docs/fontations-gaps.md`.
 
-**25** is unexamined beyond the report, and wants an answer about public shape
+**25** is unexamined beyond the report. It wants an answer about public shape
 rather than about fontconfig.
 
 ### On predicting which findings will survive
 
-Three were expected to end as arguments. **20** did not -- it was a decision
-this crate had written down and defended, and it did not hold up. **21** did
-not either; `FcAtomicLock` simply spells out what to do. **14** did not, and
-the reasoning behind the prediction turned out never to have been tested at
-all.
+Five were expected to end as arguments or as questions rather than fixes.
+**20** was a decision this crate had written down and defended, and it did not
+hold up. **21** turned out to be spelled out in `FcAtomicLock`. **14** was
+predicted on reasoning that had never been tested, and the test went the other
+way. **17** looked like it needed a decision about what `Caches` yields, and
+stopped needing one as soon as the question changed from "how do I rewrite a
+path" to "how do I rewrite a cache". **13** genuinely did need a decision, and
+the answer was yes.
 
-That is nought for three. Reading a finding is cheap and guessing at it is
-worth nothing.
+That is one for five, and the one is the case where the answer was simply to
+ask. Reading a finding is cheap and guessing at it is worth nothing.

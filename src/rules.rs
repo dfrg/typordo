@@ -16,7 +16,7 @@ use crate::object::Object;
 use crate::object::Property;
 use crate::pattern::Pattern;
 use crate::value::Value;
-use crate::value::{Binding, Matrix, Range};
+use crate::value::{Binding, Matrix, Range, Tristate};
 
 /// Which pattern a rule set applies to.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -737,9 +737,15 @@ impl Expr {
     }
 }
 
+/// A flag read the way `FcConfigEvaluate` reads one: as the integer it is.
+///
+/// The logical operators and `<if>` treat it as C does, so `FcDontCare` -- 2
+/// -- is true to `<or>` and `<and>`, and `<not>` of it is false. That falls
+/// out of `!2 == 0` upstream rather than being a decision, but it is a
+/// decision here, so it is written down.
 fn as_bool(value: &Value) -> Option<bool> {
     match value {
-        Value::Bool(b) => Some(*b),
+        Value::Bool(b) => Some(b.as_i32() != 0),
         _ => None,
     }
 }
@@ -767,7 +773,7 @@ fn number_result(value: f64, integral: bool) -> Value {
 
 fn apply_unary(op: UnaryOp, value: &Value) -> Option<Value> {
     Some(match op {
-        UnaryOp::Not => Value::Bool(!as_bool(value)?),
+        UnaryOp::Not => Value::Bool((!as_bool(value)?).into()),
         UnaryOp::Floor => Value::Int(as_number(value)?.floor() as i32),
         UnaryOp::Ceil => Value::Int(as_number(value)?.ceil() as i32),
         UnaryOp::Round => Value::Int(as_number(value)?.round() as i32),
@@ -778,16 +784,18 @@ fn apply_unary(op: UnaryOp, value: &Value) -> Option<Value> {
 fn apply_binary(op: BinaryOp, a: &Value, b: &Value) -> Option<Value> {
     use BinaryOp as B;
     Some(match op {
-        B::Or => Value::Bool(as_bool(a)? || as_bool(b)?),
-        B::And => Value::Bool(as_bool(a)? && as_bool(b)?),
-        B::Eq => Value::Bool(compare(a, Compare::Eq, b, Blanks::Significant)),
-        B::NotEq => Value::Bool(compare(a, Compare::NotEq, b, Blanks::Significant)),
-        B::Less => Value::Bool(compare(a, Compare::Less, b, Blanks::Significant)),
-        B::LessEq => Value::Bool(compare(a, Compare::LessEq, b, Blanks::Significant)),
-        B::More => Value::Bool(compare(a, Compare::More, b, Blanks::Significant)),
-        B::MoreEq => Value::Bool(compare(a, Compare::MoreEq, b, Blanks::Significant)),
-        B::Contains => Value::Bool(compare(a, Compare::Contains, b, Blanks::Significant)),
-        B::NotContains => Value::Bool(compare(a, Compare::NotContains, b, Blanks::Significant)),
+        B::Or => Value::Bool((as_bool(a)? || as_bool(b)?).into()),
+        B::And => Value::Bool((as_bool(a)? && as_bool(b)?).into()),
+        B::Eq => Value::Bool(compare(a, Compare::Eq, b, Blanks::Significant).into()),
+        B::NotEq => Value::Bool(compare(a, Compare::NotEq, b, Blanks::Significant).into()),
+        B::Less => Value::Bool(compare(a, Compare::Less, b, Blanks::Significant).into()),
+        B::LessEq => Value::Bool(compare(a, Compare::LessEq, b, Blanks::Significant).into()),
+        B::More => Value::Bool(compare(a, Compare::More, b, Blanks::Significant).into()),
+        B::MoreEq => Value::Bool(compare(a, Compare::MoreEq, b, Blanks::Significant).into()),
+        B::Contains => Value::Bool(compare(a, Compare::Contains, b, Blanks::Significant).into()),
+        B::NotContains => {
+            Value::Bool(compare(a, Compare::NotContains, b, Blanks::Significant).into())
+        }
         // Plus concatenates strings, unions sets, and adds everything else.
         B::Plus => match (a, b) {
             (Value::String(a), Value::String(b)) => Value::String(format!("{a}{b}")),
@@ -886,16 +894,23 @@ fn compare_alike(got: &Value, op: Compare, want: &Value, blanks: Blanks) -> Opti
             Compare::NotContains => !contains_folded(got, want),
             _ => false,
         },
-        (V::Bool(got), V::Bool(want)) => match op {
-            Compare::Eq | Compare::Contains => got == want,
-            Compare::NotEq | Compare::NotContains => got != want,
-            // Fontconfig's booleans are three-valued, and these four ops
-            // exist to ask about the third. With two values the comparisons
-            // it makes collapse to equality and to nothing; see docs/audit.md
-            // on the missing `FcDontCare`.
-            Compare::LessEq | Compare::MoreEq => got == want,
-            Compare::Less | Compare::More => false,
-        },
+        // The eight arms `FcConfigCompareValue` gives a boolean. The four
+        // ordering operators are not orderings at all: they are questions
+        // about which side is `DontCare`, which is the only reading under
+        // which `less` on a flag means anything.
+        (V::Bool(got), V::Bool(want)) => {
+            let (any_got, any_want) = (*got == Tristate::DontCare, *want == Tristate::DontCare);
+            match op {
+                Compare::Eq => got == want,
+                Compare::NotEq => got != want,
+                Compare::Contains => got == want || any_got,
+                Compare::NotContains => !(got == want || any_got),
+                Compare::Less => got != want && any_want,
+                Compare::LessEq => got == want || any_want,
+                Compare::More => got != want && any_got,
+                Compare::MoreEq => got == want || any_got,
+            }
+        }
         (V::Matrix(got), V::Matrix(want)) => match op {
             Compare::Eq | Compare::Contains => matrix_eq(got, want),
             Compare::NotEq | Compare::NotContains => !matrix_eq(got, want),

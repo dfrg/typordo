@@ -5,7 +5,7 @@
 //! Extra Bold 205). That is enough to exercise family matching, ranges,
 //! priority order and tie-breaking without a font system present.
 
-use typordo::{Cache, Object, Pattern, Priority, Score, Value};
+use typordo::{Cache, Object, Pattern, Priority, Score, Tristate, Value};
 
 fn cantarell() -> Cache {
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -174,7 +174,7 @@ fn a_range_contains_rather_than_approximates() {
     let variable = cache
         .fonts()
         .unwrap()
-        .find(|f| f.value(Object::Variable) == Some(typordo::ValueRef::Bool(true)))
+        .find(|f| f.value(Object::Variable) == Some(typordo::ValueRef::Bool(Tristate::True)))
         .expect("the fixture has a variable pattern");
 
     let inside = query(|q| {
@@ -292,7 +292,7 @@ fn preparing_pins_a_variable_axis() {
     let variable = cache
         .fonts()
         .unwrap()
-        .find(|f| f.value(Object::Variable) == Some(typordo::ValueRef::Bool(true)))
+        .find(|f| f.value(Object::Variable) == Some(typordo::ValueRef::Bool(Tristate::True)))
         .expect("a variable pattern");
 
     let q = query(|q| {
@@ -318,7 +318,7 @@ fn a_request_outside_the_axis_clamps_to_it() {
     let variable = cache
         .fonts()
         .unwrap()
-        .find(|f| f.value(Object::Variable) == Some(typordo::ValueRef::Bool(true)))
+        .find(|f| f.value(Object::Variable) == Some(typordo::ValueRef::Bool(Tristate::True)))
         .unwrap();
     let q = query(|q| {
         q.add(Object::Family, "Cantarell");

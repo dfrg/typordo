@@ -9,6 +9,108 @@ use crate::error::{Error, Result};
 use crate::langset::{AnyLangSet, LangSet, LangSetRef};
 use crate::object::ValueType;
 
+/// A boolean with a third state, fontconfig's `FcBool`.
+///
+/// `FcDontCare` is not padding. It means "either answer will do", and it
+/// changes two things that a two-valued flag cannot express:
+/// `FcCompareBool` scores it as a match whichever way the font answers *and*
+/// keeps the font's value rather than imposing the pattern's, and
+/// `FcConfigCompareValue` reads the ordering operators as questions about it
+/// -- `less` asks whether the right side is `DontCare` and the two differ.
+///
+/// A configuration writes it as `<bool>dontcare</bool>`; `FcNameBool` also
+/// accepts `d`, `x`, `2` and `or`. Nothing that scans a font produces one, so
+/// it reaches a pattern only from a configuration or a caller.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+#[repr(i32)]
+pub enum Tristate {
+    /// No.
+    #[default]
+    False = 0,
+    /// Yes.
+    True = 1,
+    /// Either.
+    DontCare = 2,
+}
+
+impl Tristate {
+    /// The value as fontconfig stores it: 0, 1 or 2.
+    pub fn as_i32(self) -> i32 {
+        self as i32
+    }
+
+    /// Read one back, the way a cache holds it.
+    ///
+    /// Fontconfig stores an `FcBool` in the value union as an integer and
+    /// never writes anything but 0, 1 or 2. Anything else is read as
+    /// `DontCare`, which is the state that claims the least.
+    pub fn from_i32(value: i32) -> Self {
+        match value {
+            0 => Self::False,
+            1 => Self::True,
+            _ => Self::DontCare,
+        }
+    }
+
+    /// Read one the way `FcNameBool` does.
+    ///
+    /// The first letter decides: `true`, `True`, `yes`, `on` and `1` are
+    /// true; `false`, `no`, `off` and `0` are false; `dontcare`, `x`, `2` and
+    /// `or` are [`DontCare`](Tristate::DontCare). `None` for anything else,
+    /// which fontconfig warns about and then treats as false.
+    ///
+    /// This is what reads `<bool>` in a configuration and `:scalable=True` in
+    /// a name, so the two cannot disagree about a spelling.
+    pub fn parse(value: &str) -> Option<Self> {
+        let mut chars = value.chars().map(|c| c.to_ascii_lowercase());
+        match chars.next()? {
+            't' | 'y' | '1' => Some(Self::True),
+            'f' | 'n' | '0' => Some(Self::False),
+            'd' | 'x' | '2' => Some(Self::DontCare),
+            // `on`, `off` and `or` all start the same way.
+            'o' => match chars.next()? {
+                'n' => Some(Self::True),
+                'f' => Some(Self::False),
+                'r' => Some(Self::DontCare),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
+    /// Whether this is a definite yes or no.
+    ///
+    /// `None` for [`DontCare`](Tristate::DontCare), which is neither.
+    pub fn as_bool(self) -> Option<bool> {
+        match self {
+            Self::False => Some(false),
+            Self::True => Some(true),
+            Self::DontCare => None,
+        }
+    }
+}
+
+impl From<bool> for Tristate {
+    fn from(value: bool) -> Self {
+        if value {
+            Self::True
+        } else {
+            Self::False
+        }
+    }
+}
+
+/// The spellings `fc-list` and friends print.
+impl std::fmt::Display for Tristate {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::False => "False",
+            Self::True => "True",
+            Self::DontCare => "DontCare",
+        })
+    }
+}
+
 /// A 2x2 transform, fontconfig's `FcMatrix`.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Matrix {
@@ -84,7 +186,7 @@ pub enum ValueRef<'a> {
     /// Text, borrowed from the cache buffer.
     String(&'a str),
     /// A flag.
-    Bool(bool),
+    Bool(Tristate),
     /// A 2x2 transform to apply to the face.
     Matrix(Matrix),
     /// The characters a font covers.
@@ -123,12 +225,21 @@ impl<'a> ValueRef<'a> {
         }
     }
 
-    /// The boolean, if this is one.
-    pub fn as_bool(&self) -> Option<bool> {
+    /// The flag, if this is one.
+    pub fn as_tristate(&self) -> Option<Tristate> {
         match self {
             Self::Bool(b) => Some(*b),
             _ => None,
         }
+    }
+
+    /// The flag as a definite yes or no.
+    ///
+    /// `None` both when this is not a flag and when it is
+    /// [`Tristate::DontCare`], which is neither answer. Use
+    /// [`as_tristate`](ValueRef::as_tristate) to tell those apart.
+    pub fn as_bool(&self) -> Option<bool> {
+        self.as_tristate()?.as_bool()
     }
 }
 
@@ -191,7 +302,7 @@ pub(crate) fn value_at<'a>(data: Bytes<'a>, at: usize) -> Result<ValueRef<'a>> {
             let s = data.follow(at, union)?.ok_or(Error::BadString(union))?;
             ValueRef::String(data.str(s)?)
         }
-        4 => ValueRef::Bool(data.i32(union)? != 0),
+        4 => ValueRef::Bool(Tristate::from_i32(data.i32(union)?)),
         5 => {
             let m = data.follow(at, union)?.ok_or(Error::BadOffset { base: at, delta: 0 })?;
             ValueRef::Matrix(Matrix {
@@ -234,7 +345,7 @@ pub enum Value {
     /// Owned text.
     String(String),
     /// A flag.
-    Bool(bool),
+    Bool(Tristate),
     /// A 2x2 transform.
     Matrix(Matrix),
     /// A span of numbers.
@@ -342,6 +453,12 @@ impl From<f64> for Value {
 
 impl From<bool> for Value {
     fn from(v: bool) -> Self {
+        Self::Bool(v.into())
+    }
+}
+
+impl From<Tristate> for Value {
+    fn from(v: Tristate) -> Self {
         Self::Bool(v)
     }
 }
@@ -355,5 +472,62 @@ impl From<&str> for Value {
 impl From<String> for Value {
     fn from(v: String) -> Self {
         Self::String(v)
+    }
+}
+
+#[cfg(test)]
+mod tristate_tests {
+    use super::Tristate;
+
+    /// `FcNameBool`, which is what reads both `<bool>` in a configuration and
+    /// `:scalable=True` in a name. Those were two functions once, and drifted:
+    /// the config one learned `DontCare` and the name one did not, so a query
+    /// written `dontcare` arrived as `false`.
+    #[test]
+    fn every_spelling_fontconfig_accepts() {
+        for yes in ["true", "True", "TRUE", "yes", "y", "on", "1"] {
+            assert_eq!(Tristate::parse(yes), Some(Tristate::True), "{yes}");
+        }
+        for no in ["false", "False", "no", "n", "off", "0"] {
+            assert_eq!(Tristate::parse(no), Some(Tristate::False), "{no}");
+        }
+        for either in ["dontcare", "DontCare", "d", "x", "2", "or"] {
+            assert_eq!(Tristate::parse(either), Some(Tristate::DontCare), "{either}");
+        }
+        for bad in ["", "bogus", "maybe", "o", "q"] {
+            assert_eq!(Tristate::parse(bad), None, "{bad:?}");
+        }
+    }
+
+    /// Fontconfig stores the flag as an integer and reads it back as one.
+    #[test]
+    fn it_round_trips_through_the_integer_a_cache_holds() {
+        for flag in [Tristate::False, Tristate::True, Tristate::DontCare] {
+            assert_eq!(Tristate::from_i32(flag.as_i32()), flag);
+        }
+        assert_eq!(Tristate::from_i32(0), Tristate::False);
+        assert_eq!(Tristate::from_i32(1), Tristate::True);
+        assert_eq!(Tristate::from_i32(2), Tristate::DontCare);
+        // Fontconfig never writes anything else; whatever it is, it is not a
+        // definite answer.
+        assert_eq!(Tristate::from_i32(7), Tristate::DontCare);
+        assert_eq!(Tristate::from_i32(-1), Tristate::DontCare);
+    }
+
+    /// The spellings `fc-list` prints, which `%{scalable}` and friends are
+    /// compared against.
+    #[test]
+    fn it_prints_the_way_fc_list_prints() {
+        assert_eq!(Tristate::True.to_string(), "True");
+        assert_eq!(Tristate::False.to_string(), "False");
+        assert_eq!(Tristate::DontCare.to_string(), "DontCare");
+    }
+
+    /// `DontCare` is neither answer, and saying so is the point of the type.
+    #[test]
+    fn dontcare_is_not_a_yes_or_a_no() {
+        assert_eq!(Tristate::True.as_bool(), Some(true));
+        assert_eq!(Tristate::False.as_bool(), Some(false));
+        assert_eq!(Tristate::DontCare.as_bool(), None);
     }
 }

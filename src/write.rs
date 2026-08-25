@@ -205,7 +205,7 @@ fn write_value(buf: &mut Buffer, at: usize, value: &Value, charsets: &mut CharSe
         }
         Value::Bool(v) => {
             buf.i32(at + L.value_type, 4);
-            buf.i32(at + L.union, i32::from(*v));
+            buf.i32(at + L.union, v.as_i32());
         }
         Value::Matrix(v) => {
             buf.i32(at + L.value_type, 5);

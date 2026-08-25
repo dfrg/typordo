@@ -40,7 +40,7 @@ fn is_lang_counterpart(object: Object) -> bool {
 /// those are what the font is merged against.
 pub fn render_prepare(config: &Config, query: &Pattern, font: &PatternRef<'_>) -> Pattern {
     let mut out = Pattern::new();
-    let variable = font.value(Object::Variable) == Some(ValueRef::Bool(true));
+    let variable = font.value(Object::Variable).and_then(|v| v.as_bool()) == Some(true);
     let mut variations: Vec<String> = Vec::new();
 
     for element in font.elements() {
