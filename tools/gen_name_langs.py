@@ -6,7 +6,7 @@ language tags with a table in `fcfreetype.c` that is written in terms of
 FreeType's `TT_MS_LANGID_*` and `TT_MAC_LANGID_*` constants, so both files
 have to be read: one for the mapping, one for the numbers.
 
-Run from WSL, where the FreeType headers are, from the repo root:
+Run from the repo root, on a machine with the FreeType headers installed:
     python3 tools/gen_name_langs.py
 """
 import io

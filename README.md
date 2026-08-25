@@ -109,6 +109,14 @@ files. Broad — CJK collections, Type 1, variable fonts, OpenType bitmaps,
 colour emoji, and a Noto face for nearly every script there is — but one
 machine, which is the honest limit on all of it.
 
+Two harnesses build their own corpus on top of that one, because the formats
+they cover are not kept in font directories. `cff_parity` extracts the `CFF `
+table out of each of the 107 CFF-flavoured fonts on the machine and compares
+the bare table, which is what a caller would have if they pulled one out
+themselves — CID-keyed CJK faces and all. `woff_parity` uses the 40 web fonts
+the machine has, most of them the WOFF2 files rustdoc ships with every Rust
+toolchain.
+
 ## Coming from libfontconfig
 
 [docs/fontconfig-api.md](docs/fontconfig-api.md) maps the `Fc*` API onto this
@@ -133,8 +141,8 @@ correct data, so this does not.
 
 Measured against libfontconfig on the same corpus, same machine, with
 checksums on both sides to show they did the same work. `scripts/bench.sh`
-and `scripts/bench_fc.c` are the two drivers. Best of several runs, Fedora 44
-under WSL2; the `mmap` column is the optional feature of that name.
+and `scripts/bench_fc.c` are the two drivers. Best of several runs on the
+corpus machine below; the `mmap` column is the optional feature of that name.
 
 | operation | ours | +mmap | fontconfig | |
 | --- | --- | --- | --- | --- |

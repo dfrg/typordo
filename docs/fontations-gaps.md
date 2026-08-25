@@ -153,24 +153,65 @@ ships with every toolchain, plus WOFF1 files -- across 24 properties each:
 
 See `docs/audit.md`, finding 14.
 
-## 9. `Charmap::iter` yields the variant bit unmasked
+## 9. `Charmap::iter` yields FreeType's internal table, not a character map
 
 `Charmap::from_glyph_names` sets `0x80000000` on the codepoint of any glyph
-whose name carries a variant suffix -- `uni00AB.left_double_angle_quote` --
-mirroring the marker FreeType uses to stop a variant shadowing its base glyph.
-`Charmap::map` masks that bit off when it searches. `Charmap::iter` does not.
+whose name carries a variant suffix -- `A.alt`,
+`uni00AB.left_double_angle_quote` -- mirroring the marker FreeType uses so a
+variant sorts beside its base glyph without shadowing it. `Charmap::map` masks
+that off when it searches. `Charmap::iter` does not, and `VARIANT_BIT` is
+private.
 
-Consequence: a caller that iterates to find out what a font covers gets
-`0x800000AB` where it expects `0xAB`, and `char::from_u32` rejects it. Noto
-Sans Duployan names almost every glyph that way, so it scanned as covering
-eleven characters instead of several hundred. Nothing in the signature
-suggests the values need masking, and the constant is private.
+This is deliberate rather than an oversight -- the unit test asserts the raw
+values and says they were "extracted from FreeType's generated unicode cmap"
+-- which is why the suggestion below is about what the *default* should be
+rather than a straight bug report.
 
-Either `iter` should mask, or it should yield a type that carries the
-distinction rather than a bare `u32`.
+Consequence: a caller iterating to find out what a font covers gets
+`0x800000AB` where it expects `0xAB`, and `char::from_u32` rejects it, so the
+character silently disappears. Noto Sans Duployan names almost every glyph
+that way and scanned here as covering eleven characters instead of several
+hundred. The signature says `(u32, GlyphId)` and `iter` has no doc comment;
+the natural pairing with `map`, which does mask, points the wrong way.
 
-Workaround here: `charmap_chars` masks it, for both the Type 1 and the bare
-CFF paths.
+### Recommended fix
+
+Make `iter` the `FT_Get_Next_Char` equivalent, which is what every caller
+outside the crate wants, and give the internal view its own name:
+
+```rust
+/// The characters this map covers, each once, in codepoint order.
+pub fn iter(&self) -> Iter<'_>          // (char, GlyphId)
+
+/// The table as FreeType stores it, variant markers included.
+pub fn entries(&self) -> Entries<'_>    // (u32, GlyphId) -- today's `iter`
+```
+
+Two properties of the existing sort make the first cheap, and both are worth
+stating because the implementation depends on them: entries sharing a base
+codepoint are contiguous, and the base entry sorts before its variants. So it
+is a dedup over the run, taking the first -- which yields exactly the glyph
+`map` would return for that character:
+
+```rust
+let base = code & !VARIANT_BIT;
+if previous == Some(base) { continue; }   // a variant of one already yielded
+previous = Some(base);
+Some((char::from_u32(base)?, gid))
+```
+
+Yielding `char` rather than `u32` is the part that matters most. The failure
+here was `char::from_u32` quietly returning `None` for every entry; had the
+constructor been handing out `char` all along, the variant marker could never
+have been mistaken for a codepoint in the first place.
+
+The existing test moves to `entries` unchanged. If `iter` keeps its current
+behaviour instead, `VARIANT_BIT` needs to be public -- a caller currently has
+no way to strip it but to write `0x80000000` out again, which is what this
+crate does.
+
+Workaround here: `charmap_chars` implements the recommended semantics for
+both the Type 1 and the bare CFF paths.
 
 ## 10. `CffFontRef::string` cannot resolve a CID font's strings
 

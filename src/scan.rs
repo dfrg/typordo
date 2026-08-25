@@ -1545,8 +1545,10 @@ fn cff_coverage<'a>(
         }
     }
     // Codepoint order, which is the order `FT_Get_Next_Char` walks -- and so
-    // the order the advance sample has to take them in.
-    mapped.sort_unstable_by_key(|(c, _)| *c as u32);
+    // the order the advance sample has to take them in. Stable, and the
+    // charmap's entries were pushed first, so where a dingbat name and a
+    // glyph name claim the same character the charmap keeps it.
+    mapped.sort_by_key(|(c, _)| *c as u32);
     mapped.dedup_by_key(|(c, _)| *c);
     for (c, glyph) in mapped {
         coverage.insert(c);
@@ -1615,20 +1617,43 @@ fn approximately_equal_f64(a: f64, b: f64) -> bool {
     (a - b).abs() * 33.0 <= a.abs().max(b.abs())
 }
 
-/// The codepoints a name-derived charmap holds.
+/// The characters a name-derived charmap covers, and the glyph for each.
 ///
-/// `Charmap::iter` yields its entries raw, and a glyph whose name carries a
-/// variant suffix -- `uni00AB.left_double_angle_quote` -- has `0x80000000`
-/// set on its codepoint, the marker FreeType uses to keep a variant from
-/// shadowing the base glyph. `Charmap::map` masks it off when it searches;
-/// iterating does not, so a font that names its glyphs that way covers
-/// nothing at all unless the caller masks it here. Noto Sans Duployan names
-/// almost every glyph that way.
+/// `FT_Get_Next_Char` over the same table: each codepoint once, mapped to the
+/// glyph FreeType would pick for it.
+///
+/// `Charmap::iter` is not that. It yields the table as FreeType *stores* it,
+/// where a glyph whose name carries a variant suffix -- `A.alt`,
+/// `uni00AB.left_double_angle_quote` -- has `0x80000000` set on its codepoint
+/// so that it sorts beside the base glyph without shadowing it.
+/// `Charmap::map` masks that off when it searches; iterating does not. A font
+/// that names its glyphs that way therefore appears to cover nothing at all,
+/// because `char::from_u32` rejects every entry -- Noto Sans Duployan names
+/// almost every glyph that way and scanned as covering eleven characters
+/// instead of several hundred.
+///
+/// Two things follow from the order `from_glyph_names` sorts into, and both
+/// matter here: entries sharing a base codepoint are contiguous, and the base
+/// entry comes before its variants. So taking the first of each run yields
+/// each character once, preferring the real glyph over a variant of it --
+/// which is what `map` would return, and what the advance sampling in
+/// [`cff_spacing`] needs, since sampling a small-caps variant instead of the
+/// letter would be a different width.
 fn charmap_chars(
     charmap: &read_fonts::ps::charmap::Charmap,
 ) -> impl Iterator<Item = (char, GlyphId)> + '_ {
+    /// FreeType's marker for a variant glyph. Private upstream, so a caller
+    /// that needs to strip it has no choice but to write it out again.
     const VARIANT_BIT: u32 = 0x8000_0000;
-    charmap.iter().filter_map(|(code, glyph)| Some((char::from_u32(code & !VARIANT_BIT)?, glyph)))
+    let mut previous = None;
+    charmap.iter().filter_map(move |(code, glyph)| {
+        let base = code & !VARIANT_BIT;
+        if previous == Some(base) {
+            return None; // a variant of a character already yielded
+        }
+        previous = Some(base);
+        Some((char::from_u32(base)?, glyph))
+    })
 }
 
 /// The text a CFF string id names./// The text a CFF string id names.
@@ -1677,5 +1702,50 @@ impl<'a> TopDict<'a> {
             }
         }
         out
+    }
+}
+
+#[cfg(test)]
+mod charmap_tests {
+    use super::charmap_chars;
+    use read_fonts::ps::charmap::Charmap;
+    use read_fonts::types::GlyphId;
+
+    fn chars(pairs: &[(u32, &str)]) -> Vec<(char, u32)> {
+        let map =
+            Charmap::from_glyph_names(pairs.iter().map(|(gid, name)| (GlyphId::new(*gid), *name)));
+        charmap_chars(&map).map(|(c, gid)| (c, gid.to_u32())).collect()
+    }
+
+    /// The whole point: a variant-suffixed name maps to its base character,
+    /// and a font that names every glyph that way is not empty.
+    #[test]
+    fn a_variant_name_still_covers_its_character() {
+        assert_eq!(chars(&[(4, "uni00AB.left_double_angle_quote")]), [('\u{ab}', 4)]);
+        assert_eq!(chars(&[(3, "B.sc")]), [('B', 3)]);
+    }
+
+    /// Each character once, and the base glyph rather than the variant --
+    /// which is what `Charmap::map` answers, and what an advance sample has
+    /// to take, a small-caps H being a different width from an H.
+    #[test]
+    fn a_base_and_its_variant_yield_one_character() {
+        assert_eq!(chars(&[(1, "A"), (2, "A.alt")]), [('A', 1)]);
+        // Declaration order must not change the answer: the charmap sorts
+        // the base ahead of its variants whichever way round they arrive.
+        assert_eq!(chars(&[(2, "A.alt"), (1, "A")]), [('A', 1)]);
+    }
+
+    #[test]
+    fn several_characters_come_out_in_codepoint_order() {
+        let got = chars(&[(1, "A"), (2, "A.alt"), (3, "B.sc"), (4, "uni00AB.quote")]);
+        assert_eq!(got, [('A', 1), ('B', 3), ('\u{ab}', 4)]);
+    }
+
+    /// A name the Adobe Glyph List cannot place contributes nothing, rather
+    /// than contributing a wrong character.
+    #[test]
+    fn an_unmappable_name_is_dropped() {
+        assert_eq!(chars(&[(1, "not.a.glyph.name.anyone.knows")]), []);
     }
 }
