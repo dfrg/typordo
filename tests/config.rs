@@ -513,3 +513,62 @@ fn a_cache_damaged_past_its_header_is_refused() {
     assert_eq!(caches.by_ref().count(), 0, "a damaged cache must not be handed out");
     assert_eq!(caches.skipped().len(), 1, "{:?}", caches.skipped());
 }
+
+/// A cache found for a directory it was not built for -- copied into an
+/// image, or reached through a sysroot -- lists subdirectories by the build
+/// machine's paths. `FcConfigAddCache` compares the cache's directory with
+/// the one asked for and, when they differ, rebuilds each subdirectory under
+/// the requested one. Without that the walk descends into a tree that is not
+/// there, and the fonts below it are lost.
+///
+/// Relocation is reachable in practice because the copy that performs it
+/// usually preserves timestamps -- `tar -p`, `rsync -a`, `mv` -- so the cache
+/// still reads as current for its new location.
+#[test]
+fn a_relocated_cache_has_its_subdirectories_rebased() {
+    let root = std::env::temp_dir().join("typordo-relocated-cache");
+    let _ = std::fs::remove_dir_all(&root);
+    let (built, caches) = (root.join("built"), root.join("caches"));
+    std::fs::create_dir_all(built.join("sub")).unwrap();
+    std::fs::create_dir_all(&caches).unwrap();
+
+    let conf = |dir: &std::path::Path| {
+        let path = root.join("fonts.conf");
+        std::fs::write(
+            &path,
+            format!(
+                "<?xml version=\"1.0\"?>\n<fontconfig>\n<dir>{}</dir>\n<cachedir>{}</cachedir>\n\
+                 </fontconfig>\n",
+                dir.display(),
+                caches.display()
+            ),
+        )
+        .unwrap();
+        Config::load_from(&path).unwrap()
+    };
+
+    let config = conf(&built);
+    assert_eq!(config.build_fonts().count(), 2, "the directory and its subdirectory");
+
+    // Move the tree. A rename leaves the directories' own timestamps alone,
+    // so the caches stay current; only the names they hold are now wrong.
+    let moved = root.join("moved");
+    std::fs::rename(&built, &moved).unwrap();
+    for (from, to) in [(&built, &moved), (&built.join("sub"), &moved.join("sub"))] {
+        let name = |p: &std::path::Path| caches.join(config.cache_basename(&p.to_string_lossy()));
+        std::fs::rename(name(from), name(to)).unwrap();
+    }
+
+    let config = conf(&moved);
+    let mut walk = config.caches(CachePolicy::read_only());
+    let dirs: Vec<String> = walk.by_ref().map(|(dir, _)| dir).collect();
+    assert_eq!(walk.skipped(), &[], "nothing should have been passed over");
+    assert_eq!(
+        dirs,
+        vec![
+            moved.to_string_lossy().into_owned(),
+            moved.join("sub").to_string_lossy().into_owned(),
+        ],
+        "the subdirectory must be reported under the directory it was found in"
+    );
+}

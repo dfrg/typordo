@@ -1546,8 +1546,7 @@ impl Iterator for Caches<'_> {
                     };
                     // A rejected directory prunes the walk, the same way
                     // fontconfig filters subdirectories as it descends.
-                    if !self.seen.contains(subdir.as_ref())
-                        && self.config.accepts_filename(&subdir)
+                    if !self.seen.contains(subdir.as_ref()) && self.config.accepts_filename(&subdir)
                     {
                         self.pending.push_back(subdir.into_owned());
                     }

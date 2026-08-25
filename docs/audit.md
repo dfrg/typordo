@@ -51,6 +51,7 @@ corpus does not contain.
 | 18 | Cache lookup stopped at the first candidate | Test fails on old behaviour | `e2db80c` |
 | 20 | Cache stayed current when its directory vanished | Test fails on old behaviour | `e2db80c` |
 | 19 | Traversal accepted partially corrupt caches | Test fails on old behaviour | `8e41e5b` |
+| 17 | Relocated cache kept the build machine's subdirectory paths | Test fails on old behaviour | *this commit* (part) |
 
 **9.1 — `ignore-blanks`.** `FcConfigCompareValue` uses
 `FcStrCmpIgnoreBlanksAndCase` only when `FcOpFlagIgnoreBlanks` is set and
@@ -149,6 +150,28 @@ slower than not checking, and about what fontconfig costs, which is the
 comparison that means anything, since it now does the same work. The earlier
 figure was measuring the absence of a safety check.
 
+**17 — a cache that has moved, in part.** `FcConfigAddCache` compares the
+directory a cache records with the one it was asked for, and when they differ
+rewrites two things under the requested directory: every subdirectory in the
+cache, and every font's `FC_FILE`. This crate did neither.
+
+The subdirectory half is fixed. It is the more damaging one -- a wrong
+subdirectory is not merely a wrong string, it sends the walk into a tree that
+does not exist and silently drops every font below it -- and it is entirely
+internal to the walk, so it could go in without deciding anything.
+
+The font-path half is **set aside for a decision**, and the reason is the
+design rather than the work. A `PatternRef` is a cursor into the mapped cache;
+there is nowhere to put a rewritten path without either owning the pattern or
+handing the caller a helper it must remember to call, and a helper you must
+remember is the same silent wrongness in a new place. It wants an answer about
+what `Caches` yields, which is a public shape. Noted for the author.
+
+Worth saying that relocation is not exotic. The copy that causes it -- `tar
+-p`, `rsync -a`, `mv`, a sysroot image -- generally preserves directory
+timestamps, so the relocated cache reads as perfectly current in its new home,
+which is exactly when nothing warns you.
+
 ### Version drift, not gaps
 
 | # | Finding | Why it stands |
@@ -179,7 +202,7 @@ cannot be mistaken for "all of it".
 | 12 | `Pattern` equality and insertion | Medium |
 | 13 | Tri-state boolean collapsed | Medium |
 | 14 | WOFF/WOFF2 and standalone CFF not scanned | Medium-high |
-| 17 | Relocated caches keep embedded paths | High |
+| 17 | Relocated caches keep embedded font paths (subdirectories fixed) | High |
 | 21 | Rebuilds lack an inter-process lock | Medium |
 | 22 | LangSet copying, comparison, default insertion | Medium |
 | 25 | Application-font preference not representable | API |
