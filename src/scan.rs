@@ -141,12 +141,9 @@ fn is_type1(data: &[u8]) -> bool {
 fn base_pattern(font: &FontRef<'_>, path: &str, index: i32) -> Pattern {
     let mut pattern = Pattern::new();
 
-    // A `glyf` table that is present but empty means no outlines at all --
-    // which is exactly how an OpenType bitmap font (.otb) is built.
-    let has_glyf = table_len(font, b"glyf") > 0;
     let has_cff = has_table(font, b"CFF ") || has_table(font, b"CFF2");
     let has_color = [b"COLR", b"SVG ", b"CBLC", b"sbix"].iter().any(|tag| has_table(font, tag));
-    let has_outlines = has_glyf || has_cff;
+    let has_outlines = has_outlines(font);
 
     pattern.add(Object::File, path);
     pattern.add(Object::Index, index);
@@ -217,8 +214,10 @@ fn add_coverage(coverage: CharSet, symbol: bool, exclusive: Option<usize>, patte
 /// a version that predates the field does not have -- and then nothing is
 /// declared, which is the same as declaring several.
 fn exclusive_lang(font: &FontRef<'_>) -> Option<usize> {
-    let range1 = font.os2().ok()?.ul_code_page_range_1()?;
-    crate::langset::exclusive_from_code_pages(range1)
+    // The codepage ranges arrived in version 1, so upstream requires
+    // `version >= 1 && version != 0xffff` before reading them (`:1747`).
+    let os2 = usable_os2(font).filter(|os2| os2.version() >= 1)?;
+    crate::langset::exclusive_from_code_pages(os2.ul_code_page_range_1()?)
 }
 
 /// Whether the font addresses its glyphs through a symbol encoding.
@@ -562,7 +561,9 @@ fn scan_face(font: &FontRef<'_>, path: &str, index: i32) -> Vec<Pattern> {
             pattern.add(Object::Style, style.as_str());
             pattern.add(Object::Stylelang, "en");
             pattern.remove(Object::Slant);
-            pattern.add(Object::Slant, slant(font, &pattern));
+            // The instance renames the face, so the slant is reconsidered
+            // against the new style name; the flags are the font's either way.
+            pattern.add(Object::Slant, slant(&pattern, style_flags(font).1));
 
             // And the full name is reconsidered, because name id 4 describes
             // the face the file is named for rather than this instance. Only
@@ -790,7 +791,9 @@ fn has_hinting(font: &FontRef<'_>) -> bool {
 /// different answer, and the only thing that makes it look like a tidy-up is
 /// that the difference does not print.
 fn foundry(font: &FontRef<'_>) -> String {
-    if let Ok(os2) = font.os2() {
+    // Guarded like every other `OS/2` reader: a table marked version `0xffff`
+    // has no vendor tag worth reading, and upstream checks at `:1353`.
+    if let Some(os2) = usable_os2(font) {
         let bytes = os2.ach_vend_id().to_be_bytes();
         if bytes[0] != 0 {
             return bytes.iter().take_while(|b| **b != 0).map(|b| *b as char).collect();
@@ -804,28 +807,132 @@ fn foundry(font: &FontRef<'_>) -> String {
         .to_string()
 }
 
-/// Weight, width, slant and spacing, from `OS/2` and `post`.
-fn add_attributes(font: &FontRef<'_>, pattern: &mut Pattern, instance: Option<&Instance>) {
-    let os2 = font.os2().ok();
+/// Whether the font draws with outlines rather than bitmaps.
+///
+/// A `glyf` table that is present but *empty* means no outlines at all, which
+/// is exactly how an OpenType bitmap font (`.otb`) is built -- Terminus ships
+/// one, a zero-length `glyf` beside its `EBDT`. Testing for the table rather
+/// than its contents calls such a font scalable, and worse, sends
+/// [`style_flags`] down the wrong branch: Terminus Bold sets the italic bit
+/// in `fsSelection` and is not italic.
+fn has_outlines(font: &FontRef<'_>) -> bool {
+    table_len(font, b"glyf") > 0 || has_table(font, b"CFF ") || has_table(font, b"CFF2")
+}
 
-    // OS/2 weights are OpenType's 1..1000 scale, not fontconfig's.
-    // A named instance states its own axis values, which override the
-    // static OS/2 fields the font also carries.
+/// The `OS/2` table, if the font has one worth reading.
+///
+/// Version `0xffff` is Adobe's "this table means nothing" marker, and every
+/// consumer in `fcfreetype.c` guards on it -- weight and width at `:1751`,
+/// the foundry at `:1353`, the codepage ranges at `:1747`, the optical size
+/// at `:1785`. A font that sets it falls into the style-name fallbacks below
+/// exactly as if the table were absent.
+fn usable_os2<'a>(font: &FontRef<'a>) -> Option<read_fonts::tables::os2::Os2<'a>> {
+    font.os2().ok().filter(|os2| os2.version() != 0xffff)
+}
+
+/// Whether the font declares itself bold and italic, as FreeType decides it.
+///
+/// `sfobjs.c` computes `style_flags` from `OS/2.fsSelection` -- italic is bit
+/// 0, bold is bit 5 -- but only for a font that has outlines and a usable
+/// `OS/2`. Anything else, a bitmap-only font included, falls back to
+/// `head.macStyle`, where the two bits are the other way round: bold is 0 and
+/// italic is 1.
+///
+/// The distinction is not academic in either direction. DejaVu Sans with the
+/// italic bit set in `fsSelection` and cleared in `macStyle` scans as italic;
+/// Terminus Bold, which is a bitmap `.otb` with the italic bit set in
+/// `fsSelection`, does not -- it has no outlines, so only `macStyle` is read,
+/// and that says bold and nothing else.
+fn style_flags(font: &FontRef<'_>) -> (bool, bool) {
+    use read_fonts::tables::os2::SelectionFlags;
+
+    if has_outlines(font) {
+        if let Some(os2) = usable_os2(font) {
+            let flags = os2.fs_selection();
+            return (flags.contains(SelectionFlags::BOLD), flags.contains(SelectionFlags::ITALIC));
+        }
+    }
+    match font.head() {
+        Ok(head) => {
+            let style = head.mac_style();
+            (style.contains(MacStyle::BOLD), style.contains(MacStyle::ITALIC))
+        }
+        Err(_) => (false, false),
+    }
+}
+
+/// Weight, width, slant and spacing, from `OS/2` and `post`.
+///
+/// Each of the three has a fallback chain rather than a single source, and
+/// the chains only run for fonts that are missing something -- which is
+/// precisely why they were wrong here: nothing in a healthy corpus exercises
+/// them.
+fn add_attributes(font: &FontRef<'_>, pattern: &mut Pattern, instance: Option<&Instance>) {
+    let os2 = usable_os2(font);
+    let (bold, italic) = style_flags(font);
+    let styles: Vec<String> = pattern.get(Object::Style).map_or_else(Vec::new, |element| {
+        element
+            .values()
+            .filter_map(|(value, _)| match value {
+                Value::String(text) => Some(text.clone()),
+                _ => None,
+            })
+            .collect()
+    });
+
+    // OS/2 weights are OpenType's 1..1000 scale, not fontconfig's. A named
+    // instance states its own axis values, which override the static OS/2
+    // fields the font also carries.
+    //
+    // Failing both, the style name is searched for a weight word, and only
+    // then does the bold flag decide: `FcContainsWeight` at `:1885`, then
+    // `FT_STYLE_FLAG_BOLD` at `:1916`.
     let fc_weight = instance
         .and_then(|i| i.weight)
         .map(weight::from_opentype)
         .or_else(|| os2.as_ref().map(|os2| weight::from_opentype(f64::from(os2.us_weight_class()))))
         .filter(|w| *w >= 0.0)
-        .unwrap_or(100.0); // FC_WEIGHT_MEDIUM, fontconfig's fallback
+        .or_else(|| styles.iter().find_map(|style| contains_weight(style)))
+        .unwrap_or(if bold { 200.0 } else { 100.0 });
     pattern.add(Object::Weight, fc_weight);
 
+    // `usWidthClass` outside 1..9 is not a width at all -- upstream's switch
+    // has no default, so it leaves the value unset and falls through to the
+    // style name. Mapping it to normal instead loses a `Condensed` that the
+    // name states plainly.
     let fc_width = instance
         .and_then(|i| i.width)
-        .or_else(|| os2.as_ref().map(|os2| width_from_class(os2.us_width_class())))
+        .or_else(|| os2.as_ref().and_then(|os2| width_from_class(os2.us_width_class())))
+        .or_else(|| styles.iter().find_map(|style| contains_width(style)))
         .unwrap_or(100.0);
     pattern.add(Object::Width, fc_width);
 
-    pattern.add(Object::Slant, slant(font, pattern));
+    pattern.add(Object::Slant, slant(pattern, italic));
+}
+
+/// The width names fontconfig matches, in its own order.
+///
+/// `widthConsts` in `fcfreetype.c`. Order matters for the same reason it does
+/// for the weights: `semicondensed` has to be tried before `condensed`.
+static WIDTH_NAMES: &[(&str, f64)] = &[
+    ("ultracondensed", 50.0),
+    ("extracondensed", 63.0),
+    ("semicondensed", 87.0),
+    ("condensed", 75.0),
+    ("normal", 100.0),
+    ("semiexpanded", 113.0),
+    ("extraexpanded", 200.0),
+    ("ultraexpanded", 200.0),
+    ("expanded", 125.0),
+    ("extended", 125.0),
+];
+
+/// The width a style string names, if any word of it does.
+///
+/// `FcContainsWidth`, a substring search over the blank-stripped, folded name.
+fn contains_width(style: &str) -> Option<f64> {
+    let folded = blanks_removed(style);
+    WIDTH_NAMES.iter().find(|(name, _)| folded.contains(name)).map(|(_, width)| *width)
 }
 
 /// How many distinct advance widths a font uses, and so how it spaces.
@@ -885,7 +992,10 @@ fn approximately_equal(a: u16, b: u16) -> bool {
 /// Sans Bold Oblique sets the OS/2 italic bit *and* calls itself oblique, and
 /// fontconfig reports it oblique. The angle in `post` is not consulted at all
 /// -- the code that would have is `#if 0` in `fcfreetype.c`.
-fn slant(font: &FontRef<'_>, pattern: &Pattern) -> i32 {
+///
+/// `italic` is FreeType's flag, which is not simply one bit of one table; see
+/// [`style_flags`].
+fn slant(pattern: &Pattern, italic: bool) -> i32 {
     if let Some(element) = pattern.get(Object::Style) {
         for (value, _) in element.values() {
             let crate::value::Value::String(style) = value else {
@@ -902,11 +1012,6 @@ fn slant(font: &FontRef<'_>, pattern: &Pattern) -> i32 {
             }
         }
     }
-    // The fallback follows `head.macStyle`, not `OS/2.fsSelection`. Terminus
-    // Bold sets the fsSelection italic bit and is not italic; macStyle says
-    // bold only, and that is the answer fontconfig gives.
-    let italic =
-        font.head().map(|head| head.mac_style().contains(MacStyle::ITALIC)).unwrap_or(false);
     if italic {
         100
     } else {
@@ -915,18 +1020,21 @@ fn slant(font: &FontRef<'_>, pattern: &Pattern) -> i32 {
 }
 
 /// `usWidthClass` is a 1..9 index, not a percentage.
-fn width_from_class(class: u16) -> f64 {
-    match class {
+fn width_from_class(class: u16) -> Option<f64> {
+    Some(match class {
         1 => 50.0,
         2 => 63.0,
         3 => 75.0,
         4 => 87.0,
+        5 => 100.0,
         6 => 113.0,
         7 => 125.0,
         8 => 150.0,
         9 => 200.0,
-        _ => 100.0,
-    }
+        // Not a width. Upstream's switch has no default, so the value stays
+        // unset and the style name gets its turn.
+        _ => return None,
+    })
 }
 
 /// The `name` table IDs fontconfig reads, in the order it prefers them.

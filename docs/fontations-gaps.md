@@ -151,7 +151,7 @@ Verified against `fc-query` over 40 real web fonts -- the WOFF2 files rustdoc
 ships with every toolchain, plus WOFF1 files -- across 24 properties each:
 960/960 identical.
 
-See `docs/audit.md`, finding 14.
+See `docs/audit-1.md`, finding 14.
 
 ## 9. `Charmap::iter` yields FreeType's internal table, not a character map
 

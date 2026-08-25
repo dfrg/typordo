@@ -279,7 +279,7 @@ fn add_typed(query: &mut Pattern, object: Object, value: &str) {
         }
         // A number that will not parse is left as text. `FcNameConvert`
         // would look it up as a constant -- `slant=italic` is 100 -- but that
-        // table is not public here; see docs/audit.md on `<const>`.
+        // table is not public here; see docs/audit-1.md on `<const>`.
         ValueType::Int => {
             match value.parse::<i32>() {
                 Ok(int) => query.add(object, int),

@@ -101,7 +101,7 @@ comparisons a font set happens to provoke -- nothing in a normal corpus
 carries a charset test, or a range on both sides, or a conditional `<alias>`.
 Every one of those was wrong while every harness was green. This one asks
 `fc-pattern -c` and this crate the same questions one operator at a time, and
-needs no fonts at all. See `docs/audit.md`.
+needs no fonts at all. See `docs/audit.md` for the three audit logs.
 
 The corpus is Fedora 44 on x86_64: 2385 font files producing 2999 patterns
 across 336 primary family names and 281 languages, with 378 configuration
