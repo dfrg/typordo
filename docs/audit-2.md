@@ -23,7 +23,7 @@ produced.
 | F5 | scanner | Named-instance weight/width ignore the OS/2 × (instance/default) multiplier | Fixed, `efbeb00` |
 | F6 | scanner | Missing name fallbacks: `Regular` style, family from the filename, PS-name sanitisation | Fixed, `b230fd6` |
 | F8 | rules | Multi-valued `<test name="family">` has different semantics | Fixed, `0eb5534` |
-| F9 | cache | Binding encoding inverted; cache values read Strong where upstream reads Weak | |
+| F9 | cache, matching | Binding encoding inverted, cache values read strong, and no rebinding after a match | Fixed, pending |
 | F10 | prepare | `fontvariations` number formatting / weight rounding differs | Fixed, `e080b89` |
 | F12 | rules | Edit marks tracked by index, not by value node | Fixed, `0eb5534` |
 | F13 | scanner | Empty `capability` string vs absent element | Fixed, `f887f9c` |
@@ -244,3 +244,63 @@ multi-valued test, which is where upstream's own guard sits.
 ahead of them, and four multi-valued tests -- each listed family queried on its
 own, both together, and the same list on a non-`family` object to pin that the
 fast path is `family`-only. All seven agree.
+
+## F9 — bindings, in three parts, none of which a value comparison can see
+
+A binding says how firmly a pattern holds a value: a **strong** one is the
+font's own and will not yield, a **weak** one was contributed by configuration
+and gives way. Nothing about the *values* changes, which is why every harness
+in this repository agreed on every field while all three of these were wrong.
+
+**The tag was inverted.** `src/write.rs` wrote strong as 0 and weak as 1;
+`FcValueBinding` in `fontconfig.h` is the other way round — `FcValueBindingWeak`
+is zero. The decoder in `src/value.rs` was inverted to match, so our own caches
+round-tripped correctly and the unit test covering exactly that passed. Only a
+cache crossing between the two implementations could show it.
+
+**Which made the second part invisible too.** Upstream never serializes this
+field: `FcValueListSerialize` copies the value and the next pointer, and the
+cache block is allocated zeroed. So *every* value read out of a fontconfig
+cache is weak. Reading zero as strong meant we disagreed with fontconfig about
+every property of every font on the system — silently, because the values were
+right. Confirmed against a real cache: `FcDirCacheLoadFile` followed by
+`FcPatternGetWithBinding` reports binding 0 on families that
+`FcPatternGetWithBinding` after `FcFontList` reports as 1, because the listing
+path re-adds each value and `FcPatternObjectAdd` defaults to strong.
+
+**And matching rebinds the winner.** This is the part with real behaviour
+behind it. `FcFontSetMatchInternal` does not return the font it found; it
+rebuilds it, and gives each object *one* binding for all of its values:
+
+```c
+FcValueBinding binding = FcValueBindingWeak;
+if (bestscore[match->strong] < 1000)
+    binding = FcValueBindingStrong;
+```
+
+1000 is fontconfig's threshold for "this matched exactly" — the value distance
+is multiplied by 1000 before the value's position is added in, so anything
+under it came from a first-choice value that compared equal. Objects with no
+matcher are skipped and keep what they had, which is a larger set than it
+sounds: `fullname`, `familylang`, `capability`, `matrix`, `fontvariations` and
+the whole rendering group have `NULL` comparators in `fcobjs.h`, so they stay
+weak from the cache.
+
+The visible consequence: ask for `DejaVu Sans` and the answer holds `family`
+strongly, because that is the name you asked for. Ask for `sans-serif` and the
+same font holds it *weakly*, because the name that won was contributed by an
+alias. A client that re-substitutes over the result — which is what a binding
+is for — gets a different answer in the two cases.
+
+This crate had no equivalent step at all. It is now `Score::binding`, and
+`render_prepare` takes the score alongside the font. Upstream materializes a
+second pattern to carry the rebinding; passing the score says the same thing
+and allocates nothing, and the `Option` distinguishes the two things upstream
+does at its two call sites — `FcFontSetMatch` rebinds, a bare
+`FcFontRenderPrepare` on a font you did not match does not.
+
+`bind_parity` is new and compares nothing but bindings: 18 queries, 42 objects
+each, `fc-match -v`'s `(s)`/`(w)` suffixes against ours. Half of them fail if
+the threshold is removed. It covers the first two parts as well, since the
+objects with no matcher are the ones whose binding comes straight off the
+cache.

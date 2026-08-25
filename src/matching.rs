@@ -117,6 +117,29 @@ impl Score {
         &self.0
     }
 
+    /// The binding every value of `object` takes in the font that scored this.
+    ///
+    /// Matching does not only pick a font, it also decides how firmly that
+    /// font holds each of its properties. `FcFontSetMatchInternal` rebuilds
+    /// the winner before handing it to `FcFontRenderPrepare`, and gives each
+    /// object one binding for all of its values: **strong** when the object's
+    /// strong distance came in under 1000 -- fontconfig's threshold for "this
+    /// matched exactly" -- and **weak** otherwise.
+    ///
+    /// `None` means the object has no matcher, and so is not rebound at all:
+    /// it keeps whatever binding it already had. That is not a rare corner --
+    /// `fullname`, `capability`, `fontvariations`, `matrix` and the whole
+    /// rendering group are all in it, and values read from a cache are weak,
+    /// because upstream never serializes this field and zeroes the block.
+    ///
+    /// A query for `DejaVu Sans` gets `family` back strongly bound; the same
+    /// font reached through `sans-serif` gets it weakly, since the name that
+    /// won was contributed by an alias rather than asked for.
+    pub fn binding(&self, object: Object) -> Option<Binding> {
+        let matcher = matcher(object)?;
+        Some(if self.0[matcher.strong as usize] < 1000.0 { Binding::Strong } else { Binding::Weak })
+    }
+
     /// Whether this score beats `other`.
     ///
     /// The first slot where the two differ decides. Fontconfig keeps the

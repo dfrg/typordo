@@ -270,8 +270,8 @@ fn preparing_merges_the_font_and_the_query() {
         q.add(Object::Dpi, 96.0);
     });
     let fonts: Vec<_> = cache.fonts().unwrap().collect();
-    let (best, _) = typordo::best(&q, fonts).unwrap();
-    let prepared = typordo::render_prepare(&config, &q, &best);
+    let (best, score) = typordo::best(&q, fonts).unwrap();
+    let prepared = typordo::render_prepare(&config, &q, &best, Some(&score));
 
     // From the font.
     assert_eq!(prepared.string(Object::Family), Some("Cantarell"));
@@ -299,7 +299,7 @@ fn preparing_pins_a_variable_axis() {
         q.add(Object::Family, "Cantarell");
         q.add(Object::Weight, 123);
     });
-    let prepared = typordo::render_prepare(&config, &q, &variable);
+    let prepared = typordo::render_prepare(&config, &q, &variable, None);
 
     // The range collapsed to the requested weight, not to an endpoint.
     assert_eq!(prepared.number(Object::Weight), Some(123.0));
@@ -324,7 +324,7 @@ fn a_request_outside_the_axis_clamps_to_it() {
         q.add(Object::Family, "Cantarell");
         q.add(Object::Weight, 255); // the font stops at 205
     });
-    let prepared = typordo::render_prepare(&config, &q, &variable);
+    let prepared = typordo::render_prepare(&config, &q, &variable, None);
     assert_eq!(prepared.number(Object::Weight), Some(205.0));
 }
 
@@ -338,7 +338,7 @@ fn a_static_face_records_no_variations() {
     let q = query(|q| {
         q.add(Object::Family, "Cantarell");
     });
-    let prepared = typordo::render_prepare(&config, &q, &regular);
+    let prepared = typordo::render_prepare(&config, &q, &regular, None);
     assert_eq!(prepared.string(Object::FontVariations), None);
 }
 

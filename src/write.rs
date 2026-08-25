@@ -300,10 +300,19 @@ fn write_langset(buf: &mut Buffer, set: &LangSet) -> usize {
     at
 }
 
+/// The `FcValueBinding` a binding is stored as.
+///
+/// The order is upstream's and is worth naming, because it is the one a
+/// reasonable person would guess wrong: `FcValueBindingWeak` is **zero**.
+/// Upstream also never writes this field -- `FcValueListSerialize` copies the
+/// value and the next pointer -- and allocates the cache block with `memset`
+/// to zero, so every value read back out of a cache is weak. Encoding weak as
+/// zero is therefore not only the right tag, it is what makes our caches and
+/// theirs say the same thing.
 fn code(binding: Binding) -> i32 {
     match binding {
-        Binding::Strong => 0,
-        Binding::Weak => 1,
+        Binding::Weak => 0,
+        Binding::Strong => 1,
         Binding::Same => 2,
     }
 }
@@ -477,6 +486,34 @@ mod tests {
                 ("Same".to_string(), Binding::Same),
             ]
         );
+    }
+
+    /// The tags themselves, not just that they survive a round trip.
+    ///
+    /// A round trip agrees with itself whichever way round the encoding is,
+    /// which is how this was wrong in both directions at once for as long as
+    /// it was. What matters is the number in the file, so this asserts the
+    /// number: `FcValueBinding` in `fontconfig.h` is weak, strong, same.
+    ///
+    /// Zero being *weak* is the load-bearing half. Upstream never writes this
+    /// field -- `FcValueListSerialize` copies the value and the next pointer
+    /// and nothing else -- over a block it allocated zeroed, so every value
+    /// in a fontconfig-written cache reads back weak, and only an encoding
+    /// that agrees zero means weak reads those caches correctly.
+    #[test]
+    fn binding_tags_are_fontconfigs() {
+        assert_eq!(super::code(Binding::Weak), 0);
+        assert_eq!(super::code(Binding::Strong), 1);
+        assert_eq!(super::code(Binding::Same), 2);
+
+        let mut font = Pattern::new();
+        font.add(Object::Family, "Written");
+        let mut writer = CacheWriter::new("/fonts");
+        writer.font(&font);
+        let cache = round_trip(&writer);
+        let read = cache.fonts().unwrap().next().unwrap();
+        let node = read.get(Object::Family).unwrap().values().bindings().next().unwrap();
+        assert_eq!(node.1, Binding::Strong);
     }
 
     /// Values keep the order they were added in: fontconfig treats the first

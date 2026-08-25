@@ -72,7 +72,7 @@ corpus does not contain.
 | 19 | Traversal accepted partially corrupt caches | Test fails on old behaviour | `8e41e5b` |
 | 17 | Relocated cache kept the build machine's paths | DIFF->MATCH against `fc-list` | `5c3406a`, `f9455fd` |
 | 9.2-9.4 | Range, charset and langset comparison | 36 cases against `fc-pattern -c` | `31575bb` |
-| 9.5 | Matrix *multiplication*, missed by the row above | 10 edit cases against `fc-pattern -c` | *this commit* |
+| 9.5 | Matrix *multiplication*, missed by the row above | 10 edit cases against `fc-pattern -c` | `740423c` |
 | 6 | Conditional `<alias>` tests discarded | DIFF->MATCH against `fc-pattern -c` | `31575bb` |
 | 7 | Empty selector patterns inverted accept/reject | DIFF->MATCH against `fc-list` | `7d16166` |
 | 8 | `prgname`, `desktop` and `order` never set | Both agree against `fc-pattern -c -d` | `702677d` |

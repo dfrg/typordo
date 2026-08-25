@@ -86,22 +86,29 @@ over the same fonts.
 | `sort_parity` | the whole ordering, trimmed and not | 29 / 29 |
 | `charset_parity` | coverage, per font | 2385 / 2385 |
 | `select_parity` | `<selectfont>` rules, value kinds, character data | 46 / 46 |
-| `compare_parity` | every `<test>` operator, one at a time | 39 / 39 |
+| `compare_parity` | every `<test>` operator and `<edit>` rule, one at a time | 74 / 74 |
 | `cff_parity` | a bare `CFF ` table, every property | 2568 / 2568 |
 | `woff_parity` | WOFF and WOFF2, every property | 960 / 960 |
+| `fallback_parity` | malformed fonts, where every fallback chain runs | 460 / 460 |
+| `bind_parity` | how firmly a matched font holds each property | 18 / 18 |
 | `lang_parity` | every langset in every cache | identical |
 | `write_parity` | fontconfig reading caches we wrote | 2999 patterns, both rounds |
 | `name_parity` | the cache file name for a directory | 11 / 11 |
 
 The one shortfall is `scan_parity`, and it is deliberate: see Status below.
 
-`compare_parity` is the newest and exists for a reason worth stating. The
-others drive whole queries through real fonts, so they reach only the
-comparisons a font set happens to provoke -- nothing in a normal corpus
-carries a charset test, or a range on both sides, or a conditional `<alias>`.
-Every one of those was wrong while every harness was green. This one asks
-`fc-pattern -c` and this crate the same questions one operator at a time, and
-needs no fonts at all. See `docs/audit.md` for the three audit logs.
+Three of them -- `compare_parity`, `fallback_parity` and `bind_parity` --
+exist because the others could not reach what they cover. A harness that
+drives whole queries through real fonts sees only what a font set happens to
+provoke: nothing in a normal corpus carries a charset test, a range on both
+sides, or a conditional `<alias>`; nothing is malformed enough to send the
+scanner down a fallback chain; and no comparison of *values* can see a
+binding at all. Every one of those was wrong while every harness was green.
+So `compare_parity` asks `fc-pattern -c` and this crate the same question
+one operator at a time and needs no fonts, `fallback_parity` builds 23
+deliberately broken ones, and `bind_parity` compares nothing but the
+`(s)`/`(w)` marks `fc-match -v` prints. See `docs/audit.md` for the three
+audit logs.
 
 The corpus is Fedora 44 on x86_64: 2385 font files producing 2999 patterns
 across 336 primary family names and 281 languages, with 378 configuration

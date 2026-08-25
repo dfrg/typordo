@@ -72,7 +72,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     // an application wants is the query answered *by* that font: the family
     // it matched under, the size that was asked for, the localized name that
     // fit. That merge is `FcFontRenderPrepare`.
-    let prepared = render_prepare(&config, &query, &font);
+    let prepared = render_prepare(&config, &query, &font, Some(&score));
 
     println!();
     println!("family    {}", prepared.string(Object::Family).unwrap_or("?"));

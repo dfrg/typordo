@@ -148,6 +148,14 @@ font, the second merges it with the query into what a caller actually wants
 — the family it matched under, the size asked for, the localized name that
 fit. Skipping the second step is a common way to get a surprising answer.
 
+Pass the score `best` returns on to `render_prepare`. Upstream hides a third
+step between the two: `FcFontSetMatchInternal` rebuilds the winning font with
+its bindings rewritten from the scores before preparing it, so that a family
+you asked for by name comes back strongly bound and one reached through an
+alias does not. Here that is `Score::binding`, and the score is the argument
+that carries it. `None` prepares the font as it stands, which is what calling
+`FcFontRenderPrepare` on a font you did not match does.
+
 Scoring order, tie-breaking and the language-satisfaction pass are the same,
 checked against `fc-match` over the whole corpus rather than asserted; see
 the parity table in the README.

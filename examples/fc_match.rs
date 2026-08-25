@@ -22,6 +22,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut score_of: Option<String> = None;
     let mut debug = false;
     let mut dump = false;
+    let mut dump_match = false;
     let mut batch = false;
     // Some(true) = sorted and trimmed (-s), Some(false) = sorted, untrimmed (-a).
     let mut sort: Option<bool> = None;
@@ -38,6 +39,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             "--all" => sort = Some(false),
             "--debug" => debug = true,
             "--dump-query" => dump = true,
+            "--dump-match" => dump_match = true,
             other => terms.push(other.to_string()),
         }
     }
@@ -94,12 +96,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if dump {
         for element in query.elements() {
             for (value, binding) in element.values() {
-                let mark = match binding {
-                    typordo::Binding::Strong => "s",
-                    typordo::Binding::Weak => "w",
-                    typordo::Binding::Same => "?",
-                };
-                println!("{}	{value:?}	{mark}", element.object());
+                println!("{}	{value:?}	{}", element.object(), mark(binding));
+            }
+        }
+        return Ok(());
+    }
+
+    // The prepared answer rather than the query: the same listing `fc-match
+    // -v` prints, and the only way to see what binding matching settled on
+    // for each object.
+    if dump_match {
+        if let Some((best, score)) = typordo::best(&query, fonts.to_vec()) {
+            let prepared = render_prepare(&config, &query, &best, Some(&score));
+            for element in prepared.elements() {
+                for (value, binding) in element.values() {
+                    println!("{}	{value:?}	{}", element.object(), mark(binding));
+                }
             }
         }
         return Ok(());
@@ -155,17 +167,26 @@ fn answer(
     match sort {
         Some(trim) => {
             for (font, _) in typordo::sort(query, fonts.to_vec(), trim) {
-                let prepared = render_prepare(config, query, &font);
+                let prepared = render_prepare(config, query, &font, None);
                 println!("{}", show(&prepared, field));
             }
         }
         None => match typordo::best(query, fonts.to_vec()) {
-            Some((best, _)) => {
-                let prepared = render_prepare(config, query, &best);
+            Some((best, score)) => {
+                let prepared = render_prepare(config, query, &best, Some(&score));
                 println!("{}", show(&prepared, field));
             }
             None => println!(),
         },
+    }
+}
+
+/// The letter `fc-match -v` suffixes a value with.
+fn mark(binding: typordo::Binding) -> &'static str {
+    match binding {
+        typordo::Binding::Strong => "s",
+        typordo::Binding::Weak => "w",
+        typordo::Binding::Same => "?",
     }
 }
 

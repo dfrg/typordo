@@ -256,11 +256,17 @@ pub enum Binding {
 
 use crate::layout::NATIVE as L;
 
+/// The binding of the value node at `node`.
+///
+/// `FcValueBindingWeak` is zero, and zero is also what an unwritten field
+/// holds: upstream never serializes this one, and zeroes the cache block. So
+/// weak is both the tag and the default, and an unrecognised tag falls to it
+/// for the same reason.
 pub(crate) fn binding_at(data: Bytes<'_>, node: usize) -> Result<Binding> {
     Ok(match data.i32(node + L.binding)? {
-        1 => Binding::Weak,
+        1 => Binding::Strong,
         2 => Binding::Same,
-        _ => Binding::Strong,
+        _ => Binding::Weak,
     })
 }
 

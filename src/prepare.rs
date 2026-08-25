@@ -8,6 +8,7 @@
 
 use crate::config::Config;
 use crate::matching;
+use crate::matching::Score;
 use crate::object::Object;
 use crate::pattern::Pattern;
 use crate::pattern::PatternRef;
@@ -38,7 +39,22 @@ fn is_lang_counterpart(object: Object) -> bool {
 /// This is `FcFontRenderPrepare`. Call it with the query *after*
 /// [`Config::substitute`] and [`Pattern::default_substitute`] have run, since
 /// those are what the font is merged against.
-pub fn render_prepare(config: &Config, query: &Pattern, font: &PatternRef<'_>) -> Pattern {
+///
+/// Pass the `score` [`best`](crate::best) returned alongside the font. It
+/// decides the bindings: matching does not only choose a font, it also records
+/// how firmly that font holds each property, and [`Score::binding`] is where
+/// that lives. Upstream folds the step into `FcFontSetMatchInternal`, which
+/// rebuilds the winner before preparing it; taking the score here says the
+/// same thing without building a second pattern to say it in.
+///
+/// `None` prepares the font as it stands, keeping its own bindings, which is
+/// what calling `FcFontRenderPrepare` on a font you did not match does.
+pub fn render_prepare(
+    config: &Config,
+    query: &Pattern,
+    font: &PatternRef<'_>,
+    score: Option<&Score>,
+) -> Pattern {
     let mut out = Pattern::new();
     let variable = font.value(Object::Variable).and_then(|v| v.as_bool()) == Some(true);
     let mut variations: Vec<String> = Vec::new();
@@ -52,7 +68,7 @@ pub fn render_prepare(config: &Config, query: &Pattern, font: &PatternRef<'_>) -
 
         if let Some(lang_object) = lang_counterpart(object) {
             if font.get(lang_object).is_some() {
-                copy_localized(query, font, object, lang_object, &mut out);
+                copy_localized(query, font, object, lang_object, score, &mut out);
                 continue;
             }
         }
@@ -83,10 +99,12 @@ pub fn render_prepare(config: &Config, query: &Pattern, font: &PatternRef<'_>) -
                     out.add(object, value);
                 }
             }
-            // Only the font has it: carry the whole list across.
+            // Only the font has it: carry the whole list across, under the
+            // one binding matching gave the object.
             None => {
+                let rebound = score.and_then(|s| s.binding(object));
                 for (value, binding) in element.values().zip(bindings(element)) {
-                    out.add_with_binding(object, own(value), binding);
+                    out.add_with_binding(object, own(value), rebound.unwrap_or(binding));
                 }
             }
         }
@@ -130,6 +148,7 @@ fn copy_localized(
     font: &PatternRef<'_>,
     name: Object,
     lang: Object,
+    score: Option<&Score>,
     out: &mut Pattern,
 ) {
     let names: Vec<Value> =
@@ -158,11 +177,17 @@ fn copy_localized(
     // upstream prepends the winning name with `l1->binding` and only marks the
     // *language* strong. Saying the name is strong claims the font insists on
     // it, which it does not -- the query does.
+    //
+    // "the bindings the font gave them" means after matching rebound it, so
+    // `family` and `style` take one binding across the list while `fullname`,
+    // having no matcher, keeps what the cache held. The language lists have no
+    // matcher either, which is why only the promoted one is touched below.
+    let rebound = score.and_then(|s| s.binding(name));
     let name_bindings: Vec<Binding> =
         font.get(name).map(|e| e.values().bindings().map(|(_, b)| b).collect()).unwrap_or_default();
     for index in order(&names) {
         let binding = name_bindings.get(index).copied().unwrap_or(Binding::Weak);
-        out.add_with_binding(name, names[index].clone(), binding);
+        out.add_with_binding(name, names[index].clone(), rebound.unwrap_or(binding));
     }
     let lang_bindings: Vec<Binding> =
         font.get(lang).map(|e| e.values().bindings().map(|(_, b)| b).collect()).unwrap_or_default();
