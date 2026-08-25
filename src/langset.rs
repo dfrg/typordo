@@ -140,25 +140,30 @@ impl<'a> LangSetRef<'a> {
         langs::bit_of_rank(rank).is_some_and(|bit| self.contains_index(bit))
     }
 
+    /// The bitmap, zero-extended to this crate's table width.
+    ///
+    /// A cache written by a fontconfig with a shorter map leaves the rest
+    /// zero, which is what `FC_MIN (lsa->map_size, lsb->map_size)` amounts to.
+    fn map(&self) -> [u32; langs::MAP_WORDS] {
+        let mut map = [0; langs::MAP_WORDS];
+        for (word, slot) in map.iter_mut().enumerate().take(self.map_words()) {
+            *slot = self.data.u32(self.at + L.map + word * 4).unwrap_or(0);
+        }
+        map
+    }
+
     /// How well this set answers another one.
     ///
-    /// Any language in common is [`LangResult::Equal`]. Fontconfig then has a
-    /// second pass over its generated country sets, which can turn two
-    /// disjoint sets into [`LangResult::DifferentTerritory`] when they share
-    /// a country; that table is not embedded here, so this reports
-    /// [`LangResult::DifferentLang`] in that case instead. A query built with
-    /// [`Pattern`](crate::Pattern) cannot carry a langset, so this is only
-    /// reachable when comparing two fonts.
+    /// `FcLangSetCompare`. Any language in common is [`LangResult::Equal`];
+    /// failing that, two sets naming regional variants of one language are
+    /// [`LangResult::DifferentTerritory`], which is what the country sets
+    /// are for.
+    ///
+    /// A cache never carries the extra strings the owned form can -- writing
+    /// one is refused -- so this needs no equivalent of
+    /// `FcLangSetCompareStrSet`.
     pub fn compare(&self, other: &LangSetRef<'_>) -> LangResult {
-        let words = self.map_words().min(other.map_words()).min(langs::MAP_WORDS);
-        for word in 0..words {
-            let ours = self.data.u32(self.at + L.map + word * 4).unwrap_or(0);
-            let theirs = other.data.u32(other.at + L.map + word * 4).unwrap_or(0);
-            if ours & theirs != 0 {
-                return LangResult::Equal;
-            }
-        }
-        LangResult::DifferentLang
+        compare_maps(&self.map(), &other.map())
     }
 
     /// Whether the bitmap fits the language table this crate was built with.
@@ -180,6 +185,35 @@ impl<'a> LangSetRef<'a> {
         self.data.array(self.at + L.map, words, 4)?;
         Ok(())
     }
+}
+
+/// The bitmap half of `FcLangSetCompare`.
+///
+/// One bit in common means the two name the same language. Failing that, a
+/// bit each in the same country set means they name regional variants of one
+/// language -- `zh-CN` against `zh-TW` -- which is a better answer than
+/// unrelated, and is what stops a Simplified Chinese font scoring no closer
+/// to a Traditional Chinese request than a Greek one does.
+fn compare_maps(a: &[u32; langs::MAP_WORDS], b: &[u32; langs::MAP_WORDS]) -> LangResult {
+    if a.iter().zip(b).any(|(a, b)| a & b != 0) {
+        return LangResult::Equal;
+    }
+    // Nothing regional on one side means no country set can hold both, and
+    // a query naming a language with no region -- `:lang=en` -- is the common
+    // case. Two passes over nine words instead of ten sets of nine.
+    let mask = langs::regional_mask();
+    let regional = |m: &[u32; langs::MAP_WORDS]| m.iter().zip(mask).any(|(m, k)| m & k != 0);
+    if !regional(a) || !regional(b) {
+        return LangResult::DifferentLang;
+    }
+    for set in langs::country_sets() {
+        let in_a = a.iter().zip(set).any(|(a, s)| a & s != 0);
+        let in_b = b.iter().zip(set).any(|(b, s)| b & s != 0);
+        if in_a && in_b {
+            return LangResult::DifferentTerritory;
+        }
+    }
+    LangResult::DifferentLang
 }
 
 /// Compare two language tags, fontconfig's `FcLangCompare`.
@@ -765,6 +799,19 @@ impl<'a> AnyLangSet<'a> {
         };
         walk(&mut (0..start).rev());
         walk(&mut (start..LANGS.len()));
+        // `FcLangSetHasLang` finishes with the languages the table cannot
+        // name. Without this a set holding only `en-GB` -- which is not in the
+        // table, so it is a string and nothing else -- answers "unrelated" to
+        // every request, including one for `en-GB` itself.
+        for name in self.extra() {
+            if best == LangResult::Equal {
+                break;
+            }
+            let result = compare_lang(lang, name);
+            if result < best {
+                best = result;
+            }
+        }
         best
     }
 
@@ -773,13 +820,46 @@ impl<'a> AnyLangSet<'a> {
     }
 
     /// How well this set answers another one.
+    ///
+    /// `FcLangSetCompare`: a language in common is [`LangResult::Equal`],
+    /// regional variants of one language are
+    /// [`LangResult::DifferentTerritory`], and the extra strings an owned set
+    /// carries get a pass of their own, in both directions.
     pub fn compare(&self, other: &AnyLangSet<'_>) -> LangResult {
-        for index in 0..LANGS.len() {
-            if self.contains_index(index) && other.contains_index(index) {
-                return LangResult::Equal;
+        let mut best = compare_maps(&self.map(), &other.map());
+        if best == LangResult::Equal {
+            return best;
+        }
+        // `FcLangSetCompareStrSet` both ways round, stopping as soon as
+        // nothing left can improve on what we have.
+        for (set, extra) in [(other, self.extra()), (self, other.extra())] {
+            for name in extra {
+                let r = set.has_lang(name);
+                if r < best {
+                    best = r;
+                }
+                if best == LangResult::Equal {
+                    return best;
+                }
             }
         }
-        LangResult::DifferentLang
+        best
+    }
+
+    /// The bitmap, zero-extended to this crate's table width.
+    fn map(&self) -> [u32; langs::MAP_WORDS] {
+        match self {
+            Self::Cached(set) => set.map(),
+            Self::Owned(set) => set.bits,
+        }
+    }
+
+    /// The languages held as strings because the table cannot name them.
+    fn extra(&self) -> &[String] {
+        match self {
+            Self::Cached(_) => &[],
+            Self::Owned(set) => &set.extra,
+        }
     }
 
     /// Check the structure, for a set that has one to check.
@@ -817,5 +897,79 @@ impl std::fmt::Display for AnyLangSet<'_> {
             f.write_str(lang)?;
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod country_set_tests {
+    use super::{compare_maps, AnyLangSet, LangResult, LangSet};
+    use crate::langs;
+
+    fn set(names: &[&str]) -> LangSet {
+        let mut s = LangSet::new();
+        for n in names {
+            s.insert(n);
+        }
+        s
+    }
+
+    fn cmp(a: &[&str], b: &[&str]) -> LangResult {
+        AnyLangSet::Owned(&set(a)).compare(&AnyLangSet::Owned(&set(b)))
+    }
+
+    /// `FcLangSetCompare` looks past "no language in common" to whether the
+    /// two name regional variants of one language, which scores better than
+    /// unrelated. Without it a Simplified Chinese font is no closer to a
+    /// Traditional Chinese request than a Greek one.
+    #[test]
+    fn regional_variants_of_one_language_are_not_unrelated() {
+        assert_eq!(cmp(&["zh-cn"], &["zh-cn"]), LangResult::Equal);
+        assert_eq!(cmp(&["zh-cn"], &["zh-tw"]), LangResult::DifferentTerritory);
+        assert_eq!(cmp(&["zh-cn"], &["el"]), LangResult::DifferentLang);
+        assert_eq!(cmp(&["en"], &["de"]), LangResult::DifferentLang);
+    }
+
+    /// The extra strings an owned set carries get their own pass, in both
+    /// directions.
+    ///
+    /// `en-GB` is not in the language table, so it lands among the extras and
+    /// only `FcLangSetCompareStrSet` can see it at all. The answer is
+    /// `DifferentTerritory` rather than `Equal`: `FcLangSetHasLang` reaches
+    /// `en` through `FcLangCompare`, which calls the same language in a
+    /// different region exactly that. Reaching `Equal` here was the obvious
+    /// guess and the wrong one.
+    #[test]
+    fn the_extra_strings_are_compared_too() {
+        assert_eq!(cmp(&["en-gb"], &["en"]), LangResult::DifferentTerritory);
+        assert_eq!(cmp(&["en"], &["en-gb"]), LangResult::DifferentTerritory);
+        assert_eq!(cmp(&["en-gb"], &["de"]), LangResult::DifferentLang);
+        // Two extras naming the same thing still reach Equal.
+        assert_eq!(cmp(&["en-gb"], &["en-gb"]), LangResult::Equal);
+    }
+
+    /// Every set groups languages that share a base, and a language with no
+    /// region belongs to none of them.
+    #[test]
+    fn the_country_sets_group_by_base_language() {
+        let sets = langs::country_sets();
+        assert!(!sets.is_empty(), "the table has regional variants in it");
+        let bit = |lang: &str| {
+            let index = langs::LANGS.iter().position(|l| *l == lang)?;
+            Some((index / 32, 1u32 << (index % 32)))
+        };
+        let (word, mask) = bit("zh-cn").expect("zh-cn is in the table");
+        let holding = sets.iter().filter(|s| s[word] & mask != 0).count();
+        assert_eq!(holding, 1, "a language belongs to exactly one country set");
+
+        // A language with no region is in none of them.
+        if let Some((word, mask)) = bit("el") {
+            assert!(sets.iter().all(|s| s[word] & mask == 0));
+        }
+    }
+
+    #[test]
+    fn an_empty_pair_is_unrelated_rather_than_equal() {
+        let zero = [0; langs::MAP_WORDS];
+        assert_eq!(compare_maps(&zero, &zero), LangResult::DifferentLang);
     }
 }
