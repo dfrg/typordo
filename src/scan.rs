@@ -128,7 +128,7 @@ fn base_pattern(font: &FontRef<'_>, path: &str, index: i32) -> Pattern {
     if let Some(spacing) = spacing(font) {
         pattern.add(Object::Spacing, spacing);
     }
-    add_coverage(sfnt_coverage(font), is_symbol(font), &mut pattern);
+    add_coverage(sfnt_coverage(font), is_symbol(font), exclusive_lang(font), &mut pattern);
     pattern
 }
 
@@ -137,7 +137,7 @@ fn base_pattern(font: &FontRef<'_>, path: &str, index: i32) -> Pattern {
 /// The language set is derived from the coverage rather than declared by the
 /// font: fontconfig asks, for each language it knows an orthography for,
 /// whether every codepoint that language needs is present.
-fn add_coverage(coverage: CharSet, symbol: bool, pattern: &mut Pattern) {
+fn add_coverage(coverage: CharSet, symbol: bool, exclusive: Option<usize>, pattern: &mut Pattern) {
     if coverage.is_empty() {
         return;
     }
@@ -146,7 +146,11 @@ fn add_coverage(coverage: CharSet, symbol: bool, pattern: &mut Pattern) {
     // than asking what its private-use codepoints imply. The Latin1 range it
     // means is the copy made just above, which would otherwise answer for
     // most of Europe.
-    let langs = if symbol { LangSet::new() } else { LangSet::from_char_set(&coverage) };
+    let langs = if symbol {
+        LangSet::new()
+    } else {
+        LangSet::from_char_set_exclusive(&coverage, exclusive)
+    };
     pattern.add(Object::Charset, Value::CharSet(coverage));
     // Always, even when the set is empty. A font covering a script
     // fontconfig has no language for -- Adlam, and a dozen others -- gets an
@@ -157,6 +161,16 @@ fn add_coverage(coverage: CharSet, symbol: bool, pattern: &mut Pattern) {
     // answering nothing. `fc-list` prints both as the empty string, which is
     // why this took a corpus with Adlam in it to notice.
     pattern.add(Object::Lang, Value::LangSet(langs));
+}
+
+/// The single CJK language the font's `OS/2` codepage bits declare, if one.
+///
+/// Read from `ulCodePageRange1`, which a font without an `OS/2` table or with
+/// a version that predates the field does not have -- and then nothing is
+/// declared, which is the same as declaring several.
+fn exclusive_lang(font: &FontRef<'_>) -> Option<usize> {
+    let range1 = font.os2().ok()?.ul_code_page_range_1()?;
+    crate::langset::exclusive_from_code_pages(range1)
 }
 
 /// Whether the font addresses its glyphs through a symbol encoding.
@@ -1108,7 +1122,8 @@ fn scan_type1(data: &[u8], path: &str) -> Result<Vec<Pattern>, ScanError> {
     }
     // A Type 1 font has no cmap to be symbol-encoded through, and reports
     // `symbol=false` just below.
-    add_coverage(coverage, false, &mut pattern);
+    // A Type 1 font has no `OS/2` table to declare a codepage in.
+    add_coverage(coverage, false, None, &mut pattern);
     pattern.add(Object::Weight, type1_weight(font.weight()));
     pattern.add(Object::Width, 100.0);
     // A Type 1 font states its slant as an angle, so anything non-zero is

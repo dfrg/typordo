@@ -426,6 +426,56 @@ mod tests {
     }
 }
 
+/// The four languages an `OS/2` codepage bit can single out.
+///
+/// `FcCodePageRange` in `fclang.c`, as bits of `ulCodePageRange1`. Only these
+/// take part in the exclusivity rule; a font declaring Simplified Chinese
+/// still gets `zh-sg` from its coverage, because `zh-sg` is not one of them.
+pub(crate) const CODE_PAGES: [(u32, &str); 4] =
+    [(17, "ja"), (18, "zh-cn"), (19, "ko"), (20, "zh-tw")];
+
+/// The language a font declares, if it declares exactly one.
+///
+/// Two or more means the font supports several and none is exclusive, which
+/// fontconfig treats the same as declaring nothing.
+pub(crate) fn exclusive_from_code_pages(range1: u32) -> Option<usize> {
+    let mut found = None;
+    for (bit, name) in CODE_PAGES {
+        if range1 & (1 << bit) == 0 {
+            continue;
+        }
+        if found.is_some() {
+            return None;
+        }
+        found = crate::langs::index_of(name);
+    }
+    found
+}
+
+/// Whether language `index` is one the codepage bits can name.
+fn is_exclusive_lang(index: usize) -> bool {
+    CODE_PAGES.iter().any(|(_, name)| crate::langs::index_of(name) == Some(index))
+}
+
+/// How many 256-codepoint pages a language's orthography touches.
+///
+/// Fontconfig holds each orthography as a charset and compares `charset.num`,
+/// the number of leaves; a leaf is a page, so this is the same number counted
+/// from the ranges the table stores instead.
+fn orthography_pages(index: usize) -> usize {
+    let mut pages = 0usize;
+    let mut last: Option<u32> = None;
+    for (lo, hi) in crate::orth::orthography(index) {
+        for page in (lo / 256)..=(hi / 256) {
+            if last != Some(page) {
+                pages += 1;
+                last = Some(page);
+            }
+        }
+    }
+    pages
+}
+
 /// A set of languages built by scanning a font, rather than read from a cache.
 ///
 /// Same bitmap, same bit order; the difference is only where the bytes live.
@@ -457,8 +507,39 @@ impl LangSet {
     /// orthography. There is no partial credit and no threshold: that one
     /// rule is the whole of `FcLangSetFromCharSet`.
     pub fn from_char_set(chars: &crate::charset::CharSet) -> Self {
+        Self::from_char_set_exclusive(chars, None)
+    }
+
+    /// The languages `chars` can write, with the Han rule applied.
+    ///
+    /// A font that declares exactly one CJK codepage in `OS/2` is taken to
+    /// mean it: the other Han languages are not derived from its coverage
+    /// however much of their orthographies it happens to carry. Microsoft
+    /// YaHei declares Simplified Chinese and covers enough of Japanese and
+    /// Traditional Chinese to satisfy both, and fontconfig reports neither.
+    ///
+    /// `exclusive` is an index into [`LANGS`](crate::langs::LANGS). A font
+    /// declaring several codepages, or none, passes `None` and every language
+    /// is derived from coverage alone -- which is what fontconfig does when
+    /// the font cannot make up its mind.
+    pub fn from_char_set_exclusive(
+        chars: &crate::charset::CharSet,
+        exclusive: Option<usize>,
+    ) -> Self {
         let mut set = Self::new();
+        // Fontconfig compares the candidate's orthography against the
+        // declared one by page count, so a Han language sized differently
+        // from the declared one is skipped. It is a coarse test and an
+        // intentional one: the four are far enough apart in size that it
+        // separates them, and a language of the same size is one the font
+        // could equally be said to write.
+        let declared_pages = exclusive.map(orthography_pages);
         for index in 0..crate::orth::len() {
+            if let Some(pages) = declared_pages {
+                if is_exclusive_lang(index) && orthography_pages(index) != pages {
+                    continue;
+                }
+            }
             if chars.covers_ranges(crate::orth::orthography(index)) {
                 set.insert_index(index);
             }
