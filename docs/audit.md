@@ -52,8 +52,9 @@ corpus does not contain.
 | 20 | Cache stayed current when its directory vanished | Test fails on old behaviour | `e2db80c` |
 | 19 | Traversal accepted partially corrupt caches | Test fails on old behaviour | `8e41e5b` |
 | 17 | Relocated cache kept the build machine's subdirectory paths | Test fails on old behaviour | `5c3406a` (part) |
-| 9.2-9.5 | Range, charset, langset and matrix comparison | 36 cases against `fc-pattern -c` | *this commit* |
-| 6 | Conditional `<alias>` tests discarded | DIFF->MATCH against `fc-pattern -c` | *this commit* |
+| 9.2-9.5 | Range, charset, langset and matrix comparison | 36 cases against `fc-pattern -c` | `31575bb` |
+| 6 | Conditional `<alias>` tests discarded | DIFF->MATCH against `fc-pattern -c` | `31575bb` |
+| 7 | Empty selector patterns inverted accept/reject | DIFF->MATCH against `fc-list` | *this commit* |
 
 **9.1 — `ignore-blanks`.** `FcConfigCompareValue` uses
 `FcStrCmpIgnoreBlanksAndCase` only when `FcOpFlagIgnoreBlanks` is set and
@@ -218,6 +219,20 @@ is worse than ignoring the alias: a `<test name="lang">ja</test>` alias
 applied to every language. Verified in both directions -- a ja-only alias
 fired for `serif:lang=de` before the fix and does not after.
 
+**7 - empty selector patterns.** `FcListPatternMatchAny` walks a selector's
+elements looking for one that disagrees, and an empty selector has none, so it
+returns true: an empty `<pattern/>` matches every font. That makes an empty
+`<rejectfont>` reject the lot. This crate skipped empty patterns at parse
+time, so the rule did the opposite of what it says -- not a weaker filter, an
+inverted one.
+
+The same function skips `namelang` by name, because that property sets
+`familylang`, `stylelang` and `fullnamelang` together and never appears on a
+font: testing for it would fail every selector that mentions it. We tested for
+it and failed. Both now agree with `fc-list` on the whole corpus -- 0 files for
+an empty reject, 2385 for an empty accept, and 0 for a reject on `namelang`
+alone, which reduces to the empty case once the element is skipped.
+
 ### Version drift, not gaps
 
 | # | Finding | Why it stands |
@@ -239,7 +254,6 @@ cannot be mistaken for "all of it".
 | --- | --- | --- |
 | 2 | Root configuration search and startup fallback | High |
 | 3.1, 3.2 | Include resolution and `ignore_missing` | High |
-| 7 | Empty selector patterns invert accept/reject | Medium-high |
 | 8 | Substitution omits `prgname`, `desktop_name`, `order` | Medium |
 | 10 | `<const>` resolution | Medium |
 | 11 | XML character data | Low-medium |

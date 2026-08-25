@@ -235,6 +235,41 @@ write_conf charset-mixed.conf '    <rejectfont>
     </rejectfont>'
 check charset-mixed.conf
 
+# An empty <pattern/> matches every font: `FcListPatternMatchAny` walks its
+# elements and finds nothing to disagree with. So an empty <rejectfont>
+# rejects everything and an empty <acceptfont> accepts everything, and getting
+# this wrong inverts the rule rather than weakening it.
+write_conf empty-reject.conf '    <rejectfont>
+      <pattern/>
+    </rejectfont>'
+check empty-reject.conf
+
+write_conf empty-accept.conf '    <acceptfont>
+      <pattern/>
+    </acceptfont>'
+check empty-accept.conf
+
+# `namelang` sets familylang, stylelang and fullnamelang together and never
+# appears on a font, so `FcListPatternMatchAny` skips it by name -- leaving,
+# here, a selector with nothing left to check, which therefore matches
+# everything.
+write_conf namelang-skipped.conf '    <rejectfont>
+      <pattern>
+        <patelt name="namelang"><string>en</string></patelt>
+      </pattern>
+    </rejectfont>'
+check namelang-skipped.conf
+
+# The same, with a real condition beside it: the namelang element drops out
+# and the family element still has to hold.
+write_conf namelang-with-family.conf '    <rejectfont>
+      <pattern>
+        <patelt name="namelang"><string>en</string></patelt>
+        <patelt name="family"><string>DejaVu Sans</string></patelt>
+      </pattern>
+    </rejectfont>'
+check namelang-with-family.conf
+
 if [ "$FAILURES" -gt 0 ]; then
   echo
   echo "FAILED: $FAILURES difference(s) -- see above"

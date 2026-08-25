@@ -704,6 +704,13 @@ impl Selector {
             return false;
         }
         self.elements.iter().all(|(object, wanted)| {
+            // `namelang` sets `familylang`, `stylelang` and `fullnamelang`
+            // together and never appears on a font pattern, so asking whether
+            // a font has it would fail every selector that mentions it.
+            // `FcListPatternMatchAny` skips it by name for that reason.
+            if *object == Object::Namelang {
+                return true;
+            }
             let Some(element) = font.get(*object) else {
                 return false;
             };
@@ -1288,7 +1295,12 @@ impl Config {
                     parent.exprs.push(expr);
                 }
             }
-            "pattern" if !frame.elements.is_empty() => {
+            // An empty `<pattern/>` is kept, and matters: `FcListPatternMatchAny`
+            // walks the selector's elements and returns true having found
+            // nothing to disagree with, so an empty pattern matches every
+            // font. Skipping it inverted the rule -- an empty `<rejectfont>`
+            // rejected nothing where fontconfig rejects everything.
+            "pattern" => {
                 let selector = Selector { elements: frame.elements, usable: !frame.poisoned };
                 self.selectors.patterns_mut().push(selector);
             }
