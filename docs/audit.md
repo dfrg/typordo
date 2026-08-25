@@ -56,7 +56,7 @@ corpus does not contain.
 | 6 | Conditional `<alias>` tests discarded | DIFF->MATCH against `fc-pattern -c` | `31575bb` |
 | 7 | Empty selector patterns inverted accept/reject | DIFF->MATCH against `fc-list` | `7d16166` |
 | 8 | `prgname`, `desktop` and `order` never set | Both agree against `fc-pattern -c -d` | `702677d` |
-| 3.2 | `ignore_missing` never read; a missing include was silent | Test fails on old behaviour | *this commit* |
+| 3.2 | `ignore_missing` never read; a missing include was silent | Test fails on old behaviour | `207a0fe` |
 
 **9.1 — `ignore-blanks`.** `FcConfigCompareValue` uses
 `FcStrCmpIgnoreBlanksAndCase` only when `FcOpFlagIgnoreBlanks` is set and
@@ -279,6 +279,26 @@ fontconfig cannot read is **false** to it, not ignored, so `<bool>bogus</bool>`
 selects the non-scalable fonts; treating it as unusable left 18 more fonts in
 the list than fontconfig leaves. Ten spellings are now compared against
 `fc-list` in `select_parity`, and all ten agree.
+
+### What fixing 9.2-9.5 broke, and how it showed
+
+Parsing `:lang=en` into a language set -- correctly, as `FcNameParse` does --
+put a shape into queries that had never been there before, and one place was
+not ready for it. `add_default_langs` decides whether the query already asks
+for the locale's language by looking at its `lang` values, and it looked only
+at strings. A langset query therefore never counted as asking for its own
+language, so the locale's languages were appended beside it.
+
+One extra weak value, and `NotoSans[wght].ttf` moved from second place to
+forty-second in `fc-match -a :lang=en`. `sort_parity` and `cover_parity` both
+caught it; the unit tests did not, because none of them builds a query the way
+a command line does. Fontconfig checks both shapes in the same loop, and now
+so does this.
+
+Worth recording as the shape of the risk rather than as a single mistake: the
+fix was right, the regression was real, and what found it was the harness that
+drives whole queries through real fonts -- the kind of check the new
+`compare_parity` deliberately is not.
 
 ### Examined and found correct
 

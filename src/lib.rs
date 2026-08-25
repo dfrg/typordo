@@ -133,6 +133,7 @@ mod value;
 pub mod weight;
 mod write;
 mod xml;
+#[cfg(feature = "scan")]
 mod zapf;
 
 #[cfg(feature = "scan")]

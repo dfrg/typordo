@@ -469,3 +469,39 @@ fn a_pattern_rule_can_test_prgname() {
     config.substitute(&mut query);
     assert!(query.contains(Object::Prgname), "prgname must be set before pattern rules run");
 }
+
+/// The locale's languages are appended only when the query is not already
+/// asking for one of them -- and the query may say so either way.
+///
+/// `FcNameParse` builds a *langset* for `:lang=en`, because `lang` is
+/// declared as one, while a caller assembling a pattern by hand usually adds
+/// a string. Fontconfig checks both shapes. Checking only strings meant a
+/// langset query never counted as asking for its own language, so the
+/// locale's languages were appended beside it -- and the extra weak value was
+/// enough to move a variable font forty places in `fc-match -a`.
+#[test]
+fn the_locale_languages_see_a_langset_query() {
+    use typordo::LangSet;
+
+    let with = |value: Value| {
+        let mut query = with_family("serif");
+        match value {
+            Value::LangSet(set) => query.add(Object::Lang, set),
+            Value::String(s) => query.add(Object::Lang, s.as_str()),
+            _ => unreachable!(),
+        };
+        let config = config();
+        config.substitute(&mut query);
+        query.get(Object::Lang).map(|e| e.values().count()).expect("the query asked for a language")
+    };
+
+    let mut set = LangSet::new();
+    set.insert("en");
+    let langset_values = with(Value::LangSet(set));
+    let string_values = with(Value::String("en".into()));
+    assert_eq!(
+        langset_values, string_values,
+        "a langset asking for en must stop the injection exactly as a string does"
+    );
+    assert_eq!(langset_values, 1, "nothing should have been appended");
+}

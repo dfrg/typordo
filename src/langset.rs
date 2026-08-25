@@ -438,6 +438,7 @@ pub(crate) const CODE_PAGES: [(u32, &str); 4] =
 ///
 /// Two or more means the font supports several and none is exclusive, which
 /// fontconfig treats the same as declaring nothing.
+#[cfg(feature = "scan")]
 pub(crate) fn exclusive_from_code_pages(range1: u32) -> Option<usize> {
     let mut found = None;
     for (bit, name) in CODE_PAGES {

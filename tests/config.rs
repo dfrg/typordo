@@ -525,6 +525,7 @@ fn a_cache_damaged_past_its_header_is_refused() {
 /// Relocation is reachable in practice because the copy that performs it
 /// usually preserves timestamps -- `tar -p`, `rsync -a`, `mv` -- so the cache
 /// still reads as current for its new location.
+#[cfg(feature = "scan")]
 #[test]
 fn a_relocated_cache_has_its_subdirectories_rebased() {
     let root = std::env::temp_dir().join("typordo-relocated-cache");

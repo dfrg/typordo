@@ -510,8 +510,16 @@ fn add_default_langs(query: &mut Pattern) {
     let langs = crate::locale::default_langs();
     for lang in langs {
         if let Some(element) = query.get(Object::Lang) {
+            // The value may be either shape. `FcNameParse` builds a langset
+            // for `:lang=en`, because `lang` is declared as one, while a
+            // caller assembling a pattern by hand usually adds a string --
+            // and fontconfig checks both. Looking only at strings meant a
+            // langset query never counted as already asking for its own
+            // language, so the locale's languages were appended beside it and
+            // the extra weak value changed the sort.
             let already = element.values().any(|(value, _)| match value {
                 Value::String(s) => s.eq_ignore_ascii_case(&lang) || s.eq_ignore_ascii_case("und"),
+                Value::LangSet(set) => set.contains_lang(&lang) || set.contains_lang("und"),
                 _ => false,
             });
             if already {
@@ -827,6 +835,7 @@ impl Config {
     /// The inverse of [`Config::host_path`], and what gets recorded: a font
     /// found at `/build/root/usr/share/fonts/x.ttf` is stored as
     /// `/usr/share/fonts/x.ttf`, because that is where it will be.
+    #[cfg(feature = "scan")]
     pub(crate) fn target_path<'p>(&self, path: &'p Path) -> std::borrow::Cow<'p, Path> {
         match &self.sysroot {
             Some(root) => match path.strip_prefix(root) {
