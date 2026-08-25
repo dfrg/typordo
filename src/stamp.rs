@@ -19,12 +19,28 @@ use crate::cache::Cache;
 ///
 /// The comparison fontconfig makes in `FcDirCacheValidateHelper`, and the
 /// same one the builder makes before deciding a cache needs no work.
-pub(crate) fn is_current(dir: &str, cache: &Cache) -> bool {
+/// What a directory has to say about the cache written for it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Freshness {
+    /// The cache still describes the directory.
+    Current,
+    /// The directory has changed since the cache was written.
+    Stale,
+    /// The directory cannot be read at all.
+    Gone,
+}
+
+pub(crate) fn freshness(dir: &str, cache: &Cache) -> Freshness {
     let Ok((stamp, nanoseconds)) = directory_stamp(Path::new(dir)) else {
-        // The directory cannot be read: gone, or not permitted. Rebuilding
-        // would fail too, so calling the cache stale would throw away the
-        // only description of it that still exists.
-        return true;
+        // Removed, unmounted, or no longer permitted. Fontconfig gives up on
+        // the directory here -- `FcDirCacheProcess` fails on the stat, and so
+        // does the rescan it falls back to -- and the reason is better than
+        // the symmetry: the font files are gone with the directory, so a
+        // cache describing them answers with paths that no longer open.
+        //
+        // This used to report `Current`, on the argument that the cache was
+        // the only description left. It is a description of nothing.
+        return Freshness::Gone;
     };
     // A *directory* that reports nothing at all -- a filesystem with no
     // timestamps, which is how a read-only image ships caches that never
@@ -32,9 +48,12 @@ pub(crate) fn is_current(dir: &str, cache: &Cache) -> bool {
     // directory's stamp, not the cache's: a cache recorded with a zero still
     // has to match.
     if stamp == 0 {
-        return true;
+        return Freshness::Current;
     }
-    matches!(cache.mtime(), Ok(recorded) if recorded == (stamp, nanoseconds))
+    match cache.mtime() {
+        Ok(recorded) if recorded == (stamp, nanoseconds) => Freshness::Current,
+        _ => Freshness::Stale,
+    }
 }
 
 /// What the cache records so a later run can tell whether the directory has

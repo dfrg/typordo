@@ -47,7 +47,9 @@ corpus does not contain.
 | 5 | Later `<dir>` could not override an earlier mapping | DIFF→MATCH against real `fc-cache` | `2b3cdd1` |
 | 15 | Symbol cmap coverage discarded | 4 real symbol fonts, 12 comparisons | `fe7727d` |
 | 16 | OS/2 CJK exclusivity ignored | 145 Windows fonts: 6 differing → 0 | `e6afbdf` |
-| 1 | `FONTCONFIG_SYSROOT` ignored | End-to-end against `fc-list` in a built root | *this commit* |
+| 1 | `FONTCONFIG_SYSROOT` ignored | End-to-end against `fc-list` in a built root | `a22d645` |
+| 18 | Cache lookup stopped at the first candidate | Test fails on old behaviour | *this commit* |
+| 20 | Cache stayed current when its directory vanished | Test fails on old behaviour | *this commit* |
 
 **9.1 — `ignore-blanks`.** `FcConfigCompareValue` uses
 `FcStrCmpIgnoreBlanksAndCase` only when `FcOpFlagIgnoreBlanks` is set and
@@ -107,6 +109,25 @@ image describes the image rather than the machine that built it. Checked by
 building a root containing one font and a config, and confirming `fc-list` and
 this crate report the same target-relative path and write caches inside it.
 
+**18 — cache candidates.** `FcDirCacheProcess` walks every configured cache
+directory and its loop has no early exit on failure; a candidate that will
+not open, or has gone stale, is passed over in the hope of a better one. This
+crate took the first file that existed and applied its policy to that alone,
+so a system cache left corrupt by an interrupted update took a whole
+directory's fonts away from a user cache that was perfectly current. A stale
+candidate is now remembered as a fallback, since using one is usually kinder
+than losing the directory, but it never shadows a current one.
+
+**20 — a directory that has gone.** This was expected to end as an argument
+and did not. `src/stamp.rs` treated a directory it could not stat as leaving
+its cache current, reasoning that rebuilding would fail anyway so the cache
+was the only description left. It is a description of nothing: the font files
+went with the directory, so every path it holds names a file that no longer
+opens. Fontconfig drops the directory -- `FcDirCacheProcess` fails on the
+stat and so does the rescan behind it -- and it is right to. Reported through
+`Caches::skipped` as `DirectoryUnavailable`, which is a different complaint
+from a missing or stale cache and worth telling apart.
+
 ### Version drift, not gaps
 
 | # | Finding | Why it stands |
@@ -138,15 +159,15 @@ cannot be mistaken for "all of it".
 | 13 | Tri-state boolean collapsed | Medium |
 | 14 | WOFF/WOFF2 and standalone CFF not scanned | Medium-high |
 | 17 | Relocated caches keep embedded paths | High |
-| 18 | Cache lookup stops before a later valid cache | Medium-high |
 | 19 | Traversal accepts partially corrupt caches | Medium-high |
-| 20 | Cache stays current when its directory disappears | Medium |
 | 21 | Rebuilds lack an inter-process lock | Medium |
 | 22 | LangSet copying, comparison, default insertion | Medium |
 | 25 | Application-font preference not representable | API |
 
-Two of these are expected to end as arguments rather than fixes. **20** is a
-deliberate choice, recorded in `src/stamp.rs`: a directory that cannot be read
-leaves the cache the only description of it that still exists, and rebuilding
-would fail anyway. **14** depends on `read-fonts`, which recognises only SFNT
-and collections; see `docs/fontations-gaps.md`.
+**14** is expected to end as an argument rather than a fix: it depends on
+`read-fonts`, which recognises only SFNT and collections. See
+`docs/fontations-gaps.md`.
+
+**20** was also expected to be an argument, and was not. Predicting which
+findings will survive scrutiny is worth less than reading them; that one was
+a decision I had written down and defended, and it did not hold up.

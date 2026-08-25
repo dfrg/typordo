@@ -377,3 +377,94 @@ fn no_sysroot_leaves_paths_alone() {
     let dirs: Vec<_> = config.font_dirs().filter_map(|d| d.to_str()).collect();
     assert!(dirs.contains(&"/synthetic/fonts"), "{dirs:?}");
 }
+
+// --- cache candidates -----------------------------------------------------
+
+/// A cache that will not open must not hide a good one further down.
+///
+/// `FcDirCacheProcess` walks every configured cache directory; its loop has
+/// no early exit on failure. A system cache left corrupt by an interrupted
+/// update would otherwise take a whole directory's fonts away from a user
+/// cache that is perfectly current.
+#[cfg(feature = "scan")]
+#[test]
+fn a_corrupt_cache_does_not_hide_a_valid_one() {
+    let root = std::env::temp_dir().join("typordo-two-cachedirs");
+    let _ = std::fs::remove_dir_all(&root);
+    let fonts = root.join("fonts");
+    let (first, second) = (root.join("broken"), root.join("good"));
+    for d in [&fonts, &first, &second] {
+        std::fs::create_dir_all(d).unwrap();
+    }
+
+    let conf = root.join("fonts.conf");
+    let write_conf = |dirs: &[&std::path::Path]| {
+        let mut xml = String::from("<?xml version=\"1.0\"?>\n<fontconfig>\n");
+        xml.push_str(&format!("<dir>{}</dir>\n", fonts.display()));
+        for d in dirs {
+            xml.push_str(&format!("<cachedir>{}</cachedir>\n", d.display()));
+        }
+        xml.push_str("</fontconfig>\n");
+        std::fs::write(&conf, xml).unwrap();
+    };
+
+    // Build a real cache into the second directory only.
+    write_conf(&[&second]);
+    let config = Config::load_from(&conf).unwrap();
+    assert_eq!(config.build_fonts().count(), 1, "a cache should be written");
+
+    // Now put a file that is not a cache where the first directory would
+    // hold one, and offer both.
+    write_conf(&[&first, &second]);
+    let config = Config::load_from(&conf).unwrap();
+    let name = config.cache_basename(&fonts.to_string_lossy());
+    std::fs::write(first.join(&name), b"this is not a cache").unwrap();
+
+    let mut caches = config.caches(CachePolicy::read_only());
+    let found: Vec<_> = caches.by_ref().collect();
+    assert_eq!(found.len(), 1, "the good cache should still be found: {:?}", caches.skipped());
+    assert!(caches.skipped().is_empty(), "{:?}", caches.skipped());
+
+    // And the one that was picked is the one that reads.
+    assert_eq!(found[0].0, fonts.to_string_lossy());
+}
+
+/// A cache for a directory that no longer exists is not used.
+///
+/// `FcDirCacheProcess` fails on the directory stat, and the rescan it falls
+/// back to fails the same way, so fontconfig drops the directory. The font
+/// files went with it, so a cache describing them answers with paths that no
+/// longer open -- worse than answering nothing.
+#[cfg(feature = "scan")]
+#[test]
+fn a_cache_for_a_vanished_directory_is_not_used() {
+    let root = std::env::temp_dir().join("typordo-vanished-dir");
+    let _ = std::fs::remove_dir_all(&root);
+    let fonts = root.join("fonts");
+    let caches = root.join("caches");
+    std::fs::create_dir_all(&fonts).unwrap();
+    std::fs::create_dir_all(&caches).unwrap();
+    let conf = root.join("fonts.conf");
+    std::fs::write(
+        &conf,
+        format!(
+            "<?xml version=\"1.0\"?>\n<fontconfig>\n<dir>{}</dir>\n<cachedir>{}</cachedir>\n\
+             </fontconfig>\n",
+            fonts.display(),
+            caches.display()
+        ),
+    )
+    .unwrap();
+
+    let config = Config::load_from(&conf).unwrap();
+    assert_eq!(config.build_fonts().count(), 1, "a cache should be written");
+    assert_eq!(config.caches(CachePolicy::read_only()).count(), 1, "and read back");
+
+    // Take the directory away, leaving its cache behind.
+    std::fs::remove_dir_all(&fonts).unwrap();
+
+    let mut caches = config.caches(CachePolicy::read_only());
+    assert_eq!(caches.by_ref().count(), 0, "the cache must not answer for a gone directory");
+    assert_eq!(caches.skipped().len(), 1);
+    assert_eq!(caches.skipped()[0].reason, typordo::SkipReason::DirectoryUnavailable);
+}

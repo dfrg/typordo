@@ -946,6 +946,19 @@ impl Config {
     /// the tree has been mounted somewhere else. Fontconfig falls back to it
     /// the same way, and only on Unix.
     pub fn cache_path(&self, dir: &str) -> Option<PathBuf> {
+        self.cache_paths(dir).into_iter().find(|path| self.host_path(path).is_file())
+    }
+
+    /// Every place `dir`'s cache could be, in the order to try them.
+    ///
+    /// One per configured cache directory, and within each the hashed name
+    /// then the UUID one. Fontconfig walks the whole list rather than
+    /// stopping at the first file it finds: a cache that will not open, or
+    /// that no longer describes its directory, must not hide a good one
+    /// further down. A system cache left stale by a failed update would
+    /// otherwise take a whole directory's fonts away from a user cache that
+    /// is perfectly current.
+    pub fn cache_paths(&self, dir: &str) -> Vec<PathBuf> {
         let mut names = vec![self.cache_basename(dir)];
         // The `.uuid` sits beside the font directory, so under the root.
         if let Some(uuid) = uuid_name(&self.host_path(Path::new(dir))) {
@@ -954,7 +967,7 @@ impl Config {
         self.cache_dirs
             .iter()
             .flat_map(|cache_dir| names.iter().map(move |name| cache_dir.join(name)))
-            .find(|path| self.host_path(path).is_file())
+            .collect()
     }
 
     /// Every cache this configuration reaches, roots and subdirectories both.
@@ -1456,6 +1469,10 @@ pub enum SkipReason {
     Missing,
     /// A cache exists but no longer describes the directory.
     Stale,
+    /// The directory itself cannot be read: removed, unmounted, or no longer
+    /// permitted. Whatever cache exists for it describes files that went with
+    /// it, so the directory is passed over rather than answered from memory.
+    DirectoryUnavailable,
     /// The cache file exists but could not be read.
     Unreadable,
     /// Rebuilding was asked for and failed.
@@ -1519,28 +1536,52 @@ impl Caches<'_> {
     ///
     /// Records a reason and yields nothing where the policy says to skip.
     fn open(&mut self, dir: &str) -> Option<Cache> {
-        let path = self.config.cache_path(dir);
-        let cache = match &path {
-            Some(path) => match Cache::open(self.config.host_path(path)) {
-                Ok(cache) => Some(cache),
-                Err(_) => return self.give_up(dir, SkipReason::Unreadable),
-            },
-            None => None,
-        };
+        // Every candidate is tried, not just the first that exists. One that
+        // will not open, or that has gone stale, is passed over in the hope
+        // of a better one further down the list; a stale one is remembered in
+        // case there is nothing better, since using it is usually kinder than
+        // losing the directory.
+        let mut stale = None;
+        let mut existed = false;
+        for path in self.config.cache_paths(dir) {
+            let on_disk = self.config.host_path(&path);
+            if !on_disk.is_file() {
+                continue;
+            }
+            existed = true;
+            let Ok(cache) = Cache::open(&on_disk) else { continue };
+            match crate::stamp::freshness(dir, &cache) {
+                crate::stamp::Freshness::Current => return Some(cache),
+                // The directory is gone, so no cache for it is worth
+                // anything: every path it holds names a file that went with
+                // it. Fontconfig drops the directory too.
+                crate::stamp::Freshness::Gone => {
+                    return self.give_up(dir, SkipReason::DirectoryUnavailable)
+                }
+                crate::stamp::Freshness::Stale => {
+                    stale.get_or_insert(cache);
+                }
+            }
+        }
 
-        match cache {
-            None => match self.policy.missing {
-                IfMissing::Skip => self.give_up(dir, SkipReason::Missing),
-                #[cfg(feature = "scan")]
-                IfMissing::Rebuild => self.rebuild(dir),
-            },
-            Some(cache) if crate::stamp::is_current(dir, &cache) => Some(cache),
-            Some(cache) => match self.policy.stale {
+        if let Some(cache) = stale {
+            return match self.policy.stale {
                 IfStale::Use => Some(cache),
                 IfStale::Skip => self.give_up(dir, SkipReason::Stale),
                 #[cfg(feature = "scan")]
                 IfStale::Rebuild => self.rebuild(dir),
-            },
+            };
+        }
+        // Files that would not open are a different complaint from no files
+        // at all, and a caller reading `skipped` should be able to tell them
+        // apart: one is a corrupt cache, the other an unscanned directory.
+        if existed {
+            return self.give_up(dir, SkipReason::Unreadable);
+        }
+        match self.policy.missing {
+            IfMissing::Skip => self.give_up(dir, SkipReason::Missing),
+            #[cfg(feature = "scan")]
+            IfMissing::Rebuild => self.rebuild(dir),
         }
     }
 
