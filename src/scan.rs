@@ -327,25 +327,38 @@ fn walk_mappings(font: &FontRef<'_>, mut visit: impl FnMut(u32, read_fonts::type
 /// font covers it.
 struct EmptyGlyphs<'a> {
     loca: Option<read_fonts::tables::loca::Loca<'a>>,
+    /// Whether the font carries CFF outlines, when it has no `glyf`.
+    cff: bool,
 }
 
 impl<'a> EmptyGlyphs<'a> {
     fn new(font: &FontRef<'a>) -> Self {
-        Self { loca: font.loca(None).ok() }
+        Self {
+            loca: font.loca(None).ok(),
+            cff: has_table(font, b"CFF ") || has_table(font, b"CFF2"),
+        }
     }
 
     /// Whether `glyph` draws nothing.
     ///
+    /// Three cases, because fontconfig's test is `FT_Load_Glyph` failing *or*
+    /// returning an outline with no contours, and those are different fonts.
+    ///
     /// A `glyf` outline of zero length has no contours. A CFF charstring
     /// would have to be executed to know, so those are assumed to draw --
-    /// which matches every font checked here.
+    /// which matches every font checked here. A font with neither has no
+    /// outline to load at all: `FT_Load_Glyph` fails, and fontconfig treats
+    /// that exactly as it treats an empty one. A colour bitmap font is the
+    /// common shape, and it is the one that made this matter -- Ubuntu's
+    /// `NotoColorEmoji.ttf` maps `U+0000` and `U+000D`, which fontconfig
+    /// drops and this crate was keeping.
     fn is_empty(&self, glyph: read_fonts::types::GlyphId) -> bool {
         match &self.loca {
             Some(loca) => loca
                 .get_raw(glyph.to_u32() as usize)
                 .zip(loca.get_raw(glyph.to_u32() as usize + 1))
                 .is_some_and(|(start, end)| start == end),
-            None => false,
+            None => !self.cff,
         }
     }
 }

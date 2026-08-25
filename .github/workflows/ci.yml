@@ -127,18 +127,29 @@ jobs:
       - name: parity
         run: |
           fail=0
-          # scan_parity is left out on purpose: it names how many files are
-          # expected to differ, and that count describes one font set. The
-          # rest compare the two implementations against each other and hold
-          # whatever is installed.
-          for s in parity select_parity match_parity prepare_parity \
-                   sort_parity lang_parity charset_parity cover_parity \
-                   name_parity write_parity; do
+          # Two comparisons are left out, each because it is specific to one
+          # font set or one fontconfig rather than because it is unreliable.
+          #
+          # scan_parity names how many files are expected to differ, and that
+          # count describes the corpus it was measured on.
+          #
+          # The `lang` field, and lang_parity with it, compares against
+          # fontconfig's language list. Ours is generated from 2.17.0 and has
+          # 281 entries; 2.15.0, which ubuntu-latest ships, has 279 and cannot
+          # report `got` or `cop`. A font covering Gothic then differs for a
+          # reason that says nothing about this crate. See docs/gaps.md.
+          # Each entry is a script and its arguments, so the suffix is part of
+          # the entry rather than appended to it.
+          for s in parity.sh select_parity.sh match_parity.sh prepare_parity.sh \
+                   sort_parity.sh charset_parity.sh "cover_parity.sh charset" \
+                   name_parity.sh write_parity.sh; do
             echo "::group::$s"
             # Each script exits non-zero on a difference, so the loop keeps
             # going and names every harness that failed rather than stopping
-            # at the first.
-            bash "scripts/$s.sh" || { fail=1; echo "::error::$s reported a difference"; }
+            # at the first. Unquoted deliberately: an entry may carry an
+            # argument.
+            # shellcheck disable=SC2086
+            bash scripts/$s || { fail=1; echo "::error::$s reported a difference"; }
             echo "::endgroup::"
           done
           exit $fail

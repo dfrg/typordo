@@ -14,7 +14,15 @@ export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$PWD/target}"
 cargo build -q --release --example fc_query || exit 1
 fc-list --format='%{file}\n' | sort -u > /tmp/scan-files.txt
 
-for field in charset lang; do
+# Which fields to compare, both by default.
+#
+# `lang` is worth naming separately because it is the one comparison that is
+# version-specific: the language list is generated from a particular
+# fontconfig release, and an older fontconfig cannot report the languages
+# added since. See docs/gaps.md.
+FIELDS="${*:-charset lang}"
+
+for field in $FIELDS; do
   ok=0; bad=0; shown=0
   while IFS= read -r f; do
     ours=$(cargo run -q --release --example fc_query -- --format "$field" "$f" 2>/dev/null </dev/null)

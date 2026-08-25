@@ -66,6 +66,24 @@ do not cover, so that they are read for what they are.
   compares the pattern count against fontconfig's, and it only catches it for
   a font that is *installed here*.
 
+### Version skew against the language table
+
+- **An older fontconfig cannot report the languages ours knows.** The list in
+  `src/langs.rs` is generated from fontconfig 2.17.0 and has 281 entries.
+  2.15.0 has 279: `got` and `cop` were added after it. A font whose coverage
+  satisfies Gothic is reported as covering `got` here and not by a 2.15.0
+  `fc-query`, and neither side is wrong.
+
+  Observed rather than predicted. The language module has warned about this
+  since it was written, and CI demonstrated it the first time it ran: seven
+  files differed, all of them GNU FreeFont, on a runner shipping 2.15.0.
+
+  So the `lang` comparison and `lang_parity` are not run in CI, where the
+  fontconfig is whatever the runner has. They still run locally against the
+  2.17.0 the table was generated from, which is the only version the
+  comparison means anything against. Every other harness is version-robust
+  and does run there -- and one of them found a real bug the first time.
+
 ### Configuration
 
 - **`<name>` targets beyond the pattern and the font.** Everything the
