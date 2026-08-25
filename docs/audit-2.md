@@ -206,7 +206,10 @@ Gating this on `usable_os2` rather than `font.os2()` came with it -- the last
 
 `fallback_parity` gained the `capability` and `properties` fields, the second
 of which needs the property *names* rather than a value, since an empty
-element and an absent one print identically. 460/460 over 23 crafted fonts.
+element and an absent one print identically. 460/460 over 23 crafted fonts
+at the time; it is 459 now, one field having been dropped for a reason
+`docs/gaps.md` records -- a named instance's PostScript name comes from
+FreeType, and FreeType versions do not agree on it.
 ## F8, F12 — two rules that both hinge on `family` being a list
 
 Neither shows up on a font. Both need a config whose rules are written a

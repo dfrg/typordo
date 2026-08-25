@@ -89,7 +89,7 @@ over the same fonts.
 | `compare_parity` | every `<test>` operator and `<edit>` rule, one at a time | 74 / 74 |
 | `cff_parity` | a bare `CFF ` table, every property | 2568 / 2568 |
 | `woff_parity` | WOFF and WOFF2, every property | 960 / 960 |
-| `fallback_parity` | malformed fonts, where every fallback chain runs | 460 / 460 |
+| `fallback_parity` | malformed fonts, where every fallback chain runs | 459 / 459 |
 | `bind_parity` | how firmly a matched font holds each property | 18 / 18 |
 | `parse_parity` | a font name as `FcNameParse` reads it | 2016 / 2016 |
 | `include_parity` | which `<include>` is read, and when one is fatal | 11 / 11 |

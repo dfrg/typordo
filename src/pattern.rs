@@ -378,14 +378,24 @@ impl Pattern {
     /// So `Int(200)` and `Double(200.0)` are equivalent and not equal, and
     /// `"Bold"` and `"bold"` likewise.
     pub fn equivalent(&self, other: &Pattern) -> bool {
-        if self.elements.len() != other.elements.len() {
-            return false;
+        // Both halves: a property a configuration invented is an element like
+        // any other to `FcPatternEqual`, which walks the whole pattern.
+        fn same(ours: &[(Value, Binding)], theirs: &[(Value, Binding)]) -> bool {
+            ours.len() == theirs.len()
+                && ours.iter().zip(theirs).all(|((a, _), (b, _))| a.equivalent(b))
         }
-        self.elements.iter().zip(&other.elements).all(|(ours, theirs)| {
-            ours.object == theirs.object
-                && ours.values.len() == theirs.values.len()
-                && ours.values.iter().zip(&theirs.values).all(|((a, _), (b, _))| a.equivalent(b))
-        })
+        self.elements.len() == other.elements.len()
+            && self.custom.len() == other.custom.len()
+            && self
+                .elements
+                .iter()
+                .zip(&other.elements)
+                .all(|(a, b)| a.object == b.object && same(&a.values, &b.values))
+            && self
+                .custom
+                .iter()
+                .zip(&other.custom)
+                .all(|((a, av), (b, bv))| a == b && same(av, bv))
     }
 
     /// Remove a property entirely.

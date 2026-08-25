@@ -165,6 +165,20 @@ for font in "$WORK"/*.ttf; do
   files=$((files + 1))
   differing=0
   for field in $FIELDS; do
+    # A named instance's PostScript name is FreeType's, not fontconfig's.
+    # `FcFreeTypeQueryFaceInternal` calls `FT_Set_Named_Instance` and then
+    # `FT_Get_Postscript_Name`, so what comes back is whatever that FreeType
+    # synthesises for an instance carrying no `postScriptNameID` -- and the
+    # versions disagree. 2.13 builds `DejaVuSans-Book` from the instance's
+    # subfamily name, which is the rule the OpenType spec gives and the one
+    # this crate implements; the FreeType on the CI runner builds
+    # `DejaVuSans_100_100_16` from every axis coordinate, defaults included.
+    # Neither is fontconfig behaviour and there is no version-independent
+    # answer to assert, so this one field is left out for the one crafted
+    # font that has an `fvar`. See docs/gaps.md.
+    case "$(basename "$font" .ttf):$field" in
+      vf-*:postscriptname) continue ;;
+    esac
     # Several patterns per file for a variable font, so every line counts.
     if [ "$field" = properties ]; then
       # Not an fc-query format: it asks which properties a pattern *has*, so

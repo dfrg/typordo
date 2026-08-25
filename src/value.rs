@@ -405,10 +405,14 @@ impl Value {
     /// Whether this value says the same thing as `other`.
     ///
     /// `FcValueEqual`, which is a looser question than `==`: an integer is
-    /// promoted to a double before comparing, strings fold case, and a range
-    /// is equal to another it contains -- `FcRangeIsInRange`, not an identical
-    /// pair of bounds. Two `Void`s are equal to each other and to nothing
-    /// else.
+    /// promoted to a double before comparing, and strings fold case. Two
+    /// `Void`s are equal to each other and to nothing else.
+    ///
+    /// Ranges are the strange one, and the reason this is not `PartialEq`:
+    /// `FcValueEqual` compares them with `FcRangeIsInRange (a, b)`, which asks
+    /// whether `a` fits **inside** `b`. So `[50 100]` is equivalent to
+    /// `[0 200]` and `[0 200]` is not equivalent to `[50 100]`. An equality
+    /// that does not commute is not one `==` should be spelled with.
     pub fn equivalent(&self, other: &Value) -> bool {
         match (self, other) {
             (Self::Void, Self::Void) => true,
@@ -426,7 +430,7 @@ impl Value {
             (Self::Matrix(a), Self::Matrix(b)) => a == b,
             (Self::CharSet(a), Self::CharSet(b)) => a == b,
             (Self::LangSet(a), Self::LangSet(b)) => AnyLangSet::Owned(a) == AnyLangSet::Owned(b),
-            (Self::Range(a), Self::Range(b)) => b.within(a),
+            (Self::Range(a), Self::Range(b)) => a.within(b),
             _ => false,
         }
     }

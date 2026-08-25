@@ -147,6 +147,44 @@ Places where matching fontconfig exactly would be worse.
   this would leave a bug-compatible version wrong. `scripts/scan_parity.sh`
   knows the expected count so the check stays live.
 
+- **A named instance's PostScript name is FreeType's, and FreeType versions
+  disagree.** `FcFreeTypeQueryFaceInternal` does not read name ID 6 for an
+  instance. It calls `FT_Set_Named_Instance` and then
+  `FT_Get_Postscript_Name`, so for an instance carrying no
+  `postScriptNameID` the answer is whatever that FreeType synthesises -- and
+  that is not stable across versions. FreeType 2.13 builds
+  `DejaVuSans-Book`, the instance's subfamily name after a hyphen, which is
+  the rule the OpenType specification gives and the one this crate
+  implements. The FreeType on the CI runner builds
+  `DejaVuSans_100_100_16` instead: every axis coordinate joined by
+  underscores, including the ones sitting at their defaults.
+
+  There is no version-independent value to reproduce, because the two
+  FreeTypes do not agree with each other. This crate follows the
+  specification; `fallback_parity` leaves that one field out for the one
+  crafted font that has an `fvar`, and says why. Fonts whose instances carry
+  a real `postScriptNameID` -- which is most of them, and every one in the
+  corpus -- are unaffected, and `scan_parity` compares the field across all
+  2385 of them.
+
+- **A `ScriptList` at offset zero gets no `capability`.** A `GSUB` or `GPOS`
+  table whose `scriptListOffset` is zero has no script list. FreeType seeks
+  to `base + 0` anyway, which lands on the table header, reads its
+  `majorVersion` (1) as a script count and the two bytes after it as the one
+  tag -- so fontconfig ends up with a single invalid tag, `addtag` drops it,
+  and the font gets `capability=""`. `read-fonts` reads the null offset for
+  what it is and finds no list, so this crate produces no `capability` at all.
+  One file here.
+
+  This is not fontconfig's semantics; it is its undefined response to a
+  malformed table, and a different FreeType would answer differently.
+  Reproducing it would mean writing code whose only job is to misread the same
+  bytes the same way. The finding's substance -- a script list that yields
+  only invalid tags must still produce an **empty** capability rather than
+  none, since an element that exists is scored and an absent one is skipped --
+  is fixed, and `fallback_parity` tests it with a well-formed list carrying
+  one broken tag.
+
 - **A clamped `SOURCE_DATE_EPOCH` keeps its cache.** When the pinned time is
   older than the directory -- so the clamp actually fires -- fontconfig
   writes the cache, then validates it by comparing the clamped stamp against

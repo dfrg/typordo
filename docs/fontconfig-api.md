@@ -122,7 +122,7 @@ over the patterns and no font parsing, and nothing is written to disk.
 | `FcDefaultSubstitute` | `Pattern::default_substitute()` |
 | `FcConfigSubstitute` | `Config::substitute()` |
 | `FcConfigSubstituteWithPat` | `Config::substitute_kind(query, kind, Some(pattern))` |
-| `FcNameParse` | **no equivalent** — see Gaps |
+| `FcNameParse` | **no equivalent** — see Gaps; the constants it needs are `named_constant` / `constant_for` |
 | `FcNameUnparse` / `FcPatternFormat` | **no equivalent** — see Gaps |
 | `FcPatternFilter` / `EqualSubset` | — no equivalent |
 
@@ -140,6 +140,11 @@ it in both.
 | `FcFontSort` | `sort(query, fonts, trim)` |
 | `FcFontSetSort` | `sort()`, or `sorted()` for no trimming |
 | `FcFontRenderPrepare` | `render_prepare()` |
+| `FcPatternEqual` | `Pattern::equivalent()` — **not** `==`, which is structural |
+| `FcValueEqual` | `Value::equivalent()` |
+| `FcObjectValidType` | `Object::accepts()`, and `Pattern::add` applies it |
+| `FcNameGetConstant` | `named_constant()` |
+| `FcNameConstantWithObjectCheck` | `constant_for()` |
 | `FcFontSetCreate` / `Add` / `Destroy` | `Vec<PatternRef>` |
 | `FcFontList` / `FcFontSetList` | walk `Config::caches()` and filter |
 
@@ -227,7 +232,13 @@ somebody will want them.
 - `FcNameParse` and `FcNameUnparse`. The `:`-separated pattern syntax
   (`"DejaVu Sans:bold:lang=en"`) is parsed inside `examples/fc_match.rs` and
   has never been promoted. It is the format every fontconfig command line and
-  a good deal of application code speaks.
+  a good deal of application code speaks. Leaving it in an example cost
+  something: for as long as it lived there it could not reach the constants
+  table, so `:weight=bold` was the *string* `"bold"` rather than 200 and
+  `:bold` was dropped. The lookups it needed are public now
+  (`named_constant` and `constant_for`, which are `FcNameGetConstant` and
+  `FcNameConstantWithObjectCheck`), and `parse_parity` compares the result;
+  the parser itself is still an example.
 - `FcPatternFormat`. `fc-list`-style format strings, likewise implemented in
   the examples.
 - Properties under a name the crate does not know. A configuration can invent

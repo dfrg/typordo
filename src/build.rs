@@ -437,6 +437,25 @@ mod tests {
     /// No font is needed: what is under test is when a cache is rebuilt and
     /// where it lands, and an empty directory still gets a cache. Scanning
     /// itself is covered against the real font set.
+    /// Assert that a mutation actually moved the directory's stamp.
+    ///
+    /// The staleness tests all say "change the directory, expect a rescan",
+    /// and that only follows when the change is one the filesystem can
+    /// express. `freshness` compares the recorded stamp against the current
+    /// one for exact equality, so on a filesystem with nanosecond timestamps
+    /// any mutation moves it -- but a coarse one can put the write and the
+    /// cache in the same tick, and then fontconfig would not rescan either.
+    ///
+    /// Without this the failure reads as "the cache was not stale", which
+    /// sends the next person into the cache code. It is not a cache problem.
+    fn stamp_moved(dir: &std::path::Path, before: (i32, i64)) {
+        let after = crate::stamp::directory_stamp(dir).expect("the directory is still there");
+        assert_ne!(
+            after, before,
+            "this filesystem gave the same stamp before and after the change,              so nothing could detect it -- the timestamp granularity is too              coarse for this test, not the staleness check"
+        );
+    }
+
     fn fixture(name: &str) -> (std::path::PathBuf, std::path::PathBuf) {
         let root = std::env::temp_dir().join(format!("typordo-build-{name}"));
         let _ = std::fs::remove_dir_all(&root);
@@ -488,7 +507,9 @@ mod tests {
         let builder = builder(&config, &caches);
         builder.dir(&fonts).unwrap().unwrap();
 
+        let before = crate::stamp::directory_stamp(&fonts).unwrap();
         std::fs::write(fonts.join("README"), b"not a font").unwrap();
+        stamp_moved(&fonts, before);
         assert!(
             builder.dir(&fonts).unwrap().unwrap().rescanned,
             "adding a file changes the directory mtime"
@@ -505,7 +526,9 @@ mod tests {
         let builder = builder(&config, &caches);
         builder.dir(&fonts).unwrap().unwrap();
 
+        let before = crate::stamp::directory_stamp(&fonts).unwrap();
         std::fs::remove_file(fonts.join("README")).unwrap();
+        stamp_moved(&fonts, before);
         assert!(builder.dir(&fonts).unwrap().unwrap().rescanned);
     }
 
@@ -516,7 +539,9 @@ mod tests {
         let builder = builder(&config, &caches);
         assert!(builder.dir(&fonts).unwrap().unwrap().subdirs.is_empty());
 
+        let before = crate::stamp::directory_stamp(&fonts).unwrap();
         std::fs::create_dir(fonts.join("child")).unwrap();
+        stamp_moved(&fonts, before);
         let again = builder.dir(&fonts).unwrap().unwrap();
         assert!(again.rescanned);
         assert_eq!(again.subdirs, [fonts.join("child")]);

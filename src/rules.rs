@@ -636,17 +636,29 @@ impl Edit {
         let binding = self.resolve_binding(query, positional);
         let tagged = &mut pass.tagged;
         tagged.clear();
-        // `FcPatternObjectAddWithBinding` refuses a value the property cannot
-        // hold -- and refuses `FcTypeVoid` outright -- so an edit assigning
-        // an integer to `family` has no effect rather than putting an integer
-        // there. A property a configuration invented has no declared type and
+        // An edit is graded in two steps, and they are not the same step.
+        // `FcConfigValues` drops a `FcTypeVoid` from the list as it builds it,
+        // one value at a time. Then `FcConfigAdd` walks what is left and, if
+        // *any* of it is a type the property cannot hold, adds **none** of it
+        // -- so an edit giving `weight` a string and a number stores neither,
+        // where dropping the string on its own would store the number.
+        //
+        // A property a configuration invented has no declared type and
         // accepts anything.
-        let allowed = |value: &Value| match (&self.object, value.kind()) {
+        let storable = |value: &Value| match (&self.object, value.kind()) {
             (_, None) => false,
             (Property::Known(object), Some(kind)) => object.accepts(kind),
             (Property::Custom(_), Some(_)) => true,
         };
-        tagged.extend(values.into_iter().filter(allowed).map(|v| (v, binding)));
+        let values: Vec<Value> = values.into_iter().filter(|v| v.kind().is_some()).collect();
+        if values.iter().all(storable) {
+            tagged.extend(values.into_iter().map(|v| (v, binding)));
+        }
+        // Note what is *not* conditional on that. `FcOpAssign` calls
+        // `FcConfigAdd` and then `FcConfigDel` on the marked value, and the
+        // delete is not guarded by whether the add succeeded;
+        // `FcOpAssignReplace` deletes everything before it adds. So an edit
+        // whose values the property cannot hold still empties it.
 
         // What the index gains is known before the move; what it loses is
         // known only at the point each mode drops it.

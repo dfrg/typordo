@@ -9,12 +9,12 @@ version drift this crate had already written down.
 
 | # | Area | Finding | Status |
 | --- | --- | --- | --- |
-| 2b | config | Only the first `FONTCONFIG_PATH` entry was searched | Fixed, pending |
-| 3b | config | Every include candidate was read; a missing one only warned | Fixed, pending |
-| 10b | config | `<const>` resolution, said to need the property's context | Not a 2.17.0 difference, below |
-| 11b | config | A malformed value poisoned a selector rather than failing the load | Fixed, pending |
-| 12b | pattern | `PartialEq` is structural; insertion validates nothing | Fixed, pending |
-| 22b | langset | Names outside the table are dropped by copy and ignored by equality | Fixed, pending |
+| 2b | config | Only the first `FONTCONFIG_PATH` entry was searched | Fixed, `aff0449` |
+| 3b | config | Every include candidate was read; a missing one only warned | Fixed, `aff0449` |
+| 10b | config | `<const>` resolution, said to need the property's context | Not a 2.17.0 config difference -- but see below, `7976cce` |
+| 11b | config | A malformed value poisoned a selector rather than failing the load | Fixed, `aff0449` |
+| 12b | pattern | `PartialEq` is structural; insertion validates nothing | Fixed, `aff0449` |
+| 22b | langset | Names outside the table are dropped by copy and ignored by equality | Fixed, `aff0449` |
 | 23b | data | The language table is generated from 2.17.0 | Version drift, below |
 | 24b | objects | `genericfamily` is a 2.18 property | Version drift, below |
 | 25b | api | Application-font preference | Confirmed: the original finding was wrong |
@@ -172,13 +172,15 @@ and then refuses anything `FcObjectValidType` rejects, warns, and returns
 false. `Pattern::add` accepted both. That is not tidiness: a pattern carrying a
 string where a number belongs scores as a type mismatch against every font, so
 accepting one quietly turns a query into one that matches nothing. It now
-drops them, and [`Object::accepts`] is the same check for a caller who would
+drops them, and `Object::accepts` is the same check for a caller who would
 rather ask first.
 
 **Equality.** `FcPatternEqual` compares through `FcValueEqual`, which promotes
-an integer to a double, folds case on strings, treats a range as equal to one
-it *contains* rather than one with the same bounds, and ignores bindings
-entirely.
+an integer to a double, folds case on strings, and ignores bindings entirely.
+Ranges are the strange one: `FcValueEqual (a, b)` is `FcRangeIsInRange (a, b)`,
+which is `a` **inside** `b` -- so `[50 100]` equals `[0 200]` and `[0 200]`
+does not equal `[50 100]`. Equality that is not symmetric is a good reason on
+its own not to spell this `==`.
 
 That is not what `==` should mean for a Rust type. Derived `PartialEq` answers
 "did this round-trip", which is what the cache tests need and what a reader
@@ -187,6 +189,45 @@ expects of `==`; a case-insensitive `==` that also calls `Int(200)` and
 `Hash`. So the derived one stays and `Pattern::equivalent` is the fontconfig
 question, named so that choosing it is deliberate. `Value::equivalent` is
 `FcValueEqual` underneath it.
+
+### What the insertion half turned up
+
+`FcPatternAdd`'s check is not the only one, and the other one is graded
+differently. An `<edit>` goes through `FcConfigValues`, which drops a
+`FcTypeVoid` from the list one value at a time, and then through
+`FcConfigAdd`, which walks what is left and adds **none** of it if *any* of it
+is a type the property cannot hold. So an edit giving `weight` a string and a
+number stores neither, where dropping the string on its own would have stored
+the number.
+
+And the delete is not conditional on the add:
+
+```c
+case FcOpAssign:
+    if (value[object]) {
+        FcConfigAdd (&elt[object]->values, thisValue, FcTrue, l, ...);
+        if (thisValue)
+            FcConfigDel (&elt[object]->values, thisValue, object, table);
+```
+
+`FcConfigAdd` returns false and `FcConfigDel` runs anyway, so an assign whose
+values are unusable does not leave the property alone -- it **empties** it.
+`FcOpAssignReplace` is the same, deleting everything before it tries. Measured
+against 2.17.1: `<edit name="weight" mode="assign"><string>x</string></edit>`
+on a pattern with `weight=200` leaves no weight at all.
+
+Eight `compare_parity` cases, three of which fail against the previous code.
+
+### A harness that was comparing two different things
+
+Writing those cases turned up a flaw in `compare_parity` itself: it asked
+fontconfig for `fc-pattern -c` and this crate for a fully substituted query.
+`-c` is *config* substitution alone -- `-d` is what runs
+`FcDefaultSubstitute` -- so any property the defaults fill in was being
+compared against one that had not been through them. It never mattered,
+because until now every case compared `family` or `style`, which the defaults
+do not touch. The weight cases compared a property they do, and it showed up
+immediately as a difference that was not one. Both sides now do both passes.
 
 ## 22b — a language the table cannot name is still in the set
 
@@ -208,6 +249,24 @@ compared equal to an empty set. `langs`, `len` and `contains` on `AnyLangSet`
 had the same hole -- the owned half of it, at least. A *cached* set never has
 extras at all: `FcLangSetSerialize` sets the field to `NULL` and says so in a
 comment, which is why this only ever separates two scanned sets.
+
+## A note the revalidation made in passing
+
+Its verification run reported three cache tests failing on the machine it ran
+on -- `a_changed_directory_is_rescanned` and two like it -- and said,
+correctly, that this did not establish a regression: they assume a directory's
+timestamp moves after a same-tick change, and on that filesystem it did not.
+
+They now say so themselves. Each asserts that the stamp actually moved before
+asserting that the cache went stale, so a filesystem too coarse to express the
+change reports *that* rather than "the cache was not stale", which is what
+sent the revalidation looking at the cache code. It is not a cache problem: a
+stamp that did not move is one fontconfig would not rescan for either.
+
+The property underneath has a test of its own now, in `stamp`, which involves
+no clock at all: given a recorded stamp and a directory, is the verdict right.
+It checks a match, four kinds of mismatch, and a directory that has been
+removed, and it holds on any filesystem.
 
 ## 23b, 24b — version drift, already written down
 

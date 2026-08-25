@@ -208,3 +208,48 @@ fn listing_adler32(dir: &Path) -> io::Result<i32> {
     let sum = a | (b << 16);
     Ok(if sum == 0 { 1 } else { sum as i32 })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::write::CacheWriter;
+
+    /// The three end-to-end staleness tests in `build` all depend on the
+    /// filesystem producing a different timestamp after a change, which is
+    /// not something a test can insist on. This one asks the question
+    /// directly instead: given a recorded stamp and a directory, is the
+    /// verdict right? No clock is involved, so it holds anywhere.
+    #[test]
+    fn a_recorded_stamp_that_does_not_match_is_stale() {
+        let dir = std::env::temp_dir().join("typordo-freshness");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.to_str().unwrap();
+
+        let written = |seconds: i32, nanoseconds: i64| {
+            let mut writer = CacheWriter::new(path);
+            writer.mtime(seconds, nanoseconds);
+            Cache::new(writer.finish().into_boxed_slice()).expect("a readable cache")
+        };
+
+        let (seconds, nanoseconds) = directory_stamp(&dir).expect("the directory is there");
+        assert_eq!(freshness(path, &written(seconds, nanoseconds)), Freshness::Current);
+
+        // Any difference at all, in either field and in either direction:
+        // the comparison is equality, not "no older than".
+        for (s, n) in [
+            (seconds - 1, nanoseconds),
+            (seconds + 1, nanoseconds),
+            (seconds, nanoseconds + 1),
+            (seconds, nanoseconds - 1),
+        ] {
+            assert_eq!(freshness(path, &written(s, n)), Freshness::Stale, "{s}.{n}");
+        }
+
+        // A directory that is not there at all is neither: the cache
+        // describes fonts whose paths no longer open.
+        let cache = written(seconds, nanoseconds);
+        std::fs::remove_dir_all(&dir).unwrap();
+        assert_eq!(freshness(path, &cache), Freshness::Gone);
+    }
+}

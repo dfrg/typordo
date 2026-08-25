@@ -10,8 +10,8 @@ was not, which is the argument for having them.
 
 | # | Area | Finding | Status |
 | --- | --- | --- | --- |
-| F8b | rules | The test fires correctly, but marks the wrong value | Fixed, pending |
-| F9b | cache | Our written caches still tagged values strong | Fixed, pending |
+| F8b | rules | The test fires correctly, but marks the wrong value | Fixed, `7976cce` |
+| F9b | cache | Our written caches still tagged values strong | Fixed, `7976cce` |
 | F13b | scanner | A `ScriptList` at offset zero still yields no `capability` | Won't fix, below |
 
 ## F8b — the test fires correctly, and marks the wrong value

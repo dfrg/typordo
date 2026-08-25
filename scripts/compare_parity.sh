@@ -42,7 +42,7 @@ run_case() { # $1 = <test> element, $2 = pattern
 </match>
 </fontconfig>
 XML
-  theirs=$(FONTCONFIG_FILE="$D/f.conf" fc-pattern -c "$2" 2>/dev/null | grep -c FIRED)
+  theirs=$(FONTCONFIG_FILE="$D/f.conf" fc-pattern -c -d "$2" 2>/dev/null | grep -c FIRED)
   ours=$(cargo run -q --release --example fc_match -- \
            --config "$D/f.conf" --dump-query "$2" 2>/dev/null | grep -c FIRED)
   [ "$theirs" -gt 0 ] && theirs=pass || theirs=fail
@@ -69,7 +69,7 @@ run_alias() { # $1 = tests, $2 = pattern
 </alias>
 </fontconfig>
 XML
-  theirs=$(FONTCONFIG_FILE="$D/f.conf" fc-pattern -c "$2" 2>/dev/null | grep -c MarkerFamily)
+  theirs=$(FONTCONFIG_FILE="$D/f.conf" fc-pattern -c -d "$2" 2>/dev/null | grep -c MarkerFamily)
   ours=$(cargo run -q --release --example fc_match --            --config "$D/f.conf" --dump-query "$2" 2>/dev/null | grep -c MarkerFamily)
   [ "$theirs" -gt 0 ] && theirs=pass || theirs=fail
   [ "$ours" -gt 0 ] && ours=pass || ours=fail
@@ -204,7 +204,7 @@ edit_case() { # $1 = edit body, $2 = property, $3 = label
 </match>
 </fontconfig>
 XML
-  theirs=$(FONTCONFIG_FILE="$D/f.conf" fc-pattern -c serif 2>/dev/null            | sed -n "s/^[[:space:]]*$2: //p" | head -1)
+  theirs=$(FONTCONFIG_FILE="$D/f.conf" fc-pattern -c -d serif 2>/dev/null            | sed -n "s/^[[:space:]]*$2: //p" | head -1)
   ours=$(cargo run -q --release --example fc_match --            --config "$D/f.conf" --dump-query serif 2>/dev/null            | sed -n "s/^$2	//p" | head -1 | cut -f1)
   # Both sides say the same thing in different notation, so compare the
   # normalised form: the number and whether it is an integer or a double.
@@ -252,7 +252,7 @@ rule_case() { # $1 = rule body, $2 = query, $3 = label, $4 = object (default fam
 <match target="pattern">$1</match>
 </fontconfig>
 XML
-  theirs=$(FONTCONFIG_FILE="$D/f.conf" fc-pattern -c "$2" 2>/dev/null | python3 scripts/lib/field.py theirs "${4:-family}")
+  theirs=$(FONTCONFIG_FILE="$D/f.conf" fc-pattern -c -d "$2" 2>/dev/null | python3 scripts/lib/field.py theirs "${4:-family}")
   ours=$(cargo run -q --release --example fc_match -- \
            --config "$D/f.conf" --dump-query "$2" 2>/dev/null | python3 scripts/lib/field.py ours "${4:-family}")
   if [ "$ours" = "$theirs" ]; then
@@ -305,6 +305,22 @@ rule_case '<test name="style" qual="not_first"><string>SA</string></test><edit n
 rule_case '<test name="style" qual="not_first"><string>SA</string></test><edit name="style" mode="append"><string>Hit</string></edit>' "Q:style=SB:style=SA" "not_first, value only later" style
 rule_case '<test name="style" qual="first"><string>SA</string><string>SB</string></test><edit name="style" mode="append"><string>Hit</string></edit>' "Q:style=SB:style=SA" "first, a later value marks it" style
 rule_case '<test name="style" qual="first"><string>SA</string><string>SB</string></test><edit name="style" mode="append"><string>Hit</string></edit>' "Q:style=SA:style=SB" "first, the head marks it" style
+
+# A value an `<edit>` cannot store. `FcConfigAdd` walks the whole list first
+# and adds *nothing* if any of it is a type the property will not hold -- but
+# `FcOpAssign` deletes the marked value afterwards either way, and
+# `FcOpAssignReplace` deletes everything before it tries. So a bad value in an
+# assign does not leave the property alone: it empties it.
+W='<test name="weight"><int>200</int></test>'
+echo "=== a value an <edit> cannot store"
+rule_case "$W<edit name=\"weight\" mode=\"assign\"><int>100</int></edit>" ":weight=200" "assign, one valid value" weight
+rule_case "$W<edit name=\"weight\" mode=\"assign\"><string>x</string></edit>" ":weight=200" "assign, one value of the wrong type" weight
+rule_case "$W<edit name=\"weight\" mode=\"assign\"><string>x</string><int>100</int></edit>" ":weight=200" "assign, wrong type then right" weight
+rule_case "$W<edit name=\"weight\" mode=\"assign\"><int>100</int><string>x</string></edit>" ":weight=200" "assign, right type then wrong" weight
+rule_case "$W<edit name=\"weight\" mode=\"append\"><string>x</string><int>100</int></edit>" ":weight=200" "append, wrong type then right" weight
+rule_case "$W<edit name=\"weight\" mode=\"assign_replace\"><string>x</string></edit>" ":weight=200" "assign_replace, wrong type" weight
+rule_case "<edit name=\"weight\" mode=\"assign\"><string>x</string></edit>" ":weight=200" "assign with no test at all" weight
+rule_case "$W<edit name=\"family\" mode=\"assign\"><int>7</int></edit>" ":weight=200" "an int assigned to family" family
 
 echo "=== a conditional <alias> (FcParseAlias keeps its tests)"
 run_alias "$(t lang contains "$(str ja)")" 'serif:lang=ja' "ja alias, ja query"
