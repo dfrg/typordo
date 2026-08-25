@@ -239,6 +239,12 @@ impl<'a> Builder<'a> {
         if let Some(parent) = on_disk.parent() {
             std::fs::create_dir_all(parent)?;
         }
+        // The lock is what makes the fixed `.NEW` name safe. Two processes
+        // rebuilding the same directory would otherwise write the same
+        // temporary file, and each could rename the other's half of it into
+        // place. `fc-cache` and a desktop session starting at once is not a
+        // hypothetical; it is the usual way a machine boots.
+        let _lock = Lock::take(&on_disk)?;
         let temp = on_disk.with_extension("NEW");
         std::fs::write(&temp, bytes)?;
         // Rename over an existing file is atomic on Unix and, since Windows
@@ -312,6 +318,101 @@ fn entries(dir: &Path) -> io::Result<(Vec<PathBuf>, Vec<PathBuf>)> {
     dirs.sort();
     files.sort();
     Ok((dirs, files))
+}
+
+/// How long a lock may sit before it is assumed to belong to a dead process.
+///
+/// `FcAtomicLock`'s ten minutes, and its assumption with it: that machines
+/// sharing a filesystem keep their clocks reasonably close. A shorter timeout
+/// would steal the lock from a slow but living rebuild; a longer one leaves a
+/// crashed process blocking every other for that much longer.
+const LOCK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10 * 60);
+
+/// An exclusive claim on one cache file, held while it is replaced.
+///
+/// `FcAtomicLock`: a `<cache>.LCK` beside the cache, created by hard-linking
+/// a temporary file that names the owning process. The hard link is the
+/// atomic part -- `link` fails if the destination exists, and it fails for
+/// every process but one. Filesystems that refuse hard links fall back to
+/// `mkdir`, which is atomic for the same reason.
+///
+/// Released on drop, including on the error paths, which is the difference
+/// between a failed rebuild and a directory nothing can rebuild for the next
+/// ten minutes.
+struct Lock {
+    path: PathBuf,
+}
+
+impl Lock {
+    fn take(cache: &Path) -> io::Result<Self> {
+        let path = with_suffix(cache, ".LCK");
+        match Self::claim(cache, &path) {
+            Ok(()) => Ok(Self { path }),
+            Err(e) => {
+                // Someone holds it. If it is old enough to have been
+                // abandoned, take it over; fontconfig does the same, and for
+                // the same reason -- a crashed `fc-cache` should not stop the
+                // machine caching fonts.
+                if !Self::is_stale(&path) {
+                    return Err(e);
+                }
+                let _ = std::fs::remove_file(&path);
+                let _ = std::fs::remove_dir(&path);
+                Self::claim(cache, &path).map(|()| Self { path })
+            }
+        }
+    }
+
+    fn claim(cache: &Path, lock: &Path) -> io::Result<()> {
+        // The temporary carries our process id, as fontconfig's does: it is
+        // never read back, but it is what makes a leftover lock diagnosable.
+        let temp = with_suffix(cache, &format!(".TMP-{}", std::process::id()));
+        std::fs::write(
+            &temp,
+            format!(
+                "{}
+",
+                std::process::id()
+            ),
+        )?;
+        let linked = std::fs::hard_link(&temp, lock);
+        let _ = std::fs::remove_file(&temp);
+        match linked {
+            Ok(()) => Ok(()),
+            // A filesystem that will not hard-link -- some network mounts,
+            // and FAT -- still creates directories atomically.
+            Err(e) if e.kind() != io::ErrorKind::AlreadyExists => match std::fs::create_dir(lock) {
+                Ok(()) => Ok(()),
+                Err(_) => Err(e),
+            },
+            Err(e) => Err(e),
+        }
+    }
+
+    fn is_stale(lock: &Path) -> bool {
+        let Ok(meta) = std::fs::metadata(lock) else { return false };
+        let Ok(modified) = meta.modified() else { return false };
+        modified.elapsed().is_ok_and(|age| age > LOCK_TIMEOUT)
+    }
+}
+
+impl Drop for Lock {
+    fn drop(&mut self) {
+        // Whichever way it was taken.
+        if std::fs::remove_file(&self.path).is_err() {
+            let _ = std::fs::remove_dir(&self.path);
+        }
+    }
+}
+
+/// `path` with `suffix` appended to its file name.
+///
+/// Not `with_extension`, which would replace the `.cache-9` a cache file ends
+/// with rather than adding to it.
+fn with_suffix(path: &Path, suffix: &str) -> PathBuf {
+    let mut name = path.file_name().unwrap_or_default().to_os_string();
+    name.push(suffix);
+    path.with_file_name(name)
 }
 
 #[cfg(test)]
@@ -495,5 +596,69 @@ mod tests {
             .filter(|name| name.ends_with(".NEW"))
             .collect();
         assert!(leftovers.is_empty(), "{leftovers:?}");
+    }
+}
+
+#[cfg(test)]
+mod lock_tests {
+    use super::{with_suffix, Lock};
+    use std::path::Path;
+
+    #[test]
+    fn a_suffix_is_added_not_substituted() {
+        let path = Path::new("/tmp/abc-le64.cache-9");
+        assert_eq!(with_suffix(path, ".LCK"), Path::new("/tmp/abc-le64.cache-9.LCK"));
+        // `with_extension` would have produced `abc-le64.LCK`, which is a
+        // different file and would not exclude anyone.
+        assert_ne!(with_suffix(path, ".LCK"), path.with_extension("LCK"));
+    }
+
+    #[test]
+    fn a_lock_excludes_a_second_taker_and_releases_on_drop() {
+        let dir = std::env::temp_dir().join("typordo-lock-test");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let cache = dir.join("abc-le64.cache-9");
+
+        let held = Lock::take(&cache).expect("the first taker gets it");
+        assert!(with_suffix(&cache, ".LCK").exists(), "the lock file should be there");
+        assert!(Lock::take(&cache).is_err(), "a second taker must be refused");
+        drop(held);
+        assert!(!with_suffix(&cache, ".LCK").exists(), "dropping releases it");
+
+        // And it can be taken again afterwards.
+        let again = Lock::take(&cache).expect("released means available");
+        drop(again);
+
+        // No temporary is left behind.
+        let leftovers: Vec<_> = std::fs::read_dir(&dir)
+            .unwrap()
+            .filter_map(|e| e.ok().map(|e| e.file_name().to_string_lossy().into_owned()))
+            .collect();
+        assert!(leftovers.is_empty(), "{leftovers:?}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A lock left by a process that died must not block rebuilding for ever.
+    /// The age is read from the file's own timestamp, so the test sets one.
+    #[test]
+    fn a_lock_old_enough_to_be_abandoned_is_taken_over() {
+        let dir = std::env::temp_dir().join("typordo-stale-lock-test");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let cache = dir.join("abc-le64.cache-9");
+        let lock = with_suffix(&cache, ".LCK");
+
+        std::fs::write(&lock, b"99999\n").unwrap();
+        assert!(Lock::take(&cache).is_err(), "a fresh lock is respected");
+
+        // Back-date it past the timeout.
+        let old =
+            std::time::SystemTime::now() - super::LOCK_TIMEOUT - std::time::Duration::from_secs(60);
+        std::fs::File::options().write(true).open(&lock).unwrap().set_modified(old).unwrap();
+        let taken = Lock::take(&cache).expect("a stale lock is taken over");
+        drop(taken);
+        assert!(!lock.exists());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
