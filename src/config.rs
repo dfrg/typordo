@@ -20,7 +20,6 @@
 //! `<remap-dir>` and its `salt` attribute are unhandled, so a sandboxed
 //! configuration that remaps font paths will not find its caches.
 
-use std::borrow::Cow;
 use std::collections::{HashMap, HashSet, VecDeque};
 
 use crate::fnv::BuildFnv;
@@ -1805,19 +1804,6 @@ pub enum SkipReason {
     RebuildFailed(String),
 }
 
-/// A path under `dir` carrying `path`'s last component.
-///
-/// `FcStrBuildFilename (forDir, FcStrBasename (path), NULL)`: what a relocated
-/// cache's entries are rewritten to. A path with no final component -- a root,
-/// or a trailing separator -- is left alone, since there is nothing to carry
-/// over and inventing one would name a different file.
-fn rebase(dir: &str, path: &str) -> String {
-    match Path::new(path).file_name().and_then(|n| n.to_str()) {
-        Some(name) => Path::new(dir).join(name).to_string_lossy().into_owned(),
-        None => path.to_string(),
-    }
-}
-
 /// Iterator over every cache a [`Config`] reaches.
 ///
 /// Directories are visited breadth-first from the configured roots, following
@@ -1853,26 +1839,15 @@ impl Iterator for Caches<'_> {
             if !self.seen.insert(dir.clone()) {
                 continue;
             }
+            // Already describing `dir`, subdirectories included: `open`
+            // rebases a relocated cache before handing it out.
             let Some(cache) = self.open(&dir) else { continue };
-            // A cache found for a directory it was not built for -- copied
-            // into an image, or reached through a sysroot -- describes the
-            // build machine's layout. `FcConfigAddCache` compares the two and,
-            // when they differ, rebuilds each subdirectory as the requested
-            // directory plus the old basename. Without that the walk descends
-            // into paths belonging to a filesystem that is not this one.
-            let relocated = cache.dir().is_ok_and(|d| d != dir);
             if let Ok(subdirs) = cache.subdirs() {
                 for subdir in subdirs.flatten() {
-                    let subdir = if relocated {
-                        Cow::Owned(rebase(&dir, subdir))
-                    } else {
-                        Cow::Borrowed(subdir)
-                    };
                     // A rejected directory prunes the walk, the same way
                     // fontconfig filters subdirectories as it descends.
-                    if !self.seen.contains(subdir.as_ref()) && self.config.accepts_filename(&subdir)
-                    {
-                        self.pending.push_back(subdir.into_owned());
+                    if !self.seen.contains(subdir) && self.config.accepts_filename(subdir) {
+                        self.pending.push_back(subdir.to_string());
                     }
                 }
             }
@@ -1886,6 +1861,32 @@ impl Caches<'_> {
     /// The cache for `dir`, applying the policy to whatever is wrong with it.
     ///
     /// Records a reason and yields nothing where the policy says to skip.
+    /// A cache, made to describe the directory it was found for.
+    ///
+    /// A cache records the directory it was built for, and that is not always
+    /// the one being asked about: copying a tree with its timestamps intact
+    /// -- `tar -p`, `rsync -a`, `mv`, a sysroot image -- leaves a cache that
+    /// still reads as current in its new home while every path inside it
+    /// names the old one. `FcConfigAddCache` rebases those paths as it builds
+    /// its font set; [`Cache::rebased`] rebuilds the cache image instead,
+    /// which costs one pass and no font parsing and leaves the rest of this
+    /// crate handing out cursors into it as usual.
+    ///
+    /// Nothing is written to disk. That matters: a read-only image is the
+    /// usual reason a cache is somewhere other than where it was built.
+    fn hand_out(&mut self, dir: &str, cache: Cache) -> Option<Cache> {
+        match cache.dir() {
+            Ok(recorded) if recorded == dir => Some(cache),
+            Ok(_) => match cache.rebased(dir) {
+                Ok(rebased) => Some(rebased),
+                // A cache that will not rebase cannot be used: every path in
+                // it names a file that will not open.
+                Err(_) => self.give_up(dir, SkipReason::Unreadable),
+            },
+            Err(_) => self.give_up(dir, SkipReason::Unreadable),
+        }
+    }
+
     fn open(&mut self, dir: &str) -> Option<Cache> {
         // Every candidate is tried, not just the first that exists. One that
         // will not open, or that has gone stale, is passed over in the hope
@@ -1916,7 +1917,7 @@ impl Caches<'_> {
                 continue;
             }
             match crate::stamp::freshness(dir, &cache) {
-                crate::stamp::Freshness::Current => return Some(cache),
+                crate::stamp::Freshness::Current => return self.hand_out(dir, cache),
                 // The directory is gone, so no cache for it is worth
                 // anything: every path it holds names a file that went with
                 // it. Fontconfig drops the directory too.
@@ -1931,7 +1932,7 @@ impl Caches<'_> {
 
         if let Some(cache) = stale {
             return match self.policy.stale {
-                IfStale::Use => Some(cache),
+                IfStale::Use => self.hand_out(dir, cache),
                 IfStale::Skip => self.give_up(dir, SkipReason::Stale),
                 #[cfg(feature = "scan")]
                 IfStale::Rebuild => self.rebuild(dir),

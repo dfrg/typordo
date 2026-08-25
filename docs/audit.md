@@ -66,7 +66,7 @@ corpus does not contain.
 | 18 | Cache lookup stopped at the first candidate | Test fails on old behaviour | `e2db80c` |
 | 20 | Cache stayed current when its directory vanished | Test fails on old behaviour | `e2db80c` |
 | 19 | Traversal accepted partially corrupt caches | Test fails on old behaviour | `8e41e5b` |
-| 17 | Relocated cache kept the build machine's subdirectory paths | Test fails on old behaviour | `5c3406a` (part) |
+| 17 | Relocated cache kept the build machine's paths | DIFF->MATCH against `fc-list` | `5c3406a`, *this commit* |
 | 9.2-9.5 | Range, charset, langset and matrix comparison | 36 cases against `fc-pattern -c` | `31575bb` |
 | 6 | Conditional `<alias>` tests discarded | DIFF->MATCH against `fc-pattern -c` | `31575bb` |
 | 7 | Empty selector patterns inverted accept/reject | DIFF->MATCH against `fc-list` | `7d16166` |
@@ -186,12 +186,32 @@ subdirectory is not merely a wrong string, it sends the walk into a tree that
 does not exist and silently drops every font below it -- and it is entirely
 internal to the walk, so it could go in without deciding anything.
 
-The font-path half is **set aside for a decision**, and the reason is the
-design rather than the work. A `PatternRef` is a cursor into the mapped cache;
-there is nowhere to put a rewritten path without either owning the pattern or
-handing the caller a helper it must remember to call, and a helper you must
-remember is the same silent wrongness in a new place. It wants an answer about
-what `Caches` yields, which is a public shape. Noted for the author.
+The font-path half was set aside for a decision, and the decision was to stop
+trying to rewrite paths one at a time. A `PatternRef` is a cursor into the
+mapped cache, so there is nowhere to put a rewritten path -- but there is
+somewhere to put a rewritten *cache*. `Cache::rebased` rebuilds the image
+once, with every font's `FC_FILE` and every subdirectory moved under the
+directory the cache was found in, and the walk hands that out instead. Callers
+see what they always saw and it is now correct.
+
+It costs one pass over the cache and no font parsing, which is what makes it
+cheap enough to do on open. Nothing is written to disk, which matters more
+than the speed: a read-only image is the usual reason a cache is somewhere
+other than where it was built, so a rebuild -- the obvious alternative --
+would fail exactly where this is needed.
+
+One thing does not survive the rebuild: properties the cache identifies only
+by a runtime id. Those ids were minted by whichever process wrote the file and
+mean nothing to another, which is why `Pattern::from_pattern` already dropped
+them. Everything else is checked rather than assumed -- a real cache of a
+variable font, six patterns, compared property by property in order, with
+`file` the only thing that moved.
+
+Building it turned up a bug of its own. `Path::join` uses the *host's*
+separator, so a Unix cache rebased while running on Windows came out as
+`/somewhere/else\Font.ttf` -- a path that names nothing on either system.
+A cache holds the paths of the machine it describes, not the one reading it,
+so the separator now comes from the directory being joined to.
 
 Worth saying that relocation is not exotic. The copy that causes it -- `tar
 -p`, `rsync -a`, `mv`, a sysroot image -- generally preserves directory
@@ -515,7 +535,6 @@ What is left, and why each is still open rather than fixed.
 | --- | --- | --- |
 | 13 | Tri-state boolean collapsed | Real, unreachable on any config measured; the fix changes a public type |
 | 14 | WOFF and standalone CFF not scanned | Real and confirmed by measurement; blocked on `read-fonts` |
-| 17 | Relocated caches keep embedded font paths | Needs a decision about what `Caches` yields |
 | 25 | Application-font preference not representable | API design |
 
 **13 - `FcDontCare`.** Fontconfig's booleans have three states, and the third
@@ -554,9 +573,8 @@ The gap itself stands where it was: `read-fonts` recognises SFNT and
 collections, and a WOFF is neither until something decompresses it. Written up
 with the measurement as gap 8 in `docs/fontations-gaps.md`.
 
-**17** and **25** are described where they belong -- 17 above, 25 unexamined
-beyond the report. Both want an answer about public shape rather than about
-fontconfig.
+**25** is unexamined beyond the report, and wants an answer about public shape
+rather than about fontconfig.
 
 ### On predicting which findings will survive
 

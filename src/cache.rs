@@ -3,7 +3,10 @@ use std::path::Path;
 use crate::bytes::Bytes;
 use crate::error::{Error, Result};
 use crate::layout;
+use crate::object::Object;
+use crate::pattern::Pattern;
 use crate::pattern::PatternRef;
+use crate::write::CacheWriter;
 
 /// Magic on a cache written to disk, `FC_CACHE_MAGIC_MMAP`.
 ///
@@ -101,6 +104,58 @@ impl Cache {
         }
         let bytes = std::fs::read(path)?;
         Self::from_storage(Storage::Owned(bytes.into_boxed_slice()))
+    }
+
+    /// This cache with every path it holds moved under `dir`.
+    ///
+    /// A cache found for a directory it was not built for -- copied into an
+    /// image, reached through a sysroot, or simply moved -- describes the
+    /// machine that built it. `FcConfigAddCache` compares the directory a
+    /// cache records with the one it was asked for and, when they differ,
+    /// rebuilds each font's `FC_FILE` and each subdirectory as the requested
+    /// directory plus the old basename. This is that, done once over the
+    /// whole cache rather than per font at every read.
+    ///
+    /// Fontconfig rewrites the patterns in memory as it builds its font set;
+    /// this crate hands out cursors into the mapped file, so there is nowhere
+    /// to put a rewritten path. Rebuilding the cache image instead costs one
+    /// pass and no font parsing, which is what makes it cheap enough to do on
+    /// open -- and it needs no write access, so it still works on the
+    /// read-only image that is the usual reason a cache is relocated at all.
+    ///
+    /// The recorded modification time is carried across unchanged. It has
+    /// already been checked against the directory this cache is being used
+    /// for; a relocation that preserved timestamps is exactly what let it
+    /// match.
+    ///
+    /// One thing does not survive: properties the cache identifies only by a
+    /// runtime id. Those ids were minted by whichever process wrote the file
+    /// and mean nothing here, which is why [`Pattern::from_pattern`] drops
+    /// them too.
+    pub(crate) fn rebased(&self, dir: &str) -> Result<Self> {
+        let (seconds, nanoseconds) = self.mtime()?;
+        let subdirs: Vec<String> =
+            self.subdirs()?.flatten().map(|path| rebase(dir, path)).collect();
+        let fonts: Vec<Pattern> = self
+            .fonts()?
+            .map(|font| {
+                let mut owned = Pattern::from_pattern(&font);
+                if let Some(file) = font.string(Object::File) {
+                    owned.set(Object::File, rebase(dir, file).as_str());
+                }
+                owned
+            })
+            .collect();
+
+        let mut writer = CacheWriter::new(dir);
+        writer.mtime(seconds, nanoseconds);
+        for path in &subdirs {
+            writer.subdir(path);
+        }
+        for font in &fonts {
+            writer.font(font);
+        }
+        Self::new(writer.finish().into_boxed_slice())
     }
 
     /// Validate an already-loaded cache file.
@@ -355,5 +410,135 @@ mod storage_tests {
         let path = dir.join("stub");
         std::fs::write(&path, b"not a cache").unwrap();
         assert!(Cache::open(&path).is_err());
+    }
+}
+
+/// `path` with its last component moved under `dir`.
+///
+/// `FcStrBuildFilename (forDir, FcStrBasename (path), NULL)`. A path with no
+/// final component -- a root, or a trailing separator -- is left alone: there
+/// is nothing to carry over and inventing one would name a different file.
+///
+/// Deliberately not `Path::join`, which uses the *host's* separator. A cache
+/// holds the paths of the machine it describes, and this crate reads caches
+/// for machines other than the one running it; joining a Unix path with a
+/// backslash because Windows is doing the reading produces a path that names
+/// nothing anywhere. The separator comes from `dir` instead, falling back to
+/// `/` -- which every cache in the wild uses and which Windows accepts.
+pub(crate) fn rebase(dir: &str, path: &str) -> String {
+    let Some(name) = basename(path) else { return path.to_string() };
+    let separator = if dir.contains('\\') && !dir.contains('/') { '\\' } else { '/' };
+    let trimmed = dir.strip_suffix(['/', '\\']).unwrap_or(dir);
+    let mut out = String::with_capacity(trimmed.len() + 1 + name.len());
+    out.push_str(trimmed);
+    out.push(separator);
+    out.push_str(name);
+    out
+}
+
+/// The last component of `path`, or `None` if it has none.
+///
+/// Both separators, whichever platform is reading: a cache written on Unix
+/// holds `/` and one written on Windows holds `\`, and either may be read
+/// from the other.
+fn basename(path: &str) -> Option<&str> {
+    let name = match path.rfind(['/', '\\']) {
+        Some(at) => &path[at + 1..],
+        None => path,
+    };
+    (!name.is_empty()).then_some(name)
+}
+
+#[cfg(test)]
+mod rebase_tests {
+    use super::{rebase, Cache};
+    use std::path::Path;
+
+    fn fixture() -> Cache {
+        let path =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/cantarell-le64.cache-9");
+        Cache::open(&path).expect("fixture cache")
+    }
+
+    /// Every property of every font, as text, so two caches can be compared
+    /// without caring what types are involved.
+    fn dump(cache: &Cache) -> Vec<Vec<(String, Vec<String>)>> {
+        cache
+            .fonts()
+            .expect("fonts")
+            .map(|font| {
+                font.elements()
+                    .map(|element| {
+                        let name = match element.object() {
+                            Some(object) => object.name().to_string(),
+                            None => format!("#{}", element.id()),
+                        };
+                        (name, element.values().map(|v| format!("{v:?}")).collect())
+                    })
+                    .collect()
+            })
+            .collect()
+    }
+
+    /// Rebasing rebuilds the whole cache image, so every property of every
+    /// font makes a round trip. The paths are the point; the risk is
+    /// everything beside them. This asserts `file` is the only thing that
+    /// moved -- compared field by field over a real cache of a variable font,
+    /// which has six patterns and something in nearly every property.
+    #[test]
+    fn rebasing_moves_the_paths_and_nothing_else() {
+        let cache = fixture();
+        let old_dir = cache.dir().expect("a recorded directory").to_string();
+        let new_dir = "/somewhere/else";
+
+        let rebased = cache.rebased(new_dir).expect("rebased");
+        assert_eq!(rebased.dir().unwrap(), new_dir);
+        assert_eq!(rebased.mtime().unwrap(), cache.mtime().unwrap(), "the stamp is carried");
+
+        let subdirs: Vec<&str> = cache.subdirs().unwrap().flatten().collect();
+        let moved: Vec<&str> = rebased.subdirs().unwrap().flatten().collect();
+        assert_eq!(subdirs.len(), moved.len());
+        for (before, after) in subdirs.iter().zip(&moved) {
+            assert_eq!(&rebase(new_dir, before), after);
+        }
+
+        let (before, after) = (dump(&cache), dump(&rebased));
+        assert!(!before.is_empty(), "the fixture has fonts");
+        assert_eq!(before.len(), after.len(), "same number of fonts");
+        for (b, a) in before.iter().zip(&after) {
+            assert_eq!(b.len(), a.len(), "same properties, same count");
+            for ((bo, bv), (ao, av)) in b.iter().zip(a) {
+                assert_eq!(bo, ao, "same property, same order");
+                let expected: Vec<String> =
+                    bv.iter().map(|v| v.replace(&old_dir, new_dir)).collect();
+                assert_eq!(&expected, av, "{bo} changed by more than the move");
+            }
+        }
+
+        // And the move happened, or none of the above proves anything.
+        let files: Vec<&String> = after
+            .iter()
+            .flatten()
+            .filter(|(name, _)| name == "file")
+            .flat_map(|(_, values)| values)
+            .collect();
+        assert!(!files.is_empty(), "the fonts have files");
+        assert!(files.iter().all(|f| f.contains(new_dir)), "{files:?}");
+    }
+
+    /// Only the last component is carried over, and a path with none is left
+    /// as it is rather than being turned into a different file.
+    #[test]
+    fn rebase_carries_the_basename() {
+        assert_eq!(rebase("/new", "/old/dir/Font.ttf"), "/new/Font.ttf");
+        // The separator follows the path being built, not the host: a Unix
+        // cache read on Windows still has to come out with Unix paths.
+        assert_eq!(rebase("/new", "C:\\old\\Font.ttf"), "/new/Font.ttf");
+        assert_eq!(rebase("C:\\new", "/old/Font.ttf"), "C:\\new\\Font.ttf");
+        // A trailing separator on the directory is not doubled.
+        assert_eq!(rebase("/new/", "/old/Font.ttf"), "/new/Font.ttf");
+        // Nothing to carry over leaves the path alone.
+        assert_eq!(rebase("/new", "/"), "/");
+        assert_eq!(rebase("/new", ""), "");
     }
 }

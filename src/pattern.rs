@@ -491,7 +491,7 @@ impl Pattern {
     }
 
     /// Set `object` to exactly this one value, replacing anything there.
-    fn set(&mut self, object: Object, value: impl Into<Value>) {
+    pub(crate) fn set(&mut self, object: Object, value: impl Into<Value>) {
         self.remove(object);
         self.add(object, value);
     }
