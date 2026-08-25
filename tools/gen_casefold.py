@@ -143,8 +143,48 @@ pub fn fold_str(s: &str) -> impl Iterator<Item = char> + '_ {
 }
 
 /// Whether two strings are equal after case folding.
+///
+/// `FcStrCmpIgnoreCase`, which is what a plain `<test>` compares with -- the
+/// common case, since only `<alias>`, `<selectfont>` and an explicit
+/// `ignore-blanks` ask for the other one.
+///
+/// The same shape as [`eq_ignoring_blanks`], and for the same reason: bytes
+/// in one pass for as long as both sides stay ASCII, falling back to the
+/// tables the moment either leaves it. It has to be *both* sides and not
+/// either -- U+212A KELVIN SIGN folds to `k`, so comparing bytes would miss a
+/// real match.
+///
+/// This carried no fast path until it was measured. Substitution is almost
+/// entirely this function, and moving the common case onto it -- which is
+/// what ignoring blanks only where fontconfig does meant -- cost 48% of the
+/// time to prepare a query, unnoticed, because every parity harness still
+/// agreed.
 pub fn eq(a: &str, b: &str) -> bool {
-    fold_str(a).eq(fold_str(b))
+    let (x, y) = (a.as_bytes(), b.as_bytes());
+    // Differing lengths do not imply inequality once folding is involved, so
+    // this walks rather than comparing lengths first.
+    let mut i = 0usize;
+    loop {
+        match (x.get(i), y.get(i)) {
+            (None, None) => return true,
+            (Some(l), Some(r)) if l.is_ascii() && r.is_ascii() => {
+                if !l.eq_ignore_ascii_case(r) {
+                    return false;
+                }
+                i += 1;
+            }
+            // A lead or continuation byte on either side: start again the
+            // long way, over characters rather than bytes.
+            (Some(l), Some(r)) if !l.is_ascii() || !r.is_ascii() => {
+                return fold_str(a).eq(fold_str(b));
+            }
+            // One side ended where the other did not. Still not decisive if
+            // the shorter one is not wholly ASCII, but it is: both sides have
+            // been ASCII up to here, and ASCII folds one byte to one byte, so
+            // the remainder can only make them differ.
+            _ => return false,
+        }
+    }
 }
 
 /// Whether two strings are equal after case folding and dropping all blanks.
@@ -392,6 +432,78 @@ mod tests {
 }
 '''
 
-emit(OUT, header, body, mid, mbody, tail, TESTS)
+EQ_TESTS = r'''
+#[cfg(test)]
+mod eq_fast_path_tests {
+    use super::{eq, fold_str};
+
+    /// What `eq` did before it had a fast path, kept as the thing to agree
+    /// with. A fast path is only worth having if it cannot disagree.
+    fn slow(a: &str, b: &str) -> bool {
+        fold_str(a).eq(fold_str(b))
+    }
+
+    #[test]
+    fn the_fast_path_agrees_with_the_tables() {
+        let cases = [
+            "",
+            "a",
+            "A",
+            "ab",
+            "AB",
+            "DejaVu Sans",
+            "dejavu sans",
+            "DejaVuSans",
+            "Deja Vu Sans",
+            // Non-ASCII on one side, both sides, and folding into ASCII.
+            "k",
+            "K",
+            "\u{212a}",    // KELVIN SIGN, folds to `k`
+            "stra\u{df}e", // ß folds to `ss`
+            "strasse",
+            "STRASSE",
+            "\u{fb01}", // ligature fi, folds to `fi`
+            "fi",
+            "Noto Sans CJK\u{a0}JP",
+            "Noto Sans CJK JP",
+            // A shared ASCII prefix with the difference past it, both ways.
+            "Liberation Serif",
+            "Liberation Sans",
+            "Liberation",
+            "\u{130}", // dotted capital I
+            "i\u{307}",
+        ];
+        for a in cases {
+            for b in cases {
+                assert_eq!(eq(a, b), slow(a, b), "eq({a:?}, {b:?})");
+            }
+        }
+    }
+
+    /// Blanks are characters to this one. That is the whole point of it
+    /// existing separately, so it gets its own assertion rather than relying
+    /// on the sweep above to happen to cover it.
+    #[test]
+    fn blanks_are_significant() {
+        assert!(!eq("Deja Vu", "DejaVu"));
+        assert!(eq("Deja Vu", "deja vu"));
+        assert!(!eq("a", "a "));
+        assert!(!eq("a ", "a"));
+    }
+
+    /// Every byte pair, ASCII and just past it, against the tables.
+    #[test]
+    fn every_short_string_agrees() {
+        for x in 0u8..=0x7f {
+            for y in 0u8..=0x7f {
+                let (a, b) = ((x as char).to_string(), (y as char).to_string());
+                assert_eq!(eq(&a, &b), slow(&a, &b), "{x:#04x} vs {y:#04x}");
+            }
+        }
+    }
+}
+'''
+
+emit(OUT, header, body, mid, mbody, tail, TESTS, EQ_TESTS)
 
 print('generated %d single + %d multi folds from %s' % (len(single), len(multi), version))

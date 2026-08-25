@@ -120,53 +120,6 @@ pub(crate) static SORTED: [u16; 281] = [
     185, 186, 187, 188, 189,
 ];
 
-/// The bitmaps `FcLangSetCompare` consults when two sets share no language.
-///
-/// One per base language that has regional variants in [`LANGS`]: every
-/// `zh-*` entry in one bitmap, every `pt-*` in another, and so on. Two sets
-/// with nothing in common but a bit in the same bitmap are naming regional
-/// variants of one language, which scores better than being unrelated.
-///
-/// Derived from [`LANGS`] rather than generated, because that is all
-/// `fc-lang.py` does with it: group by what precedes the hyphen. Built once,
-/// since it depends on nothing but the table.
-pub fn country_sets() -> &'static [[u32; MAP_WORDS]] {
-    static SETS: std::sync::OnceLock<Vec<[u32; MAP_WORDS]>> = std::sync::OnceLock::new();
-    SETS.get_or_init(|| {
-        let mut sets: Vec<(&str, [u32; MAP_WORDS])> = Vec::new();
-        for (index, lang) in LANGS.iter().enumerate() {
-            let Some((base, _)) = lang.split_once('-') else { continue };
-            let set = match sets.iter_mut().find(|(name, _)| *name == base) {
-                Some((_, set)) => set,
-                None => {
-                    sets.push((base, [0; MAP_WORDS]));
-                    &mut sets.last_mut().expect("just pushed").1
-                }
-            };
-            set[index / 32] |= 1 << (index % 32);
-        }
-        sets.into_iter().map(|(_, set)| set).collect()
-    })
-}
-
-/// Every bit that appears in any country set, for a quick way out.
-///
-/// A language with no region is in none of them, so a set holding only such
-/// languages -- which is what a query for `:lang=en` amounts to -- can be
-/// answered without walking the sets at all.
-pub fn regional_mask() -> &'static [u32; MAP_WORDS] {
-    static MASK: std::sync::OnceLock<[u32; MAP_WORDS]> = std::sync::OnceLock::new();
-    MASK.get_or_init(|| {
-        let mut mask = [0; MAP_WORDS];
-        for set in country_sets() {
-            for (slot, word) in mask.iter_mut().zip(set) {
-                *slot |= word;
-            }
-        }
-        mask
-    })
-}
-
 /// The name of the `rank`-th language alphabetically.
 pub fn nth_sorted(rank: usize) -> Option<&'static str> {
     LANGS.get(*SORTED.get(rank)? as usize).copied()

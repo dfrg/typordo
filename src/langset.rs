@@ -187,6 +187,54 @@ impl<'a> LangSetRef<'a> {
     }
 }
 
+/// The bitmaps `FcLangSetCompare` consults when two sets share no language.
+///
+/// One per base language that has regional variants in [`langs::LANGS`]: every
+/// `zh-*` entry in one bitmap, every `pt-*` in another, and so on. Two sets
+/// with nothing in common but a bit in the same bitmap are naming regional
+/// variants of one language, which scores better than being unrelated.
+///
+/// Derived from [`langs::LANGS`] rather than generated, because that is all
+/// `fc-lang.py` does with it: group by what precedes the hyphen. It lives
+/// here and not in `langs` for the same reason -- that module is generated,
+/// and hand-written code in it makes the generator's own check fail.
+fn country_sets() -> &'static [[u32; langs::MAP_WORDS]] {
+    static SETS: std::sync::OnceLock<Vec<[u32; langs::MAP_WORDS]>> = std::sync::OnceLock::new();
+    SETS.get_or_init(|| {
+        let mut sets: Vec<(&str, [u32; langs::MAP_WORDS])> = Vec::new();
+        for (index, lang) in LANGS.iter().enumerate() {
+            let Some((base, _)) = lang.split_once('-') else { continue };
+            let set = match sets.iter_mut().find(|(name, _)| *name == base) {
+                Some((_, set)) => set,
+                None => {
+                    sets.push((base, [0; langs::MAP_WORDS]));
+                    &mut sets.last_mut().expect("just pushed").1
+                }
+            };
+            set[index / 32] |= 1 << (index % 32);
+        }
+        sets.into_iter().map(|(_, set)| set).collect()
+    })
+}
+
+/// Every bit that appears in any country set, for a quick way out.
+///
+/// A language with no region is in none of them, so a set holding only such
+/// languages -- which is what a query for `:lang=en` amounts to -- can be
+/// answered without walking the sets at all.
+fn regional_mask() -> &'static [u32; langs::MAP_WORDS] {
+    static MASK: std::sync::OnceLock<[u32; langs::MAP_WORDS]> = std::sync::OnceLock::new();
+    MASK.get_or_init(|| {
+        let mut mask = [0; langs::MAP_WORDS];
+        for set in country_sets() {
+            for (slot, word) in mask.iter_mut().zip(set) {
+                *slot |= word;
+            }
+        }
+        mask
+    })
+}
+
 /// The bitmap half of `FcLangSetCompare`.
 ///
 /// One bit in common means the two name the same language. Failing that, a
@@ -201,12 +249,12 @@ fn compare_maps(a: &[u32; langs::MAP_WORDS], b: &[u32; langs::MAP_WORDS]) -> Lan
     // Nothing regional on one side means no country set can hold both, and
     // a query naming a language with no region -- `:lang=en` -- is the common
     // case. Two passes over nine words instead of ten sets of nine.
-    let mask = langs::regional_mask();
+    let mask = regional_mask();
     let regional = |m: &[u32; langs::MAP_WORDS]| m.iter().zip(mask).any(|(m, k)| m & k != 0);
     if !regional(a) || !regional(b) {
         return LangResult::DifferentLang;
     }
-    for set in langs::country_sets() {
+    for set in country_sets() {
         let in_a = a.iter().zip(set).any(|(a, s)| a & s != 0);
         let in_b = b.iter().zip(set).any(|(b, s)| b & s != 0);
         if in_a && in_b {
@@ -951,7 +999,7 @@ mod country_set_tests {
     /// region belongs to none of them.
     #[test]
     fn the_country_sets_group_by_base_language() {
-        let sets = langs::country_sets();
+        let sets = super::country_sets();
         assert!(!sets.is_empty(), "the table has regional variants in it");
         let bit = |lang: &str| {
             let index = langs::LANGS.iter().position(|l| *l == lang)?;
