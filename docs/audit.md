@@ -66,7 +66,7 @@ corpus does not contain.
 | 18 | Cache lookup stopped at the first candidate | Test fails on old behaviour | `e2db80c` |
 | 20 | Cache stayed current when its directory vanished | Test fails on old behaviour | `e2db80c` |
 | 19 | Traversal accepted partially corrupt caches | Test fails on old behaviour | `8e41e5b` |
-| 17 | Relocated cache kept the build machine's paths | DIFF->MATCH against `fc-list` | `5c3406a`, *this commit* |
+| 17 | Relocated cache kept the build machine's paths | DIFF->MATCH against `fc-list` | `5c3406a`, `f9455fd` |
 | 9.2-9.5 | Range, charset, langset and matrix comparison | 36 cases against `fc-pattern -c` | `31575bb` |
 | 6 | Conditional `<alias>` tests discarded | DIFF->MATCH against `fc-pattern -c` | `31575bb` |
 | 7 | Empty selector patterns inverted accept/reject | DIFF->MATCH against `fc-list` | `7d16166` |
@@ -79,7 +79,7 @@ corpus does not contain.
 | 22 | Language comparison ignored country sets and extra strings | Tests fail on old behaviour | `a6543f9` |
 | 21 | Cache rebuilds took no inter-process lock | Tests fail on old behaviour | `18045e2` |
 | 13 | Tri-state boolean collapsed to two | 18 cases against `fc-pattern -c` | `dbc81db` |
-| 14 | WOFF, WOFF2 and bare CFF not scanned | 960/960 and 2568/2568 against `fc-query` | *this commit* |
+| 14 | WOFF, WOFF2 and bare CFF not scanned | 960/960 and 2568/2568 against `fc-query` | `2e456d9` |
 
 **9.1 — `ignore-blanks`.** `FcConfigCompareValue` uses
 `FcStrCmpIgnoreBlanksAndCase` only when `FcOpFlagIgnoreBlanks` is set and
