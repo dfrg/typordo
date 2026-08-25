@@ -51,7 +51,9 @@ corpus does not contain.
 | 18 | Cache lookup stopped at the first candidate | Test fails on old behaviour | `e2db80c` |
 | 20 | Cache stayed current when its directory vanished | Test fails on old behaviour | `e2db80c` |
 | 19 | Traversal accepted partially corrupt caches | Test fails on old behaviour | `8e41e5b` |
-| 17 | Relocated cache kept the build machine's subdirectory paths | Test fails on old behaviour | *this commit* (part) |
+| 17 | Relocated cache kept the build machine's subdirectory paths | Test fails on old behaviour | `5c3406a` (part) |
+| 9.2-9.5 | Range, charset, langset and matrix comparison | 36 cases against `fc-pattern -c` | *this commit* |
+| 6 | Conditional `<alias>` tests discarded | DIFF->MATCH against `fc-pattern -c` | *this commit* |
 
 **9.1 — `ignore-blanks`.** `FcConfigCompareValue` uses
 `FcStrCmpIgnoreBlanksAndCase` only when `FcOpFlagIgnoreBlanks` is set and
@@ -172,6 +174,50 @@ Worth saying that relocation is not exotic. The copy that causes it -- `tar
 timestamps, so the relocated cache reads as perfectly current in its new home,
 which is exactly when nothing warns you.
 
+**9.2-9.5 - comparison.** `FcConfigCompareValue` dispatches on type, and
+this crate handled three of the eight. Charsets and language sets had no arm
+at all, so every `<test>` against one answered false. Two ranges had no arm.
+A number against a range was handled, and backwards.
+
+That last one is the reason this entry has a harness attached rather than a
+test. `contains` asks whether the **left** falls inside the right, so a font
+whose `size` spans `[10,20]` does *not* contain `12` -- the number, promoted
+to the point range `[12,12]`, contains the span or it does not. This crate
+computed "is the number inside the range" whichever side the range was on,
+which is the reading the operator's name suggests and not the one fontconfig
+implements.
+
+The missing piece underneath was `FcConfigPromote`: when the two sides differ
+in type, each is converted towards the other before anything is compared. A
+number becomes a one-point range, an absent value becomes the identity matrix
+or an empty set, and a **string becomes the language set naming it** -- which
+is how `<test name="lang">ja</test>` reaches a font's language list at all.
+Where promotion cannot bring them together, `not_eq` and `not_contains` are
+satisfied and everything else is not.
+
+`scripts/compare_parity.sh` is new and is the point of the entry. The other
+harnesses drive whole queries through real fonts, and a font set reaches only
+the comparisons its fonts provoke: nothing in a normal corpus carries a
+charset test or a range on both sides, so these went unchecked while three
+were wrong -- the same shape as the scanner findings above. It asks
+`fc-pattern -c` and this crate the same 36 questions, one operator at a time.
+
+Building it turned up a further gap the audit did not name. Objects had no
+declared type, so the example's query parser guessed from the text: `:size=[10
+20]` became a string, and `:scalable=True` became the family name "True",
+since only the lowercase spelling was recognised. Fontconfig converts by the
+object's declared type (`FcNameConvert`), and this crate's own documentation
+had been naming those types all along -- every variant's doc comment says what
+it holds. `Object::value_type` now says it in code, and a test reads the
+comments back to keep the two from drifting.
+
+**6 - conditional aliases.** An `<alias>` may carry `<test>` elements, and
+`FcParseAlias` puts them ahead of the family test it synthesizes. They were
+parsed, attached to the alias frame, and then dropped on the floor. The effect
+is worse than ignoring the alias: a `<test name="lang">ja</test>` alias
+applied to every language. Verified in both directions -- a ja-only alias
+fired for `serif:lang=de` before the fix and does not after.
+
 ### Version drift, not gaps
 
 | # | Finding | Why it stands |
@@ -193,10 +239,8 @@ cannot be mistaken for "all of it".
 | --- | --- | --- |
 | 2 | Root configuration search and startup fallback | High |
 | 3.1, 3.2 | Include resolution and `ignore_missing` | High |
-| 6 | Conditional `<alias>` tests discarded | Medium-high |
 | 7 | Empty selector patterns invert accept/reject | Medium-high |
 | 8 | Substitution omits `prgname`, `desktop_name`, `order` | Medium |
-| 9.2–9.5 | Range, charset/langset and matrix comparison | High |
 | 10 | `<const>` resolution | Medium |
 | 11 | XML character data | Low-medium |
 | 12 | `Pattern` equality and insertion | Medium |

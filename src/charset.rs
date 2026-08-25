@@ -598,6 +598,38 @@ impl CharSet {
         self.len() == 0
     }
 
+    /// Whether every character here is also in `other`.
+    ///
+    /// `FcCharSetIsSubset`, which is what a `contains` test against a charset
+    /// asks -- the pattern's set has to be covered by the font's, not the
+    /// other way round. Both page lists are sorted, so this walks them in
+    /// step and gives up the moment this set holds a page, or a bit, that
+    /// `other` does not.
+    pub fn is_subset(&self, other: &Self) -> bool {
+        let mut theirs = other.pages.iter();
+        let mut next = theirs.next();
+        for (page, leaf) in &self.pages {
+            // Skip their pages below ours; if we run past the end, or land
+            // above, we hold a page they do not.
+            loop {
+                match next {
+                    Some((n, _)) if n < page => next = theirs.next(),
+                    _ => break,
+                }
+            }
+            match next {
+                Some((n, covering)) if n == page => {
+                    if leaf.iter().zip(covering).any(|(ours, theirs)| ours & !theirs != 0) {
+                        return false;
+                    }
+                }
+                _ => return false,
+            }
+            next = theirs.next();
+        }
+        true
+    }
+
     /// Everything in either set.
     pub fn union(&self, other: &Self) -> Self {
         let mut out = self.clone();
@@ -964,5 +996,36 @@ mod cursor_tests {
             let got = set.missing_count(order.iter().copied());
             assert_eq!(got, want, "{name}: {order:?}");
         }
+    }
+}
+
+#[cfg(test)]
+mod subset_tests {
+    use super::CharSet;
+
+    fn set(chars: &[char]) -> CharSet {
+        let mut s = CharSet::new();
+        for c in chars {
+            s.insert(*c);
+        }
+        s
+    }
+
+    #[test]
+    fn subset_agrees_with_membership() {
+        let empty = CharSet::new();
+        let a = set(&['a', 'b']);
+        let b = set(&['a', 'b', 'c']);
+        // A page they do not have at all, and a page they share but with a
+        // bit we hold and they do not, are the two ways to fail.
+        let far = set(&['a', '\u{4e00}']);
+
+        assert!(empty.is_subset(&a));
+        assert!(a.is_subset(&a));
+        assert!(a.is_subset(&b));
+        assert!(!b.is_subset(&a));
+        assert!(!far.is_subset(&b), "a page beyond theirs");
+        assert!(!a.is_subset(&empty));
+        assert!(set(&['\u{4e00}']).is_subset(&far), "skipping their lower pages");
     }
 }

@@ -262,6 +262,69 @@ impl Object {
         }
     }
 
+    /// The kind of value this property holds.
+    ///
+    /// The type column of fontconfig's `FcObjectTypes`. It is not advice: it
+    /// decides how a name like `:scalable=True` or `:size=[10 20]` parses,
+    /// since the text alone does not say whether `True` is a boolean or a
+    /// family called True. A property invented by a configuration file has no
+    /// declared type, which is why this is on [`Object`] and not on
+    /// [`Property`].
+    pub fn value_type(self) -> ValueType {
+        match self {
+            Self::Family
+            | Self::Familylang
+            | Self::Style
+            | Self::Stylelang
+            | Self::Fullname
+            | Self::Fullnamelang
+            | Self::Foundry
+            | Self::File
+            | Self::Rasterizer
+            | Self::Capability
+            | Self::Fontformat
+            | Self::Namelang
+            | Self::FontFeatures
+            | Self::Prgname
+            | Self::Hash
+            | Self::PostscriptName
+            | Self::FontVariations
+            | Self::DesktopName
+            | Self::FontWrapper => ValueType::String,
+            Self::Antialias
+            | Self::Hinting
+            | Self::VerticalLayout
+            | Self::Autohint
+            | Self::GlobalAdvance
+            | Self::Outline
+            | Self::Scalable
+            | Self::Minspace
+            | Self::Embolden
+            | Self::EmbeddedBitmap
+            | Self::Decorative
+            | Self::Color
+            | Self::Symbol
+            | Self::Variable
+            | Self::FontHasHint
+            | Self::NamedInstance => ValueType::Bool,
+            Self::Slant
+            | Self::Spacing
+            | Self::HintStyle
+            | Self::Index
+            | Self::Rgba
+            | Self::Charwidth
+            | Self::CharHeight
+            | Self::Fontversion
+            | Self::LcdFilter
+            | Self::Order => ValueType::Int,
+            Self::Aspect | Self::PixelSize | Self::Dpi | Self::Scale => ValueType::Double,
+            Self::Weight | Self::Width | Self::Size => ValueType::Range,
+            Self::Matrix => ValueType::Matrix,
+            Self::Charset => ValueType::CharSet,
+            Self::Lang => ValueType::LangSet,
+        }
+    }
+
     /// The object with this fontconfig property name.
     pub fn from_name(name: &str) -> Option<Self> {
         (1..=Self::MAX).filter_map(Self::from_id).find(|o| o.name() == name)
@@ -311,5 +374,79 @@ impl std::fmt::Display for Property {
             Self::Known(object) => object.fmt(f),
             Self::Custom(name) => f.write_str(name),
         }
+    }
+}
+
+/// The kind of value a property holds, fontconfig's `FcType`.
+///
+/// Reported by [`Object::value_type`]. Two of fontconfig's types are absent:
+/// `FcTypeVoid` and `FcTypeUnknown` are states a value can be in, not kinds a
+/// property is declared as, and `FcTypeFTFace` belongs to an API this crate
+/// does not have.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum ValueType {
+    /// Text.
+    String,
+    /// A flag.
+    Bool,
+    /// A whole number.
+    Int,
+    /// A real number.
+    Double,
+    /// An inclusive span of numbers.
+    Range,
+    /// A 2x2 transform.
+    Matrix,
+    /// A set of characters.
+    CharSet,
+    /// A set of languages.
+    LangSet,
+}
+
+#[cfg(test)]
+mod value_type_tests {
+    use super::{Object, ValueType};
+
+    /// Every variant's doc comment names the type it holds, and has since
+    /// before `value_type` existed. Reading them back is a check that the two
+    /// were not allowed to drift, and that no variant was added without
+    /// either being considered.
+    #[test]
+    fn the_table_agrees_with_the_documentation() {
+        let source = include_str!("object.rs");
+        let mut checked = 0;
+        for line in source.lines() {
+            let Some(rest) = line.trim().strip_prefix("/// `") else { continue };
+            let Some((name, rest)) = rest.split_once("`, holding a [`ValueRef::") else {
+                continue;
+            };
+            let Some((declared, _)) = rest.split_once('`') else { continue };
+            let object = Object::from_name(name).expect(name);
+            let want = match declared {
+                "String" => ValueType::String,
+                "Bool" => ValueType::Bool,
+                "Int" => ValueType::Int,
+                "Double" => ValueType::Double,
+                "Range" => ValueType::Range,
+                "Matrix" => ValueType::Matrix,
+                "CharSet" => ValueType::CharSet,
+                "LangSet" => ValueType::LangSet,
+                other => panic!("{name} documents an unknown type {other}"),
+            };
+            assert_eq!(object.value_type(), want, "{name}");
+            checked += 1;
+        }
+        assert_eq!(checked, 55, "every object should carry its type in its documentation");
+    }
+
+    /// The three that decide whether a name parses correctly, spelled out so
+    /// a regression names itself.
+    #[test]
+    fn the_types_that_change_how_a_name_parses() {
+        assert_eq!(Object::Scalable.value_type(), ValueType::Bool);
+        assert_eq!(Object::Size.value_type(), ValueType::Range);
+        assert_eq!(Object::Lang.value_type(), ValueType::LangSet);
+        assert_eq!(Object::Charset.value_type(), ValueType::CharSet);
+        assert_eq!(Object::Family.value_type(), ValueType::String);
     }
 }

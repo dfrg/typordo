@@ -146,7 +146,7 @@ pub use error::{Error, Result};
 pub use langset::{AnyLangSet, LangResult, LangSet, LangSetRef};
 pub use locale::default_langs;
 pub use matching::{best, best_value, score, sort, sorted, BestValue, Priority, Score, PRIORITIES};
-pub use object::{Object, Property};
+pub use object::{Object, Property, ValueType};
 pub use pattern::{Bindings, Element, ElementRef, Elements, Pattern, PatternRef, Values};
 pub use prepare::render_prepare;
 pub use rules::MatchKind;

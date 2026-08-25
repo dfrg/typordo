@@ -1211,8 +1211,17 @@ impl Config {
                     1 => frame.exprs[0].clone(),
                     _ => Expr::List(frame.exprs.clone()),
                 };
+                // Anything but a test inside an alias is a "bad alias" to
+                // fontconfig, which warns and discards it.
+                let tests: Vec<Step> = frame
+                    .steps
+                    .iter()
+                    .filter(|step| matches!(step, Step::Test(_)))
+                    .cloned()
+                    .collect();
                 let rule = Rule::from_alias(
                     family,
+                    tests,
                     frame.sections.get("prefer").cloned(),
                     frame.sections.get("accept").cloned(),
                     frame.sections.get("default").cloned(),
@@ -1783,10 +1792,10 @@ mod tests {
     #[test]
     fn the_fixture_parses_into_rules() {
         let config = fixture("fonts.conf");
-        assert_eq!(config.rules().len(), 12);
+        assert_eq!(config.rules().len(), 13);
         let scan = config.rules().iter().filter(|r| r.kind == MatchKind::Scan).count();
         assert_eq!(scan, 2);
-        assert_eq!(config.rules().len() - scan, 10);
+        assert_eq!(config.rules().len() - scan, 11);
     }
 
     /// A `<name>` with no `target` means the pattern being edited, which is

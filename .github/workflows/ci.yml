@@ -142,7 +142,7 @@ jobs:
           # the entry rather than appended to it.
           for s in parity.sh select_parity.sh match_parity.sh prepare_parity.sh \
                    sort_parity.sh charset_parity.sh "cover_parity.sh charset" \
-                   name_parity.sh write_parity.sh; do
+                   name_parity.sh write_parity.sh compare_parity.sh; do
             echo "::group::$s"
             # Each script exits non-zero on a difference, so the loop keeps
             # going and names every harness that failed rather than stopping

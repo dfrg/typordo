@@ -11,7 +11,10 @@
 
 use std::path::PathBuf;
 
-use typordo::{render_prepare, CachePolicy, Config, Object, Pattern, PatternRef, Score, Value};
+use typordo::{
+    render_prepare, CachePolicy, Config, LangSet, Object, Pattern, PatternRef, Range, Score, Value,
+    ValueType,
+};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut config_path: Option<PathBuf> = None;
@@ -247,17 +250,85 @@ fn parse_name(query: &mut Pattern, name: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// Add `value` to `object`, inferring its type from how it is written.
+/// Add `value` to `object`, converted to the type the property is declared
+/// to hold.
+///
+/// `FcNameConvert`. The text cannot say what it is on its own -- `True` is a
+/// boolean for `scalable` and a family name for `family`, and `[10 20]` is a
+/// range for `size` and a string anywhere else -- so the object's declared
+/// type decides, not the shape of the text. Guessing instead gets `scalable`
+/// wrong for every spelling but the lowercase one, and never produces a
+/// range or a language set at all.
 fn add_typed(query: &mut Pattern, object: Object, value: &str) {
-    if let Ok(int) = value.parse::<i32>() {
-        query.add(object, int);
-    } else if let Ok(double) = value.parse::<f64>() {
-        query.add(object, double);
-    } else if value == "true" || value == "false" {
-        query.add(object, value == "true");
-    } else {
-        query.add(object, value);
+    let value = value.trim();
+    match object.value_type() {
+        ValueType::Bool => {
+            query.add(object, parse_bool(value).unwrap_or(false));
+        }
+        // A number that will not parse is left as text. `FcNameConvert`
+        // would look it up as a constant -- `slant=italic` is 100 -- but that
+        // table is not public here; see docs/audit.md on `<const>`.
+        ValueType::Int => {
+            match value.parse::<i32>() {
+                Ok(int) => query.add(object, int),
+                Err(_) => query.add(object, value),
+            };
+        }
+        ValueType::Double => {
+            match value.parse::<f64>() {
+                Ok(double) => query.add(object, double),
+                Err(_) => query.add(object, value),
+            };
+        }
+        ValueType::Range => {
+            match parse_range(value) {
+                Some(range) => query.add(object, range),
+                // `FcNameConvert` falls back to a double, so a scalar reaches a
+                // range-typed property as a number, not as a one-point range.
+                None => match value.parse::<f64>() {
+                    Ok(number) => query.add(object, number),
+                    Err(_) => query.add(object, value),
+                },
+            };
+        }
+        ValueType::LangSet => {
+            let mut set = LangSet::new();
+            for lang in value.split('|').filter(|l| !l.is_empty()) {
+                set.insert(lang);
+            }
+            query.add(object, set);
+        }
+        // A charset is written as hex ranges; a matrix as four numbers. No
+        // query here uses either, so they stay text rather than being parsed
+        // half-heartedly.
+        ValueType::String | ValueType::CharSet | ValueType::Matrix => {
+            query.add(object, value);
+        }
     }
+}
+
+/// `FcNameBool`: the first letter decides, so `True`, `yes`, `on` and `1` are
+/// all true. Fontconfig also accepts `d`, `x`, `2` and `or` for its
+/// three-valued `FcDontCare`, which this crate's booleans cannot hold.
+fn parse_bool(value: &str) -> Option<bool> {
+    let mut chars = value.chars().map(|c| c.to_ascii_lowercase());
+    match chars.next()? {
+        't' | 'y' | '1' => Some(true),
+        'f' | 'n' | '0' => Some(false),
+        'o' => match chars.next()? {
+            'n' => Some(true),
+            'f' => Some(false),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// `[begin end]`, the written form of a range.
+fn parse_range(value: &str) -> Option<Range> {
+    let inner = value.strip_prefix('[')?.strip_suffix(']')?;
+    let (begin, end) = inner.split_once([' ', '-'])?;
+    Some(Range { begin: begin.trim().parse().ok()?, end: end.trim().parse().ok()? })
 }
 
 /// Read up to the first unescaped character in `delims`.

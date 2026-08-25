@@ -389,3 +389,25 @@ fn ignore_blanks_makes_a_space_invisible() {
         assert_eq!(query.number(Object::Weight), Some(210.0), "{family}");
     }
 }
+
+/// An `<alias>` may carry `<test>` elements, which make it conditional --
+/// `FcParseAlias` places them ahead of the family test it synthesizes, and
+/// every one has to pass. Discarding them turns a conditional alias into an
+/// unconditional one, which is worse than ignoring it: it fires where the
+/// author said it must not.
+#[test]
+fn an_alias_applies_only_when_its_own_tests_pass() {
+    let config = config();
+
+    let mut heavy = with_family("Conditional");
+    heavy.add(Object::Weight, 210);
+    let names: Vec<String> =
+        families(&config, &mut heavy).into_iter().map(|(name, _)| name).collect();
+    assert!(names.contains(&"Heavy Substitute".to_string()), "{names:?}");
+
+    let mut light = with_family("Conditional");
+    light.add(Object::Weight, 80);
+    let names: Vec<String> =
+        families(&config, &mut light).into_iter().map(|(name, _)| name).collect();
+    assert!(!names.contains(&"Heavy Substitute".to_string()), "{names:?}");
+}

@@ -9,12 +9,14 @@ use std::collections::hash_map::Entry;
 use std::collections::HashMap;
 
 use crate::casefold;
+use crate::charset::CharSet;
 use crate::fnv::BuildPassthrough;
+use crate::langset::LangSet;
 use crate::object::Object;
 use crate::object::Property;
 use crate::pattern::Pattern;
 use crate::value::Value;
-use crate::value::{Binding, Matrix};
+use crate::value::{Binding, Matrix, Range};
 
 /// Which pattern a rule set applies to.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -365,13 +367,20 @@ impl FamilyIndex {
 impl Rule {
     /// Desugar an `<alias>` into the `<match>` it stands for.
     ///
-    /// `FcParseAlias` builds a pattern-target rule testing `family` against
-    /// the alias family with blanks ignored, then one edit per section:
-    /// `<prefer>` prepends, `<accept>` appends, and `<default>` appends last.
-    /// The distinction is what makes `<prefer>` win over the caller's own
-    /// second choice while `<default>` only fills a gap.
+    /// `FcParseAlias` builds a pattern-target rule from the alias's own
+    /// `<test>` elements followed by one testing `family` against the alias
+    /// family with blanks ignored, then one edit per section: `<prefer>`
+    /// prepends, `<accept>` appends, and `<default>` appends last. The
+    /// distinction is what makes `<prefer>` win over the caller's own second
+    /// choice while `<default>` only fills a gap.
+    ///
+    /// `tests` are the conditions written inside the alias, in source order
+    /// and ahead of the family test, which is where `FcParseAlias` puts them.
+    /// An alias carrying them is conditional -- it applies only when they all
+    /// pass -- and dropping them would make it apply always.
     pub fn from_alias(
         family: Expr,
+        tests: Vec<Step>,
         prefer: Option<Expr>,
         accept: Option<Expr>,
         default: Option<Expr>,
@@ -380,7 +389,8 @@ impl Rule {
         if prefer.is_none() && accept.is_none() && default.is_none() {
             return None;
         }
-        let mut steps = vec![Step::Test(Test {
+        let mut steps = tests;
+        steps.push(Step::Test(Test {
             kind: MatchKind::Pattern,
             qual: Qual::Any,
             object: Property::Known(crate::Object::Family),
@@ -388,7 +398,7 @@ impl Rule {
             // `FC_OP (FcOpEqual, FcOpFlagIgnoreBlanks)` in `FcParseAlias`.
             ignore_blanks: true,
             expr: family,
-        })];
+        }));
         for (expr, mode) in [
             (prefer, EditMode::Prepend),
             (accept, EditMode::Append),
@@ -791,11 +801,6 @@ fn apply_binary(op: BinaryOp, a: &Value, b: &Value) -> Option<Value> {
     })
 }
 
-/// Compare a pattern value against a test value.
-///
-/// Strings compare with case folding; `eq` on a family also ignores blanks,
-/// which is `FcOpFlagIgnoreBlanks`. `contains` is a substring test for
-/// strings and a range test for numbers.
 /// Whether a string comparison treats spaces as characters.
 ///
 /// Fontconfig carries this as `FcOpFlagIgnoreBlanks` on the operator rather
@@ -809,21 +814,64 @@ pub(crate) enum Blanks {
     Ignored,
 }
 
+/// Compare a pattern value against a test value.
+///
+/// `FcConfigCompareValue`. Two values of one type compare directly; two of
+/// different types are each promoted towards the other first, and if that
+/// leaves them still unalike the answer is `true` for the negated operators
+/// and `false` for the rest -- so `not_eq` between a string and a number is
+/// satisfied, which is the reading that makes a negative test mean what it
+/// says about a property holding the wrong sort of value.
 pub(crate) fn compare(got: &Value, op: Compare, want: &Value, blanks: Blanks) -> bool {
+    if let Some(answer) = compare_alike(got, op, want, blanks) {
+        return answer;
+    }
+    // `FcConfigPromote` is applied to each side against the *original* other
+    // side, not against the result of promoting it, so the two are
+    // independent and neither can chase the other.
+    let (left, right) = (promote(got, want), promote(want, got));
+    let (left, right) = (left.as_ref().unwrap_or(got), right.as_ref().unwrap_or(want));
+    compare_alike(left, op, right, blanks)
+        .unwrap_or(matches!(op, Compare::NotEq | Compare::NotContains))
+}
+
+/// `value` seen as the type of `toward`, when fontconfig has a rule for it.
+///
+/// `FcConfigPromote`: a number is a range of one point, an absent value is
+/// the identity matrix or an empty set, and a string is the language set
+/// naming just that language. `None` where there is no rule, which leaves the
+/// value as it was.
+fn promote(value: &Value, toward: &Value) -> Option<Value> {
     use Value as V;
-    match (got, want) {
+    Some(match (value, toward) {
+        (V::Int(n), V::Range(_)) => V::Range(Range::single(f64::from(*n))),
+        (V::Double(n), V::Range(_)) => V::Range(Range::single(*n)),
+        (V::Void, V::Matrix(_)) => V::Matrix(Matrix::IDENTITY),
+        (V::Void, V::LangSet(_)) => V::LangSet(LangSet::new()),
+        (V::Void, V::CharSet(_)) => V::CharSet(CharSet::new()),
+        (V::String(lang), V::LangSet(_)) => {
+            let mut set = LangSet::new();
+            set.insert(lang);
+            V::LangSet(set)
+        }
+        _ => return None,
+    })
+}
+
+/// Compare two values of the same type, or `None` if they are not.
+///
+/// Integers and doubles count as one type here: fontconfig promotes an
+/// integer to a double whenever the two sides disagree, so nothing downstream
+/// ever sees the pair.
+fn compare_alike(got: &Value, op: Compare, want: &Value, blanks: Blanks) -> Option<bool> {
+    use Value as V;
+    Some(match (got, want) {
         (V::String(got), V::String(want)) => match op {
             // `FcStrCmpIgnoreBlanksAndCase` when the flag is set,
             // `FcStrCmpIgnoreCase` when it is not. `contains` has no such
             // choice upstream: it is always `FcStrStrIgnoreCase`.
-            Compare::Eq => match blanks {
-                Blanks::Ignored => casefold::eq_ignoring_blanks(got, want),
-                Blanks::Significant => casefold::eq(got, want),
-            },
-            Compare::NotEq => !match blanks {
-                Blanks::Ignored => casefold::eq_ignoring_blanks(got, want),
-                Blanks::Significant => casefold::eq(got, want),
-            },
+            Compare::Eq => string_eq(got, want, blanks),
+            Compare::NotEq => !string_eq(got, want, blanks),
             Compare::Contains => contains_folded(got, want),
             Compare::NotContains => !contains_folded(got, want),
             _ => false,
@@ -831,31 +879,69 @@ pub(crate) fn compare(got: &Value, op: Compare, want: &Value, blanks: Blanks) ->
         (V::Bool(got), V::Bool(want)) => match op {
             Compare::Eq | Compare::Contains => got == want,
             Compare::NotEq | Compare::NotContains => got != want,
-            _ => false,
+            // Fontconfig's booleans are three-valued, and these four ops
+            // exist to ask about the third. With two values the comparisons
+            // it makes collapse to equality and to nothing; see docs/audit.md
+            // on the missing `FcDontCare`.
+            Compare::LessEq | Compare::MoreEq => got == want,
+            Compare::Less | Compare::More => false,
         },
         (V::Matrix(got), V::Matrix(want)) => match op {
             Compare::Eq | Compare::Contains => matrix_eq(got, want),
             Compare::NotEq | Compare::NotContains => !matrix_eq(got, want),
             _ => false,
         },
-        _ => match (as_number(got), as_number(want), got, want) {
-            // A range contains a number, and equals another range.
-            (_, _, V::Range(range), other) | (_, _, other, V::Range(range))
-                if matches!(op, Compare::Contains | Compare::NotContains) =>
-            {
-                let inside = as_number(other).is_some_and(|n| n >= range.begin && n <= range.end);
-                inside == matches!(op, Compare::Contains)
-            }
-            (Some(got), Some(want), _, _) => match op {
+        // `FcCharSetIsSubset (right, left)`: the font's coverage contains the
+        // test's when the test's is the subset. The argument order is the
+        // reverse of how the operator reads and is worth stating.
+        (V::CharSet(got), V::CharSet(want)) => match op {
+            Compare::Contains => want.is_subset(got),
+            Compare::NotContains => !want.is_subset(got),
+            Compare::Eq => got == want,
+            Compare::NotEq => got != want,
+            _ => false,
+        },
+        (V::LangSet(got), V::LangSet(want)) => match op {
+            Compare::Contains => got.contains_set(want),
+            Compare::NotContains => !got.contains_set(want),
+            Compare::Eq => got == want,
+            Compare::NotEq => got != want,
+            _ => false,
+        },
+        // `FcRangeCompare`. The ordering operators compare the near edge of
+        // one span with the far edge of the other, so they mean "entirely
+        // below" rather than anything about where the spans start.
+        (V::Range(got), V::Range(want)) => match op {
+            Compare::Eq => got.begin == want.begin && got.end == want.end,
+            Compare::NotEq => got.begin != want.begin || got.end != want.end,
+            Compare::Contains => got.within(want),
+            Compare::NotContains => !got.within(want),
+            Compare::Less => got.end < want.begin,
+            Compare::LessEq => got.end <= want.begin,
+            Compare::More => got.begin > want.end,
+            Compare::MoreEq => got.begin >= want.end,
+        },
+        // Two absent values are equal, and each contains the other.
+        (V::Void, V::Void) => matches!(op, Compare::Eq | Compare::Contains),
+        (V::Int(_) | V::Double(_), V::Int(_) | V::Double(_)) => {
+            let (got, want) = (as_number(got)?, as_number(want)?);
+            match op {
                 Compare::Eq | Compare::Contains => got == want,
                 Compare::NotEq | Compare::NotContains => got != want,
                 Compare::Less => got < want,
                 Compare::LessEq => got <= want,
                 Compare::More => got > want,
                 Compare::MoreEq => got >= want,
-            },
-            _ => false,
-        },
+            }
+        }
+        _ => return None,
+    })
+}
+
+fn string_eq(got: &str, want: &str, blanks: Blanks) -> bool {
+    match blanks {
+        Blanks::Ignored => casefold::eq_ignoring_blanks(got, want),
+        Blanks::Significant => casefold::eq(got, want),
     }
 }
 
@@ -876,4 +962,125 @@ fn contains_folded(haystack: &str, needle: &str) -> bool {
     }
     let fold = |s: &str| casefold::fold_str(s).collect::<String>();
     fold(haystack).contains(&fold(needle))
+}
+
+#[cfg(test)]
+mod compare_tests {
+    use super::{compare, Blanks, Compare};
+    use crate::charset::CharSet;
+    use crate::langset::LangSet;
+    use crate::value::{Matrix, Range, Value as V};
+
+    fn cmp(got: V, op: Compare, want: V) -> bool {
+        compare(&got, op, &want, Blanks::Significant)
+    }
+
+    fn chars(cs: &[char]) -> V {
+        let mut set = CharSet::new();
+        for c in cs {
+            set.insert(*c);
+        }
+        V::CharSet(set)
+    }
+
+    fn langs(names: &[&str]) -> V {
+        let mut set = LangSet::new();
+        for name in names {
+            set.insert(name);
+        }
+        V::LangSet(set)
+    }
+
+    fn range(begin: f64, end: f64) -> V {
+        V::Range(Range { begin, end })
+    }
+
+    /// `FcCharSetIsSubset (right, left)`: the font's coverage contains the
+    /// test's when the test's is the subset, which is the reverse of the
+    /// argument order the operator reads in.
+    #[test]
+    fn a_charset_contains_the_set_it_covers() {
+        let font = chars(&['a', 'b', 'c']);
+        assert!(cmp(font.clone(), Compare::Contains, chars(&['a', 'b'])));
+        assert!(!cmp(font.clone(), Compare::Contains, chars(&['a', 'z'])));
+        assert!(cmp(font.clone(), Compare::NotContains, chars(&['a', 'z'])));
+        assert!(cmp(font.clone(), Compare::Eq, chars(&['a', 'b', 'c'])));
+        assert!(cmp(font, Compare::NotEq, chars(&['a', 'b'])));
+    }
+
+    /// `FcLangSetContains`, which counts a language covered by one the set
+    /// holds -- `en` answers for `en-GB`.
+    #[test]
+    fn a_langset_contains_what_its_languages_cover() {
+        assert!(cmp(langs(&["en"]), Compare::Contains, langs(&["en-gb"])));
+        assert!(!cmp(langs(&["en-gb"]), Compare::Contains, langs(&["de"])));
+        assert!(cmp(langs(&["en", "de"]), Compare::Eq, langs(&["de", "en"])));
+        assert!(cmp(langs(&["en"]), Compare::NotEq, langs(&["de"])));
+    }
+
+    /// A string compared against a language set is promoted to the set
+    /// naming just that language, so `<test name="lang">en</test>` works
+    /// against a font's language list.
+    #[test]
+    fn a_string_promotes_to_a_langset() {
+        assert!(cmp(langs(&["en", "de"]), Compare::Contains, V::String("de".into())));
+        assert!(!cmp(langs(&["en"]), Compare::Contains, V::String("de".into())));
+        // And the same in reverse, since either side may be the set.
+        assert!(cmp(V::String("en".into()), Compare::Eq, langs(&["en"])));
+    }
+
+    /// An absent value becomes the empty set or the identity transform, so a
+    /// test against a property the font does not carry still has a defined
+    /// answer.
+    #[test]
+    fn void_promotes_to_an_empty_set() {
+        assert!(cmp(langs(&["en"]), Compare::Contains, V::Void), "everything covers nothing");
+        assert!(cmp(chars(&['a']), Compare::Contains, V::Void));
+        assert!(!cmp(V::Void, Compare::Contains, chars(&['a'])));
+        assert!(cmp(V::Void, Compare::Eq, V::Matrix(Matrix::IDENTITY)));
+    }
+
+    /// `FcRangeCompare`. The ordering operators put one span entirely below
+    /// the other rather than comparing where they start.
+    #[test]
+    fn ranges_compare_edge_to_edge() {
+        assert!(cmp(range(10.0, 20.0), Compare::Eq, range(10.0, 20.0)));
+        assert!(cmp(range(10.0, 20.0), Compare::NotEq, range(10.0, 21.0)));
+        assert!(cmp(range(12.0, 15.0), Compare::Contains, range(10.0, 20.0)));
+        assert!(!cmp(range(10.0, 20.0), Compare::Contains, range(12.0, 15.0)));
+        assert!(cmp(range(1.0, 5.0), Compare::Less, range(6.0, 9.0)));
+        assert!(!cmp(range(1.0, 6.0), Compare::Less, range(6.0, 9.0)));
+        assert!(cmp(range(1.0, 6.0), Compare::LessEq, range(6.0, 9.0)));
+        assert!(cmp(range(7.0, 9.0), Compare::More, range(1.0, 6.0)));
+    }
+
+    /// A number against a range is promoted to a range of one point, which is
+    /// how `<test name="size" compare="contains">` reaches a variable font's
+    /// declared span -- and why the reverse direction is not the same
+    /// question.
+    #[test]
+    fn a_number_promotes_to_a_range_of_one_point() {
+        assert!(cmp(V::Double(12.0), Compare::Contains, range(10.0, 20.0)));
+        assert!(!cmp(V::Double(30.0), Compare::Contains, range(10.0, 20.0)));
+        assert!(cmp(V::Int(12), Compare::Contains, range(10.0, 20.0)));
+        // A span is not inside a point unless it is that point: the promoted
+        // side is the number, and `contains` asks whether the left is within
+        // the right.
+        assert!(!cmp(range(10.0, 20.0), Compare::Contains, V::Double(12.0)));
+        assert!(cmp(range(12.0, 12.0), Compare::Contains, V::Double(12.0)));
+        assert!(cmp(V::Double(5.0), Compare::Less, range(6.0, 9.0)));
+    }
+
+    /// Types that cannot be brought together satisfy the negated operators
+    /// and nothing else, so `not_eq` holds against a property carrying the
+    /// wrong sort of value rather than quietly failing.
+    #[test]
+    fn unrelated_types_satisfy_only_the_negated_operators() {
+        assert!(cmp(V::String("a".into()), Compare::NotEq, V::Int(1)));
+        assert!(cmp(V::String("a".into()), Compare::NotContains, V::Int(1)));
+        assert!(!cmp(V::String("a".into()), Compare::Eq, V::Int(1)));
+        assert!(!cmp(V::String("a".into()), Compare::Less, V::Int(1)));
+        // An integer and a double are one type, not two.
+        assert!(cmp(V::Int(3), Compare::Eq, V::Double(3.0)));
+    }
 }

@@ -21,6 +21,14 @@ pub struct Matrix {
     pub yy: f64,
 }
 
+impl Matrix {
+    /// The transform that changes nothing.
+    ///
+    /// `FcIdentityMatrix`, which is what an absent value promotes to when it
+    /// is compared against a matrix.
+    pub const IDENTITY: Self = Self { xx: 1.0, xy: 0.0, yx: 0.0, yy: 1.0 };
+}
+
 /// An inclusive span of numbers, fontconfig's `FcRange`.
 ///
 /// Weight, width and size are stored as ranges rather than scalars so that a
@@ -37,6 +45,21 @@ impl Range {
     /// True when the range covers exactly one value.
     pub fn is_scalar(&self) -> bool {
         self.begin == self.end
+    }
+
+    /// The range covering just `value`.
+    ///
+    /// `FcRangePromote`: what a number becomes when it is compared against a
+    /// range.
+    pub fn single(value: f64) -> Self {
+        Self { begin: value, end: value }
+    }
+
+    /// Whether this range falls entirely inside `other`, ends included.
+    ///
+    /// `FcRangeIsInRange`, the test behind `contains` between two ranges.
+    pub fn within(&self, other: &Self) -> bool {
+        self.begin >= other.begin && self.end <= other.end
     }
 
     /// Whether `value` falls inside, ends included.
@@ -256,6 +279,30 @@ impl Value {
             }
             ValueRef::LangSet(l) => Self::LangSet(LangSet::from_languages(l)),
         }
+    }
+}
+
+impl From<Matrix> for Value {
+    fn from(value: Matrix) -> Self {
+        Self::Matrix(value)
+    }
+}
+
+impl From<Range> for Value {
+    fn from(value: Range) -> Self {
+        Self::Range(value)
+    }
+}
+
+impl From<CharSet> for Value {
+    fn from(value: CharSet) -> Self {
+        Self::CharSet(value)
+    }
+}
+
+impl From<LangSet> for Value {
+    fn from(value: LangSet) -> Self {
+        Self::LangSet(value)
     }
 }
 
