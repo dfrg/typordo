@@ -441,7 +441,15 @@ impl Rule {
                 Step::Edit(edit) => {
                     let mark =
                         marks.iter().find(|(o, _)| **o == edit.object).and_then(|(_, at)| *at);
-                    edit.apply(query, pattern, mark, pass);
+                    let shift = edit.apply(query, pattern, mark, pass);
+                    // The mark names a value, not a slot. Upstream holds the
+                    // node itself, so values inserted in front of it change
+                    // nothing; an index has to be moved to keep up.
+                    if shift > 0 {
+                        if let Some((_, at)) = marks.iter_mut().find(|(o, _)| **o == edit.object) {
+                            *at = at.map(|at| at + shift);
+                        }
+                    }
                     edited = true;
                     // A replaced value invalidates the position we recorded.
                     if matches!(
@@ -518,6 +526,36 @@ impl Test {
             };
         };
 
+        // `FcConfigMatchValueList` walks a comma list in order, and for
+        // `family` each listed name the pattern does *not* carry resets what
+        // the earlier ones matched -- so the last one decides, and
+        // `<test name="family">Alpha,Zeta</test>` does not fire for a query
+        // of just `Alpha`. It reads as a quirk and it is the behaviour
+        // configurations are written against.
+        //
+        // Guarded on there being more than one value so a single-valued test
+        // -- which is every family test in all 1364 of them shipped on this
+        // system -- takes exactly the path it did before.
+        if wanted.len() > 1
+            && self.compare == Compare::Eq
+            && std::ptr::eq(source, query)
+            && self.object == Property::Known(Object::Family)
+        {
+            let blanks = if self.ignore_blanks { Blanks::Ignored } else { Blanks::Significant };
+            let carried = |want: &Value| match want {
+                // The table is keyed by string; anything else skips the check
+                // upstream, where `FcValueString` would not give it a key.
+                Value::String(name) => {
+                    families.might_hold(name)
+                        && values.iter().any(|(got, _)| compare(got, Compare::Eq, want, blanks))
+                }
+                _ => true,
+            };
+            if !wanted.last().is_some_and(carried) {
+                return None;
+            }
+        }
+
         let hit = |(got, _): &(Value, Binding)| {
             wanted.iter().any(|want| {
                 compare(
@@ -550,14 +588,22 @@ impl Test {
 
 impl Edit {
     /// Apply this edit, inserting relative to `mark` when a test set one.
+    /// Returns how many values were inserted *before* the mark, which is how
+    /// far the mark has to move to keep pointing at the value it named.
+    ///
+    /// Upstream has no such arithmetic because it holds a `FcValueList *`:
+    /// the node survives insertions in front of it. An index does not, and a
+    /// rule that prepends and then assigns -- two edits on one object in one
+    /// `<match>` -- assigned over the wrong value here.
     fn apply(
         &self,
         query: &mut Pattern,
         pattern: Option<&Pattern>,
         mark: Option<usize>,
         pass: &mut Pass,
-    ) {
+    ) -> usize {
         let tracked = self.object == Property::Known(Object::Family);
+        let mut inserted_before_mark = 0usize;
         let values = self.expr.values(query, pattern);
         // Only the modes that insert *relative to* the mark pass a position to
         // fontconfig's FcConfigAdd, and only a position gives binding="same"
@@ -625,11 +671,13 @@ impl Edit {
                 EditMode::Prepend => {
                     let at = mark.unwrap_or(0).min(slot.len());
                     let tail = slot.split_off(at);
+                    inserted_before_mark = tagged.len();
                     slot.append(tagged);
                     slot.extend(tail);
                 }
                 EditMode::PrependFirst => {
                     let tail = std::mem::take(slot);
+                    inserted_before_mark = tagged.len();
                     slot.append(tagged);
                     slot.extend(tail);
                 }
@@ -661,6 +709,7 @@ impl Edit {
         // Fontconfig runs FcConfigPatternCanon after every edit, which drops a
         // property left holding no values at all.
         query.prune(&self.object);
+        inserted_before_mark
     }
 
     /// What binding the new values actually get.

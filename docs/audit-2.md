@@ -22,11 +22,11 @@ produced.
 | F4 | matching | Range resolution uses the first query value, not the winning one | Fixed, `e080b89` |
 | F5 | scanner | Named-instance weight/width ignore the OS/2 × (instance/default) multiplier | Fixed, `efbeb00` |
 | F6 | scanner | Missing name fallbacks: `Regular` style, family from the filename, PS-name sanitisation | Fixed, `b230fd6` |
-| F8 | rules | Multi-valued `<test name="family">` has different semantics | |
+| F8 | rules | Multi-valued `<test name="family">` has different semantics | Fixed, pending |
 | F9 | cache | Binding encoding inverted; cache values read Strong where upstream reads Weak | |
 | F10 | prepare | `fontvariations` number formatting / weight rounding differs | Fixed, `e080b89` |
-| F12 | rules | Edit marks tracked by index, not by value node | |
-| F13 | scanner | Empty `capability` string vs absent element | Fixed, *this commit* |
+| F12 | rules | Edit marks tracked by index, not by value node | Fixed, pending |
+| F13 | scanner | Empty `capability` string vs absent element | Fixed, `f887f9c` |
 
 ## F1, F7, F11 — matrix multiplication, and what it took
 
@@ -207,3 +207,40 @@ Gating this on `usable_os2` rather than `font.os2()` came with it -- the last
 `fallback_parity` gained the `capability` and `properties` fields, the second
 of which needs the property *names* rather than a value, since an empty
 element and an absent one print identically. 460/460 over 23 crafted fonts.
+## F8, F12 — two rules that both hinge on `family` being a list
+
+Neither shows up on a font. Both need a config whose rules are written a
+certain way, and no rule in the 1364 files this system ships is written that
+way, which is why the parity suite ran clean over them for as long as it did.
+
+**F12.** `<edit>` remembers where it worked so that later edits in the same
+`<match>` can carry on from there. Upstream remembers the *value node*: after
+`FcOpPrepend`, `elt->values` points at what was just inserted, and a following
+`FcOpAssign` replaces that node in place. This crate remembered an *index*, so
+prepending shifted the list under the mark and the assignment then landed on
+whatever had moved into that slot -- the mark's own value in the simple case,
+and something else entirely once two values went in at once.
+
+`prepend Beta` then `assign Gamma` on a query for `Alpha` gave `Gamma`, one
+value, where fontconfig gives `Beta Gamma`. The fix keeps the index but shifts
+it by however many values the edit inserted ahead of it, which `Edit::apply`
+now returns.
+
+**F8.** `<test name="family">Alpha,Zeta</test>` -- a test listing several
+families -- runs through a fast path in `FcConfigMatchValueList` rather than
+the ordinary comparison. The path walks the *listed* families and, for each
+one absent from the pattern, resets the running result. Nothing accumulates:
+the **last** family in the list decides the outcome, and an earlier match is
+discarded by a later miss.
+
+That is unlikely to be what anyone writing such a rule intends, and it reads
+like an upstream accident. It is also what upstream does, so a query for
+`Alpha` against `Alpha,Zeta` does not fire, and a query for `Zeta` does. This
+crate ran the general comparison, which fires on any overlap, and so fired on
+`Alpha`. The guard sits in `Test::evaluate` and is limited to `family` on a
+multi-valued test, which is where upstream's own guard sits.
+
+`compare_parity` gained seven cases: three marks with prepends and appends
+ahead of them, and four multi-valued tests -- each listed family queried on its
+own, both together, and the same list on a non-`family` object to pin that the
+fast path is `family`-only. All seven agree.

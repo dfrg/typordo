@@ -242,6 +242,44 @@ edit_case "<times>$SHEAR$SHEAR</times>" matrix "shear times shear"
 edit_case "<times><name>matrix</name>$SHEAR</times>" matrix "times(name matrix, shear)"
 edit_case "<times>$SHEAR<name>matrix</name></times>" matrix "times(shear, name matrix)"
 
+# Two edits on one object in one `<match>`. A test marks a value, and upstream
+# holds the value's *node*, so prepending in front of it changes nothing about
+# what a later `assign` replaces. An index does not survive that.
+family_case() { # $1 = rule body, $2 = query, $3 = label
+  cat > "$D/f.conf" <<XML
+<?xml version="1.0"?>
+<fontconfig>
+<match target="pattern">$1</match>
+</fontconfig>
+XML
+  theirs=$(FONTCONFIG_FILE="$D/f.conf" fc-pattern -c "$2" 2>/dev/null | python3 scripts/lib/family_names.py theirs)
+  ours=$(cargo run -q --release --example fc_match -- \
+           --config "$D/f.conf" --dump-query "$2" 2>/dev/null | python3 scripts/lib/family_names.py ours)
+  if [ "$ours" = "$theirs" ]; then
+    printf '  %-46s %-26s MATCH
+' "$3" "$theirs"
+  else
+    printf '  %-46s ours=[%s] theirs=[%s] DIFF
+' "$3" "$ours" "$theirs"
+    fail
+  fi
+}
+
+TEST_ALPHA='<test name="family"><string>Alpha</string></test>'
+echo "=== a mark names a value, not a slot"
+family_case "$TEST_ALPHA<edit name=\"family\" mode=\"prepend\"><string>Beta</string></edit><edit name=\"family\" mode=\"assign\"><string>Gamma</string></edit>" Alpha "prepend then assign"
+family_case "$TEST_ALPHA<edit name=\"family\" mode=\"append\"><string>Beta</string></edit><edit name=\"family\" mode=\"assign\"><string>Gamma</string></edit>" Alpha "append then assign"
+family_case "$TEST_ALPHA<edit name=\"family\" mode=\"prepend\"><string>B</string><string>C</string></edit><edit name=\"family\" mode=\"assign\"><string>G</string></edit>" Alpha "prepend two then assign"
+
+# A comma list in a family test: each listed name the pattern lacks discards
+# what the earlier ones matched, so the last one decides.
+MULTI='<test name="family"><string>Alpha</string><string>Zeta</string></test><edit name="family" mode="append"><string>Hit</string></edit>'
+echo "=== a multi-valued family test"
+family_case "$MULTI" Alpha "listed Alpha,Zeta -- query Alpha"
+family_case "$MULTI" Zeta "listed Alpha,Zeta -- query Zeta"
+family_case "$MULTI" "Alpha,Zeta" "listed Alpha,Zeta -- query both"
+family_case '<test name="style"><string>A</string><string>B</string></test><edit name="family" mode="append"><string>Hit</string></edit>' "Q:style=A" "the same list on a non-family object"
+
 echo "=== a conditional <alias> (FcParseAlias keeps its tests)"
 run_alias "$(t lang contains "$(str ja)")" 'serif:lang=ja' "ja alias, ja query"
 run_alias "$(t lang contains "$(str ja)")" 'serif:lang=de' "ja alias, de query"
