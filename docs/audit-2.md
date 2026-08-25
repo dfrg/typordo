@@ -22,10 +22,10 @@ produced.
 | F4 | matching | Range resolution uses the first query value, not the winning one | Fixed, `e080b89` |
 | F5 | scanner | Named-instance weight/width ignore the OS/2 × (instance/default) multiplier | Fixed, `efbeb00` |
 | F6 | scanner | Missing name fallbacks: `Regular` style, family from the filename, PS-name sanitisation | Fixed, `b230fd6` |
-| F8 | rules | Multi-valued `<test name="family">` has different semantics | Fixed, pending |
+| F8 | rules | Multi-valued `<test name="family">` has different semantics | Fixed, `0eb5534` |
 | F9 | cache | Binding encoding inverted; cache values read Strong where upstream reads Weak | |
 | F10 | prepare | `fontvariations` number formatting / weight rounding differs | Fixed, `e080b89` |
-| F12 | rules | Edit marks tracked by index, not by value node | Fixed, pending |
+| F12 | rules | Edit marks tracked by index, not by value node | Fixed, `0eb5534` |
 | F13 | scanner | Empty `capability` string vs absent element | Fixed, `f887f9c` |
 
 ## F1, F7, F11 — matrix multiplication, and what it took
