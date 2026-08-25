@@ -85,12 +85,21 @@ over the same fonts.
 | `match_parity` | which font `fc-match` returns | 3455 / 3455, no ties |
 | `sort_parity` | the whole ordering, trimmed and not | 29 / 29 |
 | `charset_parity` | coverage, per font | 2385 / 2385 |
-| `select_parity` | `<selectfont>` accept and reject rules | 22 / 22 |
+| `select_parity` | `<selectfont>` rules, value kinds, character data | 46 / 46 |
+| `compare_parity` | every `<test>` operator, one at a time | 39 / 39 |
 | `lang_parity` | every langset in every cache | identical |
 | `write_parity` | fontconfig reading caches we wrote | 2999 patterns, both rounds |
 | `name_parity` | the cache file name for a directory | 11 / 11 |
 
 The one shortfall is `scan_parity`, and it is deliberate: see Status below.
+
+`compare_parity` is the newest and exists for a reason worth stating. The
+others drive whole queries through real fonts, so they reach only the
+comparisons a font set happens to provoke -- nothing in a normal corpus
+carries a charset test, or a range on both sides, or a conditional `<alias>`.
+Every one of those was wrong while every harness was green. This one asks
+`fc-pattern -c` and this crate the same questions one operator at a time, and
+needs no fonts at all. See `docs/audit.md`.
 
 The corpus is Fedora 44 on x86_64: 2385 font files producing 2999 patterns
 across 336 primary family names and 281 languages, with 378 configuration
@@ -122,30 +131,47 @@ correct data, so this does not.
 
 Measured against libfontconfig on the same corpus, same machine, with
 checksums on both sides to show they did the same work. `scripts/bench.sh`
-and `scripts/bench_fc.c` are the two drivers.
+and `scripts/bench_fc.c` are the two drivers. Best of several runs, Fedora 44
+under WSL2; the `mmap` column is the optional feature of that name.
 
-| operation | ours | fontconfig | |
-| --- | --- | --- | --- |
-| open a config | 7.71 ms | 15.05 ms | **1.95x** |
-| load every cache | 11.30 ms | 17.88 ms | **1.58x** |
-| list every font | 1.45 ms | 2.21 ms | **1.52x** |
-| prepare a query | 250 us | 429 us | **1.71x** |
-| match | 1.25 ms | 1.24 ms | 0.99x |
-| sort | 3.00 ms | 2.93 ms | 0.98x |
-| match on coverage + language | 1.50 ms | 1.35 ms | 0.90x |
+| operation | ours | +mmap | fontconfig | |
+| --- | --- | --- | --- | --- |
+| open a config | 7.40 ms | 7.40 ms | 14.48 ms | **1.96x** |
+| load every cache | 12.84 ms | 10.56 ms | 16.76 ms | **1.31x** |
+| list every font | 1.48 ms | 1.44 ms | 2.20 ms | **1.49x** |
+| prepare a query | 398 us | 386 us | 450 us | **1.13x** |
+| match | 1.51 ms | 1.48 ms | 1.29 ms | 0.85x |
+| sort | 3.41 ms | 3.37 ms | 3.11 ms | 0.91x |
+| match on coverage + language | 1.71 ms | 1.68 ms | 1.43 ms | 0.84x |
 
-Ahead on everything that touches a cache, and level on matching. `prepare`
-is the interesting column: it is configuration rules alone, no fonts
-involved, and it was 0.39x until the profile was read rather than guessed at.
-Substitution grows the family list it scans, so a test late in a pass walked
-a hundred names; fontconfig hashes them, its own comment saying that is where
+Ahead on everything that touches a cache, a little ahead on substitution, a
+little behind on matching.
+
+Two things this table says that the previous one did not. Loading is slower
+than it was and deliberately so: every cache is now walked for structural
+validity before it is handed out, which is what `FcCacheOffsetsValid` does on
+every map and what this crate was not doing. The measured cost is most of the
+distance between 1.58x and 1.31x, and it buys refusing a damaged cache whole
+rather than yielding part of one.
+
+The rest is a correction. The figures published here before -- load 1.58x,
+prepare 1.71x, match 0.99x -- do not reproduce. They are not the audit's
+doing: the same benchmark at the commit the audit work started from gives
+1.21x, 1.18x and 0.91x, so whatever moved had already moved. fontconfig's own
+column is within a few percent across all of those runs, so it is not the
+machine. Chasing it is open work, and it is recorded here rather than quietly
+restated because a performance claim nobody can reproduce is worse than a
+slower honest one.
+
+`prepare` remains the interesting column: configuration rules alone, no fonts
+involved, and it was 0.39x before the profile was read rather than guessed at.
+Substitution grows the family list it scans, so a test late in a pass walked a
+hundred names; fontconfig hashes them, its own comment saying that is where
 the time goes. Doing the same, and stopping each qualifier as soon as its
-answer is known, took it to 1.71x and carried `match` and `sort` -- which run
-`prepare` first -- to level with it.
-
-What is left on those paths is arithmetic rather than waste: scoring is a
-merge join over two sorted element lists that allocates nothing, and the
-profile is `eq_ignoring_blanks` doing comparisons that have to happen.
+answer is known, is what put it ahead. What is left on that path is
+arithmetic rather than waste: scoring is a merge join over two sorted element
+lists that allocates nothing, and two thirds of the profile is case folding
+doing comparisons that have to happen.
 
 ## Design
 
