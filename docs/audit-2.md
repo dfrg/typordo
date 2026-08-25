@@ -19,12 +19,12 @@ produced.
 | F11 | rules | Arithmetic result type: upstream collapses integral doubles to Integer | Fixed, `740423c` |
 | F2 | prepare | Localized family/style/fullname never promoted for the requested language | |
 | F3 | scanner | `size` never produced (no `opsz` axis, no OS/2 v5 optical range) | |
-| F4 | matching | Range resolution uses the first query value, not the winning one | |
+| F4 | matching | Range resolution uses the first query value, not the winning one | Fixed, *this commit* |
 | F5 | scanner | Named-instance weight/width ignore the OS/2 × (instance/default) multiplier | |
 | F6 | scanner | Missing name fallbacks: `Regular` style, family from the filename, PS-name sanitisation | |
 | F8 | rules | Multi-valued `<test name="family">` has different semantics | |
 | F9 | cache | Binding encoding inverted; cache values read Strong where upstream reads Weak | |
-| F10 | prepare | `fontvariations` number formatting / weight rounding differs | |
+| F10 | prepare | `fontvariations` number formatting / weight rounding differs | Fixed, *this commit* |
 | F12 | rules | Edit marks tracked by index, not by value node | |
 | F13 | scanner | Empty `capability` string vs absent element | |
 
@@ -65,3 +65,27 @@ Ten cases in `compare_parity` cover edit expressions, which no harness reached
 before: four operators over integral and non-integral results, and four matrix
 cases including both operand orders of the synthetic-oblique shear. They
 compare the value *and its type*, since that is half of what F11 is about.
+
+## F4, F10 — the winning pair, and how its number is written
+
+`FcCompareValueList` keeps the `bestValue` produced by the pair that won, and
+`best_value` here computed it from `wanted.first()` instead. The two only
+differ when a query carries several values for one property, which is why no
+harness saw it: `weight=300,150` against a variable font is answered `150` by
+fontconfig and was answered `205` here. Reversing the query to `150,300` made
+the two agree, since then the first value *is* the winner.
+
+`BestValue::resolved` is a `Value` now rather than an `f64`, which is what let
+G4 go in beside it: a range resolves to a number and a `DontCare` resolves to
+the query's boolean, and both are "what the winning pair produced" rather than
+"the font's value as it stands".
+
+F10 is two things in one line. `FcWeightToOpenType` takes an `int` and returns
+one, so the fontconfig weight is truncated going in and the axis value rounded
+coming out -- weight 150 maps to 562.5 and is written `wght=563`, where this
+crate wrote `562.5`. And the number is written by `%g`, which is six
+*significant* digits with an exponent outside a readable range, not six
+decimal places: `13.33333` prints as `13.3333` and `1234567` as `1.23457e+06`.
+
+The `%g` cases are unit-tested rather than compared against a font, because no
+font carries a value that reaches them.

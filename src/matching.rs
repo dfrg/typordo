@@ -789,8 +789,10 @@ where
 pub struct BestValue {
     /// Index into the font's value list.
     pub index: usize,
-    /// The number a range resolved to, if it was one.
-    pub resolved: Option<f64>,
+    /// What the winning pair resolved to, where that is not simply the font's
+    /// value: a range collapses to a number, and a font that says `DontCare`
+    /// takes the query's answer instead of imposing its own.
+    pub resolved: Option<Value>,
 }
 
 /// Find which font value answers `query` best for `object`.
@@ -801,7 +803,11 @@ pub fn best_value(query: &Pattern, font: &PatternRef<'_>, object: Object) -> Opt
         element.values().map(|(v, b)| (v.as_value(), b)).collect();
     let got: Vec<ValueRef<'_>> = font.get(object)?.values().collect();
 
-    let (mut best, mut index) = (f64::MAX, 0usize);
+    // Which font value won, and which *query* value it won against.
+    // `FcCompareValueList` keeps the `bestValue` its winning pair produced,
+    // so both indices matter: resolving against the first query value instead
+    // answers `weight=300,150` with 205 where fontconfig answers 150.
+    let (mut best, mut index, mut chosen) = (f64::MAX, 0usize, 0usize);
     for (j, (want, _)) in wanted.iter().enumerate() {
         for (k, value) in got.iter().enumerate() {
             let Some(distance) = (matcher.compare)(want, value) else {
@@ -813,20 +819,30 @@ pub fn best_value(query: &Pattern, font: &PatternRef<'_>, object: Object) -> Opt
             if ordered < best {
                 best = ordered;
                 index = k;
+                chosen = j;
             }
         }
     }
 
-    // A range does not survive into a prepared pattern: fontconfig replaces
-    // it with a single number pulled from the font's span towards the query's,
-    // which is what gives a variable font a concrete weight.
-    let resolved = match (wanted.first().map(|(v, _)| v), got.get(index)) {
+    let resolved = match (wanted.get(chosen).map(|(v, _)| v), got.get(index)) {
+        // A range does not survive into a prepared pattern: fontconfig
+        // replaces it with a number pulled from the font's span towards the
+        // query's, which is what gives a variable font a concrete weight.
         (Some(want), Some(got)) if matches!(object, Object::Weight | Object::Width) => {
-            resolve_range(want, got)
+            resolve_range(want, got).map(Value::Double)
         }
-        // Size is the exception: it resolves to the midpoint of what was
-        // *asked for*, not of what the font offers.
-        (Some(want), _) if object == Object::Size => span(want).map(|(b, e)| (b + e) * 0.5),
+        // Size is the exception: `FcCompareSize` resolves to the midpoint of
+        // what was *asked for*, not of what the font offers.
+        (Some(want), _) if object == Object::Size => {
+            span(want).map(|(b, e)| Value::Double((b + e) * 0.5))
+        }
+        // `FcCompareBool` keeps the font's answer unless the font has none:
+        // `DontCare` means "either will do", so the query's answer stands.
+        // Without this a prepared pattern hands a renderer a tri-state where
+        // fontconfig always resolves to the caller's boolean.
+        (Some(ValueRef::Bool(want)), Some(ValueRef::Bool(got))) => {
+            Some(Value::Bool(if *got != crate::value::Tristate::DontCare { *got } else { *want }))
+        }
         _ => None,
     };
     Some(BestValue { index, resolved })

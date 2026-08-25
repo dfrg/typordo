@@ -14,11 +14,11 @@ symbol cmap detection, and the structure of `render_prepare`.
 
 | # | Area | Finding | Status |
 | --- | --- | --- | --- |
-| G1 | scanner | SFNT weight has no style-name / style-flag fallback | Fixed, *this commit* |
-| G2 | scanner | Width ignores style names; invalid `usWidthClass` collapses to 100 | Fixed, *this commit* |
-| G3 | scanner | Slant fallback reads `head.macStyle`; FreeType prefers `OS/2.fsSelection` | Fixed, *this commit* |
-| G5 | scanner | `OS/2.version == 0xffff` is not treated as "no OS/2 table" | Fixed, *this commit* |
-| G4 | prepare | A font's `DontCare` bool is kept instead of adopting the query's value | |
+| G1 | scanner | SFNT weight has no style-name / style-flag fallback | Fixed, `8db25e6` |
+| G2 | scanner | Width ignores style names; invalid `usWidthClass` collapses to 100 | Fixed, `8db25e6` |
+| G3 | scanner | Slant fallback reads `head.macStyle`; FreeType prefers `OS/2.fsSelection` | Fixed, `8db25e6` |
+| G5 | scanner | `OS/2.version == 0xffff` is not treated as "no OS/2 table" | Fixed, `8db25e6` |
+| G4 | prepare | A font's `DontCare` bool is kept instead of adopting the query's value | Fixed, *this commit* |
 
 ## G1, G2, G3, G5 — the fallback chains
 
@@ -71,3 +71,23 @@ since none exists to be found: `scripts/lib/sfnt.py` performs the surgery on a
 real font -- dropping `OS/2`, zeroing `usWidthClass`, setting the italic bit
 in one table and clearing it in the other -- and both implementations are
 asked about the result. 165/165 fields identical over 15 crafted fonts.
+
+## G4 — a font that does not care
+
+`FcCompareBool` is called as `(v1 = pattern, v2 = font)` and sets
+`bestValue = v2` only when the font's boolean is not `FcDontCare`; when the
+font says `DontCare` the *query's* boolean is what `FcFontRenderPrepare` puts
+in the result. This crate took the font's value at the winning index either
+way, so a prepared pattern handed a renderer a tri-state where fontconfig
+always resolves to the caller's answer.
+
+Reproduced with the audit's own configuration -- a `target="scan"` rule
+setting `antialias` to `dontcare` -- and it is exactly the antialias and
+hinting knobs that configurations set that way. With no value in the query
+both sides report `DontCare`, since then the object is only on the font and
+`render_prepare` copies it across untouched.
+
+Fixed alongside F4 of the second audit, which is the same machinery:
+`BestValue::resolved` now carries a `Value` rather than a number, so "what the
+winning pair resolved to" covers a collapsed range and a resolved `DontCare`
+alike.
