@@ -26,12 +26,27 @@ read-fonts = { version = "0.43", optional = true, features = ["agl"] }
 memmap2 = { version = "0.9", optional = true }
 # `statfs`, to recognise a filesystem whose timestamps cannot be trusted.
 libc = { version = "0.2", optional = true }
+# Unpacking a web font. See the `woff` feature.
+wuff = { version = "0.2.8", optional = true }
 
 [features]
 default = ["scan"]
 
 # Building cache entries from font files, rather than only reading them.
 scan = ["dep:read-fonts"]
+
+# Scan WOFF and WOFF2 as well as the fonts they wrap.
+#
+# A web font is an SFNT with its tables compressed, so this is a decompressor
+# and nothing more: `wuff` unpacks one and the result goes through the same
+# scan as any other font. Fontconfig gets this through FreeType, which does
+# the same thing, so a directory holding a `.woff` lists the same font either
+# way -- without this it is skipped as "not a font file".
+#
+# Off by default because it is two compression libraries (zlib and brotli) in
+# aid of a format that appears on a web server far more often than in
+# /usr/share/fonts.
+woff = ["dep:wuff", "scan"]
 
 # Map a cache file instead of reading it into memory.
 #
@@ -62,8 +77,8 @@ mmap = ["dep:memmap2"]
 statfs = ["dep:libc"]
 
 # Everything that makes this behave like fontconfig on the same machine, at
-# the cost of two dependencies and the `unsafe` inside `mmap`.
-full-fontconfig-compat = ["mmap", "statfs"]
+# the cost of the extra dependencies and the `unsafe` inside `mmap`.
+full-fontconfig-compat = ["mmap", "statfs", "woff"]
 
 # The two examples that build caches rather than read them.
 [[example]]

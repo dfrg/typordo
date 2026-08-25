@@ -10,8 +10,11 @@
 
 use std::path::Path;
 
+use read_fonts::ps::cff::v1::Cff;
+use read_fonts::FontRead;
 use read_fonts::{
-    tables::cmap::CmapSubtable, tables::head::MacStyle, FileRef, FontRef, ReadError, TableProvider,
+    tables::cmap::CmapSubtable, tables::head::MacStyle, types::Fixed, types::GlyphId, FileRef,
+    FontRef, ReadError, TableProvider,
 };
 
 use crate::casefold;
@@ -67,6 +70,19 @@ pub fn scan_bytes(data: &[u8], path: &str) -> Result<Vec<Pattern>, ScanError> {
     if is_type1(data) {
         return scan_type1(data, path);
     }
+    // A web font is an SFNT with its tables compressed, so unpacking it is
+    // the whole job: what comes out goes through exactly the same scan, and
+    // keeps the path it came from. FreeType does the same thing, which is why
+    // fontconfig lists a `.woff` at all.
+    #[cfg(feature = "woff")]
+    if let Some(unpacked) = unpack_woff(data) {
+        return scan_bytes(&unpacked, path);
+    }
+    // A bare CFF is not an SFNT and has no wrapper to recognise it by, so it
+    // is tried after the formats that do.
+    if is_bare_cff(data) {
+        return scan_cff(data, path);
+    }
     match FileRef::new(data) {
         Ok(FileRef::Font(font)) => Ok(scan_face(&font, path, 0)),
         Ok(FileRef::Collection(collection)) => {
@@ -79,6 +95,38 @@ pub fn scan_bytes(data: &[u8], path: &str) -> Result<Vec<Pattern>, ScanError> {
         }
         Err(_) => Err(ScanError::Unrecognized),
     }
+}
+
+/// Unpack a WOFF or WOFF2 into the SFNT it wraps.
+///
+/// `None` when these bytes are neither, so the caller falls through to the
+/// formats it already knows. A file that announces itself as a web font and
+/// then will not decompress returns `None` as well: it is not an SFNT either,
+/// and the caller's "not a font file" is the right answer for it.
+///
+/// Recursion is not a risk. What comes out is an SFNT by construction -- both
+/// decoders build one -- so the caller's second pass takes the `FileRef`
+/// branch, and a WOFF wrapping a WOFF is not a thing either decoder will
+/// produce.
+#[cfg(feature = "woff")]
+fn unpack_woff(data: &[u8]) -> Option<Vec<u8>> {
+    match data.get(..4)? {
+        b"wOFF" => wuff::decompress_woff1(data).ok(),
+        b"wOF2" => wuff::decompress_woff2(data).ok(),
+        _ => None,
+    }
+}
+
+/// Whether these bytes are a bare CFF -- a `CFF ` table on its own.
+///
+/// A CFF header is four bytes: major, minor, header size, absolute offset
+/// size. There is no signature, so this checks what the specification
+/// constrains: version 1.x for bare CFF, a header of at least four bytes, and
+/// an offset size in 1..=4. CFF2 is deliberately not accepted, since it
+/// carries no names or metrics of its own -- it exists inside an OpenType
+/// font and is read from there.
+fn is_bare_cff(data: &[u8]) -> bool {
+    matches!(data.get(..4), Some([1, _, header, offsets]) if *header >= 4 && (1..=4).contains(offsets))
 }
 
 /// Whether these bytes are a Type 1 font rather than an SFNT.
@@ -1076,16 +1124,8 @@ fn scan_type1(data: &[u8], path: &str) -> Result<Vec<Pattern>, ScanError> {
         // full name is exactly its family adds nothing, and is Regular -- and
         // its full name is then reported *with* that Regular, so the full
         // name is rebuilt from the two rather than taken as written.
-        let (full, style) = match font.family_name() {
-            Some(family) => match full.strip_prefix(family) {
-                Some(rest) if rest.trim().is_empty() => {
-                    (format!("{family} Regular"), Some("Regular".to_string()))
-                }
-                Some(rest) => (full.to_string(), Some(rest.trim().to_string())),
-                None => (full.to_string(), None),
-            },
-            None => (full.to_string(), None),
-        };
+        let (full, style) = postscript_style(Some(full), font.family_name());
+        let full = full.unwrap_or_default();
         pattern.add(Object::Fullname, full.as_str());
         pattern.add(Object::Fullnamelang, "en");
         if let Some(style) = style {
@@ -1110,10 +1150,8 @@ fn scan_type1(data: &[u8], path: &str) -> Result<Vec<Pattern>, ScanError> {
     // through the Adobe Glyph List, which `unicode_charmap` does for us --
     // except for the dingbats, whose names have a list of their own.
     let mut coverage = CharSet::new();
-    for (code, _) in font.unicode_charmap().iter() {
-        if let Some(c) = char::from_u32(code) {
-            coverage.insert(c);
-        }
+    for (c, _) in charmap_chars(font.unicode_charmap()) {
+        coverage.insert(c);
     }
     for (_, name) in font.glyph_names() {
         if let Some(c) = crate::zapf::codepoint(name).and_then(char::from_u32) {
@@ -1124,7 +1162,10 @@ fn scan_type1(data: &[u8], path: &str) -> Result<Vec<Pattern>, ScanError> {
     // `symbol=false` just below.
     // A Type 1 font has no `OS/2` table to declare a codepage in.
     add_coverage(coverage, false, None, &mut pattern);
-    pattern.add(Object::Weight, type1_weight(font.weight()));
+    // The style is whatever was derived from the full name above, which is
+    // the string `FcContainsWeight` searches when `/Weight` names nothing.
+    let style = pattern.string(Object::Style).unwrap_or("").to_string();
+    pattern.add(Object::Weight, postscript_weight(font.weight(), &style));
     pattern.add(Object::Width, 100.0);
     // A Type 1 font states its slant as an angle, so anything non-zero is
     // oblique rather than italic unless the name says otherwise.
@@ -1226,36 +1267,415 @@ fn postscript_string<'a>(data: &'a [u8], key: &[u8]) -> Option<&'a str> {
     None
 }
 
-/// A Type 1 `/Weight` string as a fontconfig weight.
+/// The full name and style of a PostScript-flavoured font.
 ///
-/// The value is free text -- `Book`, `Demi`, `Ultra Bold` -- so it is matched
-/// against the same names `<const>` uses.
-fn type1_weight(name: Option<&str>) -> f64 {
-    // Fontconfig's default when nothing names a weight is *medium*, not
-    // regular. `Roman` is not a weight in its table -- New Century
-    // Schoolbook says `/Weight (Roman)` and comes out at 100, not 80.
-    const DEFAULT: f64 = 100.0;
-    let Some(name) = name else { return DEFAULT };
-    let folded: String = name
-        .chars()
-        .filter(|c| !c.is_whitespace() && *c != '-')
-        .flat_map(char::to_lowercase)
-        .collect();
-    match folded.as_str() {
-        "thin" => 0.0,
-        "extralight" | "ultralight" => 40.0,
-        "light" => 50.0,
-        "demilight" | "semilight" => 55.0,
-        "book" => 75.0,
-        "regular" | "normal" => 80.0,
-        "medium" => 100.0,
-        "demi" | "demibold" | "semibold" => 180.0,
-        "bold" => 200.0,
-        "extrabold" | "superbold" | "ultrabold" => 205.0,
-        "black" => 210.0,
-        "heavy" => 210.0,
-        "superblack" | "extrablack" => 215.0,
-        "ultrablack" => 215.0,
-        _ => DEFAULT,
+/// Neither a Type 1 nor a bare CFF has a `name` table, so FreeType builds
+/// both from `/FullName` and `/FamilyName`: the style is what the full name
+/// adds to the family. A font whose full name is exactly its family adds
+/// nothing and is `Regular` -- and its full name is then reported *with* that
+/// `Regular`, so the pair is rebuilt rather than taken as written.
+///
+/// `None` for the style when the full name does not begin with the family, in
+/// which case there is nothing to subtract and the caller supplies a default.
+fn postscript_style(full: Option<&str>, family: Option<&str>) -> (Option<String>, Option<String>) {
+    let Some(full) = full else { return (None, None) };
+    match family {
+        Some(family) => match full.strip_prefix(family) {
+            Some(rest) if rest.trim().is_empty() => {
+                (Some(format!("{family} Regular")), Some("Regular".to_string()))
+            }
+            Some(rest) => (Some(full.to_string()), Some(rest.trim().to_string())),
+            None => (Some(full.to_string()), None),
+        },
+        None => (Some(full.to_string()), None),
+    }
+}
+
+/// The weight names fontconfig matches, in its own order.
+///
+/// `weightConsts` in `fcfreetype.c`. The order matters for the substring
+/// search: `demibold` has to be tried before `bold` and `extrablack` before
+/// `black`, or the shorter name claims the longer one's string. A leading
+/// `<` marks a name that counts only as a whole word.
+static WEIGHT_NAMES: &[(&str, f64)] = &[
+    ("thin", 0.0),
+    ("extralight", 40.0),
+    ("ultralight", 40.0),
+    ("demilight", 55.0),
+    ("semilight", 55.0),
+    ("light", 50.0),
+    ("book", 75.0),
+    ("regular", 80.0),
+    ("normal", 80.0),
+    ("medium", 100.0),
+    ("demibold", 180.0),
+    ("demi", 180.0),
+    ("semibold", 180.0),
+    ("extrabold", 205.0),
+    ("superbold", 205.0),
+    ("ultrabold", 205.0),
+    ("bold", 200.0),
+    ("ultrablack", 215.0),
+    ("superblack", 215.0),
+    ("extrablack", 215.0),
+    ("<ultra", 205.0),
+    ("black", 210.0),
+    ("heavy", 210.0),
+];
+
+/// A `/Weight` string as a fontconfig weight, if it names one exactly.
+///
+/// `FcIsWeight`, which is `FcStrCmpIgnoreBlanksAndCase` against each name --
+/// blanks and case only. A hyphen is a character like any other, so
+/// `Extra-light` matches nothing, and that is not an oversight to tidy up:
+/// Source Code Pro says exactly that and fontconfig gives it the fallback
+/// weight rather than 40.
+fn is_weight(name: &str) -> Option<f64> {
+    WEIGHT_NAMES
+        .iter()
+        .find(|(known, _)| {
+            !known.starts_with('<') && crate::casefold::eq_ignoring_blanks(name, known)
+        })
+        .map(|(_, weight)| *weight)
+}
+
+/// The weight a style *string* names, if any word of it does.
+///
+/// `FcContainsWeight`: a substring search rather than an equality, so
+/// `Bold Italic` is bold. A name written `<ultra` counts only as a whole
+/// word, which stops `ultra` inside `ultralight` from reading as ultrabold.
+fn contains_weight(style: &str) -> Option<f64> {
+    let folded = blanks_removed(style);
+    WEIGHT_NAMES
+        .iter()
+        .find(|(known, _)| match known.strip_prefix('<') {
+            Some(word) => contains_word(style, word),
+            None => folded.contains(&blanks_removed(known)),
+        })
+        .map(|(_, weight)| *weight)
+}
+
+/// `s` with its blanks dropped and its case folded, which is the form
+/// `FcStrContainsIgnoreBlanksAndCase` compares in.
+fn blanks_removed(s: &str) -> String {
+    s.chars().filter(|c| !c.is_whitespace()).flat_map(char::to_lowercase).collect()
+}
+
+/// Whether `needle` appears in `haystack` as a whole word.
+///
+/// `FcStrContainsWord`: the match has to start at the beginning or after a
+/// non-alphanumeric character, and end at the end or before one.
+fn contains_word(haystack: &str, needle: &str) -> bool {
+    let (hay, need) = (haystack.to_lowercase(), needle.to_lowercase());
+    let boundary = |c: Option<char>| c.is_none_or(|c| !c.is_alphanumeric());
+    hay.match_indices(&need).any(|(at, _)| {
+        boundary(hay[..at].chars().next_back()) && boundary(hay[at + need.len()..].chars().next())
+    })
+}
+
+/// The slant of a font whose metadata is PostScript rather than `OS/2`.
+///
+/// The style name is searched first -- `FcContainsSlant`, which knows
+/// `italic`, `kursiv` and `oblique` -- and only if it names neither does the
+/// italic angle decide, and then it can only say *italic*. Fontconfig's
+/// `italic_angle` branch is `#if 0`'d out with a note that FreeType has
+/// already folded it into the style flags; this is the same answer by the
+/// same route.
+///
+/// So `Book Oblique` is oblique because it says so, and `BlackIt` -- whose
+/// style is just `Regular`, there being no full name to subtract a family
+/// from -- is italic because it leans.
+fn postscript_slant(style: &str, italic_angle: f64) -> i32 {
+    const SLANTS: [(&str, i32); 3] = [("italic", 100), ("kursiv", 100), ("oblique", 110)];
+    let folded = blanks_removed(style);
+    if let Some((_, slant)) = SLANTS.iter().find(|(name, _)| folded.contains(name)) {
+        return *slant;
+    }
+    if italic_angle != 0.0 {
+        100 // FC_SLANT_ITALIC
+    } else {
+        0 // FC_SLANT_ROMAN
+    }
+}
+
+/// The weight of a font whose metadata is PostScript rather than `OS/2`./// The weight of a font whose metadata is PostScript rather than `OS/2`.
+///
+/// Three steps, in fontconfig's order, and the middle one is the surprise:
+/// the `/Weight` string is tried first, then the *style name* is searched for
+/// a weight word, and only then does it settle for medium. A bare CFF has no
+/// style name at all beyond the `Regular` that FreeType gives it, which is
+/// why an unmatched `/Weight` lands on 80 rather than 100.
+fn postscript_weight(weight: Option<&str>, style: &str) -> f64 {
+    // Fontconfig's last resort is *medium*, not regular. `Roman` is not a
+    // weight in its table -- New Century Schoolbook says `/Weight (Roman)`
+    // and comes out at 100.
+    weight.and_then(is_weight).or_else(|| contains_weight(style)).unwrap_or(100.0)
+}
+
+// --- bare CFF ---------------------------------------------------------------
+
+/// Scan a `CFF ` table that arrived on its own, without an SFNT around it.
+///
+/// FreeType reads one, so fontconfig lists one, and what it reports is
+/// noticeably thinner than for the OpenType font the same table usually sits
+/// in: there is no `name` table, no `OS/2`, and no `cmap`. Everything comes
+/// from the CFF's own top dictionary and its charset.
+///
+/// The three consequences worth stating, because they look like bugs
+/// otherwise:
+///
+/// * the style is always `Regular` -- nothing in a CFF names one, and
+///   FreeType does not invent it from the family or the PostScript name;
+/// * the weight comes from the `/Weight` string rather than `OS/2`, so it is
+///   whatever the font called itself in words;
+/// * coverage is built from glyph *names* through the Adobe Glyph List, the
+///   same way a Type 1 font's is, which is only possible for a non-CID font.
+fn scan_cff(data: &[u8], path: &str) -> Result<Vec<Pattern>, ScanError> {
+    use read_fonts::ps::cff::CffFontRef;
+
+    let font = CffFontRef::new_cff(data, 0, None).map_err(|_| ScanError::Unrecognized)?;
+    // `name()` is the PostScript name and comes from the name index, not
+    // the dictionary, so `Metadata` is still what reports it.
+    let metadata = font.metadata().unwrap_or_default();
+    // The table rather than the font: `CffFontRef` reaches its string index
+    // through its own kind and a CID-keyed font has none there, so every name
+    // and notice in one came back empty when read that way.
+    let cff = Cff::read(read_fonts::FontData::new(data)).map_err(|_| ScanError::Unrecognized)?;
+    let top = TopDict::read(&cff);
+    let mut pattern = Pattern::new();
+
+    pattern.add(Object::File, path);
+    pattern.add(Object::Index, 0);
+    pattern.add(Object::Fontformat, "CFF");
+    // No `head`, so no version to report; fontconfig prints 0.
+    pattern.add(Object::Fontversion, 0);
+    pattern.add(Object::Outline, true);
+    pattern.add(Object::Scalable, true);
+    pattern.add(Object::Color, false);
+    pattern.add(Object::Decorative, false);
+    pattern.add(Object::Symbol, false);
+    pattern.add(Object::Variable, false);
+    pattern.add(Object::NamedInstance, false);
+    // Hinting lives in the charstrings, not in a table anything can see.
+    pattern.add(Object::FontHasHint, false);
+    pattern.add(Object::Order, 0);
+
+    if let Some(family) = top.family_name {
+        pattern.add(Object::Family, family);
+        pattern.add(Object::Familylang, "en");
+    }
+    // The style is what the full name adds to the family, exactly as for a
+    // Type 1 font -- FreeType derives both the same way, and a CFF whose
+    // `/FullName` is just its family is `Regular`. Source Code Pro is the
+    // second kind and URW Gothic the first, which is why one reports
+    // `Regular` and the other `Book`.
+    let (full, style) = postscript_style(top.full_name, top.family_name);
+    let style = style.unwrap_or_else(|| "Regular".to_string());
+    pattern.add(Object::Style, style.as_str());
+    pattern.add(Object::Stylelang, "en");
+    // A CFF need not carry a `/FullName` -- Source Code Pro does not -- and
+    // fontconfig builds one from the family and the style when the name table
+    // has none to read.
+    let full = full.or_else(|| top.family_name.map(|family| format!("{family} {style}")));
+    if let Some(full) = &full {
+        pattern.add(Object::Fullname, full.as_str());
+        pattern.add(Object::Fullnamelang, "en");
+    }
+    if let Some(name) = metadata.name() {
+        pattern.add(Object::PostscriptName, name);
+    }
+
+    pattern.add(Object::Weight, postscript_weight(top.weight, &style));
+    pattern.add(Object::Width, 100);
+    pattern.add(Object::Slant, postscript_slant(&style, top.italic_angle));
+    // Always set, as the Type 1 path does: fontconfig reports `unknown` for
+    // a font whose notice names nobody, not nothing at all.
+    let foundry = top.notice.and_then(notice_to_foundry).unwrap_or("unknown");
+    pattern.add(Object::Foundry, foundry);
+
+    let (coverage, glyphs) = cff_coverage(&font, &cff);
+    // Once. Fontconfig has two places that add `spacing` -- one from
+    // `/isFixedPitch`, one from the advances -- and they cannot disagree,
+    // since a font that declares fixed pitch has one advance.
+    if let Some(spacing) = cff_spacing(&font, &glyphs).or(top.is_fixed_pitch.then_some(100)) {
+        pattern.add(Object::Spacing, spacing);
+    }
+    add_coverage(coverage, false, None, &mut pattern);
+    Ok(vec![pattern])
+}
+
+/// The characters a bare CFF covers, from its glyph names.
+///
+/// A CFF has no `cmap`. What it has is a charset, mapping each glyph to a
+/// string id, and those strings are glyph names -- so the Adobe Glyph List
+/// turns them into codepoints, exactly as it does for Type 1.
+///
+/// Only for a non-CID font. In a CID-keyed CFF the charset holds CIDs rather
+/// than name ids, and a CID is an index into a character collection, not a
+/// name: reading them as string ids would produce whatever text happened to
+/// sit at that index. Fontconfig reports no coverage for one either, since
+/// FreeType builds no Unicode charmap for it.
+fn cff_coverage<'a>(
+    font: &read_fonts::ps::cff::CffFontRef<'a>,
+    cff: &Cff<'a>,
+) -> (CharSet, Vec<GlyphId>) {
+    use read_fonts::ps::charmap::Charmap;
+
+    let mut coverage = CharSet::new();
+    let mut glyphs = Vec::new();
+    if font.is_cid() {
+        return (coverage, glyphs);
+    }
+    let Some(charset) = font.charset() else { return (coverage, glyphs) };
+    let name_of = |glyph: GlyphId| cff_string(cff, charset.string_id(glyph).ok()?);
+    let names = (0..font.num_glyphs())
+        .filter_map(|glyph| Some((GlyphId::new(glyph), name_of(GlyphId::new(glyph))?)));
+
+    let mut mapped: Vec<(char, GlyphId)> =
+        charmap_chars(&Charmap::from_glyph_names(names)).collect();
+    // The dingbats have a glyph-name list of their own, which the Adobe Glyph
+    // List does not include; URW's Dingbats is a bare CFF and covers nothing
+    // without it. Same workaround as the Type 1 path -- see
+    // docs/fontations-gaps.md.
+    for glyph in 0..font.num_glyphs() {
+        let glyph = GlyphId::new(glyph);
+        let Some(name) = name_of(glyph) else { continue };
+        if let Some(c) = crate::zapf::codepoint(name).and_then(char::from_u32) {
+            mapped.push((c, glyph));
+        }
+    }
+    // Codepoint order, which is the order `FT_Get_Next_Char` walks -- and so
+    // the order the advance sample has to take them in.
+    mapped.sort_unstable_by_key(|(c, _)| *c as u32);
+    mapped.dedup_by_key(|(c, _)| *c);
+    for (c, glyph) in mapped {
+        coverage.insert(c);
+        glyphs.push(glyph);
+    }
+    (coverage, glyphs)
+}
+
+/// How a bare CFF spaces its glyphs, or `None` for proportional.
+///
+/// `FcFreeTypeSpacing` walks the font's charmap and collects up to three
+/// distinct advances. One or none means monospaced; two, where the wider is
+/// twice the narrower, means dual-width; anything else is proportional --
+/// which fontconfig then does not record at all, `spacing` being absent
+/// rather than zero.
+///
+/// "None" is not a degenerate case here. A CID-keyed CFF has no charmap for
+/// FreeType to walk, so no advance is ever sampled and every one of them
+/// comes out monospaced. That is why the CJK fonts report `spacing=100`
+/// despite declaring no fixed pitch anywhere.
+///
+/// A CFF keeps its advances in the charstrings rather than an `hmtx`, so
+/// getting one means running the charstring far enough to read the width
+/// prefix. Only three distinct values are ever needed, so the walk stops as
+/// soon as it has them.
+fn cff_spacing(font: &read_fonts::ps::cff::CffFontRef<'_>, glyphs: &[GlyphId]) -> Option<i32> {
+    let mut advances: Vec<f64> = Vec::with_capacity(3);
+    for glyph in glyphs {
+        if advances.len() >= 3 {
+            break;
+        }
+        let Some(advance) = cff_advance(font, *glyph) else { continue };
+        // Fontconfig skips a zero advance rather than counting it.
+        if advance == 0.0 || advances.iter().any(|other| approximately_equal_f64(*other, advance)) {
+            continue;
+        }
+        advances.push(advance);
+    }
+    match advances.as_slice() {
+        [] | [_] => Some(100), // FC_MONO
+        [a, b] if approximately_equal_f64(a.min(*b) * 2.0, a.max(*b)) => Some(90), // FC_DUAL
+        _ => None,             // FC_PROPORTIONAL, which is not recorded
+    }
+}
+
+/// One glyph's advance width, in font units.
+fn cff_advance(font: &read_fonts::ps::cff::CffFontRef<'_>, glyph: GlyphId) -> Option<f64> {
+    /// The charstring has to be run to reach its width prefix, and everything
+    /// it draws on the way is of no interest.
+    struct Discard;
+    impl read_fonts::ps::cs::CommandSink for Discard {
+        fn move_to(&mut self, _x: Fixed, _y: Fixed) {}
+        fn line_to(&mut self, _x: Fixed, _y: Fixed) {}
+        fn curve_to(&mut self, _: Fixed, _: Fixed, _: Fixed, _: Fixed, _: Fixed, _: Fixed) {}
+        fn close(&mut self) {}
+    }
+
+    let index = font.subfont_index(glyph)?;
+    let subfont = font.subfont(index, &[]).ok()?;
+    let width = font.evaluate_charstring(&subfont, glyph, &[], &mut Discard).ok()?;
+    Some(width?.to_f64())
+}
+
+/// `fc_approximately_equal` for the numbers a charstring yields.
+fn approximately_equal_f64(a: f64, b: f64) -> bool {
+    (a - b).abs() * 33.0 <= a.abs().max(b.abs())
+}
+
+/// The codepoints a name-derived charmap holds.
+///
+/// `Charmap::iter` yields its entries raw, and a glyph whose name carries a
+/// variant suffix -- `uni00AB.left_double_angle_quote` -- has `0x80000000`
+/// set on its codepoint, the marker FreeType uses to keep a variant from
+/// shadowing the base glyph. `Charmap::map` masks it off when it searches;
+/// iterating does not, so a font that names its glyphs that way covers
+/// nothing at all unless the caller masks it here. Noto Sans Duployan names
+/// almost every glyph that way.
+fn charmap_chars(
+    charmap: &read_fonts::ps::charmap::Charmap,
+) -> impl Iterator<Item = (char, GlyphId)> + '_ {
+    const VARIANT_BIT: u32 = 0x8000_0000;
+    charmap.iter().filter_map(|(code, glyph)| Some((char::from_u32(code & !VARIANT_BIT)?, glyph)))
+}
+
+/// The text a CFF string id names./// The text a CFF string id names.
+///
+/// Not `CffFontRef::string`, which reaches the string index through the
+/// font's *kind*: a CID-keyed font has none there, so nothing past the 391
+/// standard strings resolves -- and everything a font invented lives past
+/// those, every custom glyph name and every name and notice it carries.
+fn cff_string<'a>(cff: &Cff<'a>, sid: read_fonts::ps::string::Sid) -> Option<&'a str> {
+    std::str::from_utf8(cff.string(sid)?).ok()
+}
+
+/// The parts of a CFF top dictionary a font query needs./// The parts of a CFF top dictionary a font query needs.
+///
+/// `Metadata` covers most of this, but not all: it does not expose `/Notice`
+/// at all -- which is the only thing that names a foundry -- and it misses
+/// `/isFixedPitch` on fonts that set it, which is how a monospaced CJK face
+/// ends up reported as proportional. The dictionary is public, so the whole
+/// lot is read from it in one pass rather than half from each.
+#[derive(Default)]
+struct TopDict<'a> {
+    notice: Option<&'a str>,
+    full_name: Option<&'a str>,
+    family_name: Option<&'a str>,
+    weight: Option<&'a str>,
+    italic_angle: f64,
+    is_fixed_pitch: bool,
+}
+
+impl<'a> TopDict<'a> {
+    fn read(cff: &Cff<'a>) -> Self {
+        use read_fonts::ps::cff::dict::{self, Entry};
+
+        let mut out = Self::default();
+        let Ok(top) = cff.top_dicts().get(0) else { return out };
+        let text = |sid| cff_string(cff, sid);
+        for entry in dict::entries(top, None).flatten() {
+            match entry {
+                Entry::Notice(sid) => out.notice = text(sid),
+                Entry::FullName(sid) => out.full_name = text(sid),
+                Entry::FamilyName(sid) => out.family_name = text(sid),
+                Entry::Weight(sid) => out.weight = text(sid),
+                Entry::ItalicAngle(angle) => out.italic_angle = angle.to_f64(),
+                Entry::IsFixedPitch(fixed) => out.is_fixed_pitch = fixed,
+                _ => {}
+            }
+        }
+        out
     }
 }

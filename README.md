@@ -87,6 +87,8 @@ over the same fonts.
 | `charset_parity` | coverage, per font | 2385 / 2385 |
 | `select_parity` | `<selectfont>` rules, value kinds, character data | 46 / 46 |
 | `compare_parity` | every `<test>` operator, one at a time | 39 / 39 |
+| `cff_parity` | a bare `CFF ` table, every property | 2568 / 2568 |
+| `woff_parity` | WOFF and WOFF2, every property | 960 / 960 |
 | `lang_parity` | every langset in every cache | identical |
 | `write_parity` | fontconfig reading caches we wrote | 2999 patterns, both rounds |
 | `name_parity` | the cache file name for a directory | 11 / 11 |
@@ -205,11 +207,18 @@ Only version 9 is read, which is what fontconfig 2.17 writes.
 | `scan` | yes | `read-fonts` | Building cache entries from font files, rather than only reading them. |
 | `mmap` | no | `memmap2` | Map a cache instead of reading it in. Shares one copy between processes, and opens a large cache in O(1). |
 | `statfs` | no | `libc` | Ask whether a filesystem's timestamps can be trusted, as fontconfig does for FAT. |
-| `full-fontconfig-compat` | no | both | `mmap` and `statfs` together. |
+| `woff` | no | `wuff` | Scan WOFF and WOFF2. A web font is an SFNT with its tables compressed; this unpacks one and scans the result, which is what FreeType does for fontconfig. |
+| `full-fontconfig-compat` | no | all three | `mmap`, `statfs` and `woff` together. |
 
 Every dependency is optional. With no features the crate builds with none at
 all and contains no `unsafe`; `mmap` and `statfs` each introduce exactly one
-`unsafe` call, and `Cargo.toml` documents what each costs.
+`unsafe` call, and `Cargo.toml` documents what each costs. `woff` is off by
+default because it is two compression libraries in aid of a format that turns
+up on a web server far more often than in `/usr/share/fonts`.
+
+A bare `CFF ` table -- one extracted from an OpenType font and stored on its
+own -- needs no feature. FreeType reads one, so fontconfig lists one, and so
+does this.
 
 ## Testing
 

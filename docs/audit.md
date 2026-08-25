@@ -12,19 +12,20 @@ checked, and where the fix is. It is kept because a finding marked "fixed" is
 worth no more than the evidence behind it, and because the ones left open are
 decisions somebody will want to revisit.
 
-Where it stands: **24 fixed**, one examined and already correct, two version
-drift rather than gaps, and **two open** — one blocked on `read-fonts`, one
-an API question nobody has needed answered yet. Twenty-one of the twenty-four were confirmed against
+Where it stands: **25 fixed**, one examined and already correct, two version
+drift rather than gaps, and **one open** — an API question nobody has needed
+answered yet. Twenty-two of the twenty-five were confirmed against
 running fontconfig rather than against a reading of its source; the other
 three are cache-handling paths with no command that provokes them, and carry
 tests that fail when the fix is removed.
 
-Two harnesses came out of this work and are the more durable result:
+Four harnesses came out of this work and are the more durable result:
 `scripts/compare_parity.sh`, which asks `fc-pattern -c` and this crate the
-same forty questions one operator at a time, and a doubled
-`scripts/select_parity.sh`. Both exist because the same shape of mistake kept
-recurring — every existing harness was green while real bugs sat in code the
-font corpus could not reach.
+same questions one operator at a time; `cff_parity.sh` and `woff_parity.sh`,
+which do the same for two font formats this crate could not read at all; and a
+doubled `scripts/select_parity.sh`. They exist because the same shape of
+mistake kept recurring — every existing harness was green while real bugs sat
+in code the font corpus could not reach.
 
 ## How each was checked
 
@@ -77,7 +78,8 @@ corpus does not contain.
 | 2 | No startup fallback when the configuration will not load | DIFF->MATCH against `fc-list` | `8b05eca` |
 | 22 | Language comparison ignored country sets and extra strings | Tests fail on old behaviour | `a6543f9` |
 | 21 | Cache rebuilds took no inter-process lock | Tests fail on old behaviour | `18045e2` |
-| 13 | Tri-state boolean collapsed to two | 18 cases against `fc-pattern -c` | *this commit* |
+| 13 | Tri-state boolean collapsed to two | 18 cases against `fc-pattern -c` | `dbc81db` |
+| 14 | WOFF, WOFF2 and bare CFF not scanned | 960/960 and 2568/2568 against `fc-query` | *this commit* |
 
 **9.1 — `ignore-blanks`.** `FcConfigCompareValue` uses
 `FcStrCmpIgnoreBlanksAndCase` only when `FcOpFlagIgnoreBlanks` is set and
@@ -557,11 +559,10 @@ because ours knows `got` and theirs cannot. See `docs/gaps.md`.
 
 ### Open, with a reason
 
-What is left, and why each is still open rather than fixed.
+What is left, and why it is still open rather than fixed.
 
 | # | Finding | Why it is still here |
 | --- | --- | --- |
-| 14 | WOFF and standalone CFF not scanned | Real and confirmed by measurement; blocked on `read-fonts` |
 | 25 | Application-font preference not representable | API design |
 
 **13 - `FcDontCare`.** Fontconfig's booleans have three states, and the third
@@ -579,13 +580,60 @@ The fix means giving `Value::Bool` a third state, which changes a public type
 and every match on it. That is the author's call, not one to make while
 running through a list.
 
-**14 - WOFF.** This was written down as "expected to end as an argument rather
-than a fix", and the prediction was wrong twice over.
+**14 - WOFF and bare CFF.** Fixed, in two halves, after two wrong predictions
+about it.
+
+*WOFF and WOFF2* are a decompression problem and nothing else: a web font is
+an SFNT with its tables compressed, so the optional `woff` feature unpacks one
+with `wuff` and the result goes through exactly the same scan as any other
+font. Checked against `fc-query` over 40 real web fonts -- the WOFF2 files
+rustdoc ships with every Rust toolchain, plus WOFF1 files -- across 24
+properties each: 960/960 identical.
+
+*A bare CFF* is a different kind of work. FreeType reads a `CFF ` table on its
+own, so fontconfig lists one, and what it reports is much thinner than for the
+OpenType font the same table usually sits in: no `name` table, no `OS/2`, no
+`cmap`. Nearly every property is therefore a separate derivation, and each one
+had to be found rather than assumed:
+
+- the style is the full name minus the family, so a CFF whose `/FullName` is
+  just its family is `Regular` -- Source Code Pro is that kind and URW Gothic
+  is not, which is why one reports `Regular` and the other `Book`;
+- the weight is `/Weight` matched exactly, then the *style* searched for a
+  weight word, then medium. `Extra-light` matches nothing at step one, because
+  `FcStrCmpIgnoreBlanksAndCase` ignores blanks and case but not hyphens, so it
+  falls to the style and lands on 80 rather than 40;
+- the slant comes from the style string first and only then from the italic
+  angle -- fontconfig's `italic_angle` branch is `#if 0`'d out -- which is how
+  `Book Oblique` is oblique and `BlackIt` is italic;
+- spacing is sampled from up to three advances, which for a CFF means running
+  charstrings far enough to read their width prefix. A CID-keyed font has no
+  charmap to sample, so no advance is ever taken and every one of them comes
+  out monospaced. That is not a special case in the code and was not one
+  upstream either: `num_advances <= 1` is monospaced, and zero is not more
+  than one.
+
+Coverage comes from glyph names through the Adobe Glyph List, as a Type 1
+font's does, and only for a non-CID font -- a CID charset holds character
+collection indices, not name ids.
+
+2568/2568 field comparisons identical, over the 107 `CFF ` tables extracted
+from every OpenType font on the machine, 24 properties each.
+
+Three things had to be worked around in `read-fonts`, all now written up in
+`docs/fontations-gaps.md`: `Charmap::iter` yields a variant glyph's codepoint
+with a marker bit still set, `CffFontRef::string` resolves nothing in a
+CID-keyed font, and `Metadata` does not expose `/Notice`. The first cost Noto
+Sans Duployan all but eleven of its characters and the second cost every CID
+font its name.
+
+The prediction about this finding was wrong twice over, which is worth keeping.
 
 First, the reasoning was never tested. It has been now: a valid WOFF wrapper
 around a font already in the corpus is read by `fc-query` in full -- family,
-style, weight, charset, languages -- and rejected by this crate as "not a font
-file". So it is a real gap, not a difference of opinion about what a font is.
+style, weight, charset, languages -- and was rejected by this crate as "not a
+font file". So it was a real gap, not a difference of opinion about what a
+font is.
 
 Second, and worth keeping: an earlier version of that measurement said the two
 agreed. Two things were wrong with it. The WOFF was malformed -- the table
@@ -596,9 +644,10 @@ were sharing a cache directory and this crate was reading the cache
 `fc-list` had just written. Neither error would have survived a comparison
 that queried the file directly, which is what settled it.
 
-The gap itself stands where it was: `read-fonts` recognises SFNT and
-collections, and a WOFF is neither until something decompresses it. Written up
-with the measurement as gap 8 in `docs/fontations-gaps.md`.
+`read-fonts` still recognises only SFNT and collections, and a WOFF is neither
+until something decompresses it -- which is why the fix is a feature and a
+dependency rather than a line of format sniffing. Gap 8 in
+`docs/fontations-gaps.md`.
 
 **25** is unexamined beyond the report. It wants an answer about public shape
 rather than about fontconfig.
@@ -608,8 +657,8 @@ rather than about fontconfig.
 Five were expected to end as arguments or as questions rather than fixes.
 **20** was a decision this crate had written down and defended, and it did not
 hold up. **21** turned out to be spelled out in `FcAtomicLock`. **14** was
-predicted on reasoning that had never been tested, and the test went the other
-way. **17** looked like it needed a decision about what `Caches` yields, and
+predicted on reasoning that had never been tested, the test went the other way,
+and it is now fixed for both formats. **17** looked like it needed a decision about what `Caches` yields, and
 stopped needing one as soon as the question changed from "how do I rewrite a
 path" to "how do I rewrite a cache". **13** genuinely did need a decision, and
 the answer was yes.

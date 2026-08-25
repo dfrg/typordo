@@ -16,7 +16,9 @@ where `a1` is a scissors and `a120` a circled one.
 
 Consequence: `D050000L.t1` (URW's ZapfDingbats) scans as covering exactly
 two characters, `U+0020` and `U+00A0`. Every one of its ~190 symbols is
-invisible, so nothing ever falls back to it for a dingbat.
+invisible, so nothing ever falls back to it for a dingbat. The same is true of
+the bare `CFF ` table extracted from it, which reaches the Adobe Glyph List by
+the same route.
 
 FreeType maps them, which is why fontconfig gets this right.
 
@@ -140,8 +142,75 @@ to show the two agreeing, because they shared a cache directory and this crate
 was reading the cache `fc-list` had just written. Querying the file directly
 is what settled it.
 
-No workaround here. WOFF1 would be a small decompressor -- zlib per table into
-a rebuilt SFNT -- but it belongs upstream, where the format sniffing already
-lives, rather than in a fontconfig port.
+Workaround here: the optional `woff` feature unpacks one with the `wuff`
+crate and scans what comes out, which is an SFNT by construction. It belongs
+upstream, though, where the format sniffing already lives -- `FileRef` is the
+thing that decides what a file is, and it is the thing that says no.
+
+Verified against `fc-query` over 40 real web fonts -- the WOFF2 files rustdoc
+ships with every toolchain, plus WOFF1 files -- across 24 properties each:
+960/960 identical.
 
 See `docs/audit.md`, finding 14.
+
+## 9. `Charmap::iter` yields the variant bit unmasked
+
+`Charmap::from_glyph_names` sets `0x80000000` on the codepoint of any glyph
+whose name carries a variant suffix -- `uni00AB.left_double_angle_quote` --
+mirroring the marker FreeType uses to stop a variant shadowing its base glyph.
+`Charmap::map` masks that bit off when it searches. `Charmap::iter` does not.
+
+Consequence: a caller that iterates to find out what a font covers gets
+`0x800000AB` where it expects `0xAB`, and `char::from_u32` rejects it. Noto
+Sans Duployan names almost every glyph that way, so it scanned as covering
+eleven characters instead of several hundred. Nothing in the signature
+suggests the values need masking, and the constant is private.
+
+Either `iter` should mask, or it should yield a type that carries the
+distinction rather than a bare `u32`.
+
+Workaround here: `charmap_chars` masks it, for both the Type 1 and the bare
+CFF paths.
+
+## 10. `CffFontRef::string` cannot resolve a CID font's strings
+
+`CffFontRef::string` looks the string index up through the font's own kind:
+
+```rust
+pub fn strings(&self) -> Option<&Index<'a>> {
+    match &self.top_dict.kind {
+        CffFontKind::Sid { strings, .. } => Some(strings),
+        _ => None,
+    }
+}
+```
+
+A CID-keyed font is `CffFontKind::Cid`, so `strings()` is `None` and
+`string()` answers nothing for any identifier past the 391 standard strings --
+which is every string a font actually wrote: its family name, its full name,
+its notice, and every glyph name it invented.
+
+Consequence: reading a CID-keyed bare CFF through `CffFontRef` gives a font
+with no names at all. It is silent -- `None` is also what an out-of-range
+identifier returns.
+
+Workaround here: `ps::cff::v1::Cff::string`, which resolves against the
+table's own string index and works for both kinds. Reaching for the table
+rather than the font is not an obvious step, and `CffFontRef::string` reads
+like the one to use.
+
+## 11. `Metadata` does not expose `/Notice`
+
+`ps::cff::Metadata` covers the top dictionary's names and metrics -- name,
+full name, family name, weight, bounding box, italic angle, fixed pitch,
+underline -- but not `/Notice`, which is the only thing in a CFF that names
+who made the font. Fontconfig reads it through `FT_Get_PS_Font_Info` and
+matches it against its foundry table, so without it every bare CFF reports
+`foundry=unknown`.
+
+The dictionary itself is public and complete: `ps::cff::dict::entries` yields
+`Entry::Notice(Sid)` along with everything else, so this is a missing
+convenience rather than missing data.
+
+Workaround here: `TopDict::read` walks the dictionary and takes what it needs
+in one pass, `/Notice` included.
