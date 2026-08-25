@@ -9,8 +9,23 @@ entry does.
 
 This file records what came of each one: what was actually wrong, how it was
 checked, and where the fix is. It is kept because a finding marked "fixed" is
-worth no more than the evidence behind it, and because the ones marked
-"drift" or "disputed" are decisions somebody will want to revisit.
+worth no more than the evidence behind it, and because the ones left open are
+decisions somebody will want to revisit.
+
+Where it stands: **22 fixed**, one examined and already correct, two version
+drift rather than gaps, and **four open** — three of which want a decision
+about this crate's public shape rather than about fontconfig, and one of which
+is blocked on `read-fonts`. Nineteen of the twenty-two were confirmed against
+running fontconfig rather than against a reading of its source; the other
+three are cache-handling paths with no command that provokes them, and carry
+tests that fail when the fix is removed.
+
+Two harnesses came out of this work and are the more durable result:
+`scripts/compare_parity.sh`, which asks `fc-pattern -c` and this crate the
+same forty questions one operator at a time, and a doubled
+`scripts/select_parity.sh`. Both exist because the same shape of mistake kept
+recurring — every existing harness was green while real bugs sat in code the
+font corpus could not reach.
 
 ## How each was checked
 
