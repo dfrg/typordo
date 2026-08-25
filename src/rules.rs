@@ -703,14 +703,21 @@ impl Expr {
                 let source = match (kind, pattern) {
                     (MatchKind::Pattern, Some(pattern)) => pattern,
                     // target="font" inside a pattern rule has nothing to read;
-                    // fontconfig warns and yields nothing.
-                    (MatchKind::Font, None) => return Vec::new(),
+                    // fontconfig warns and yields Void.
+                    (MatchKind::Font, None) => return vec![Value::Void],
                     _ => query,
                 };
-                source
+                // `FcPatternObjectGet (p, object, 0, &v)` -- index zero, so
+                // one value however many the property holds, and `FcTypeVoid`
+                // when it holds none. Void rather than nothing is what makes
+                // `<times><name>matrix</name>...` work on a query that has no
+                // matrix: it promotes to the identity, which is how stock
+                // `90-synthetic.conf` shears a face with no italic.
+                let first = source
                     .values_of(object)
-                    .map(|v| v.iter().map(|(value, _)| value.clone()).collect())
-                    .unwrap_or_default()
+                    .and_then(|values| values.first())
+                    .map(|(value, _)| value.clone());
+                vec![first.unwrap_or(Value::Void)]
             }
             Self::If(condition, then, otherwise) => {
                 match condition.values(query, pattern).first().and_then(as_bool) {
@@ -758,13 +765,20 @@ fn as_number(value: &Value) -> Option<f64> {
     }
 }
 
-/// Whether both sides were written as integers, so arithmetic stays integral.
-fn both_int(a: &Value, b: &Value) -> bool {
-    matches!((a, b), (Value::Int(_), Value::Int(_)))
-}
-
-fn number_result(value: f64, integral: bool) -> Value {
-    if integral {
+/// An arithmetic result, as the type fontconfig would give it.
+///
+/// `FcConfigEvaluate` computes in double and then converts to an integer
+/// whenever the result is one: `v.u.d == (double)(int)v.u.d`. Not "when both
+/// operands were integers" -- `12.5 * 2` is an integer to fontconfig, and
+/// `4 / 2` is too. The value it prints is the same either way; the type is
+/// what a written cache records and what `FcPatternGet` checks.
+fn number_result(value: f64) -> Value {
+    // The cast is only defined for values an i32 can hold, and the round trip
+    // is what decides integrality, so both are guarded at once.
+    if value >= f64::from(i32::MIN)
+        && value <= f64::from(i32::MAX)
+        && value == (value as i32).into()
+    {
         Value::Int(value as i32)
     } else {
         Value::Double(value)
@@ -781,41 +795,76 @@ fn apply_unary(op: UnaryOp, value: &Value) -> Option<Value> {
     })
 }
 
+/// Apply a binary operator, `FcConfigEvaluate`'s arithmetic half.
+///
+/// Both operands are promoted first and then dispatched on the type they have
+/// in common -- so `<times>` reaches matrix multiplication, and an absent
+/// value multiplied by a matrix becomes the identity times that matrix, which
+/// is exactly what stock `90-synthetic.conf` relies on to shear a face that
+/// has no italic of its own.
 fn apply_binary(op: BinaryOp, a: &Value, b: &Value) -> Option<Value> {
     use BinaryOp as B;
-    Some(match op {
-        B::Or => Value::Bool((as_bool(a)? || as_bool(b)?).into()),
-        B::And => Value::Bool((as_bool(a)? && as_bool(b)?).into()),
-        B::Eq => Value::Bool(compare(a, Compare::Eq, b, Blanks::Significant).into()),
-        B::NotEq => Value::Bool(compare(a, Compare::NotEq, b, Blanks::Significant).into()),
-        B::Less => Value::Bool(compare(a, Compare::Less, b, Blanks::Significant).into()),
-        B::LessEq => Value::Bool(compare(a, Compare::LessEq, b, Blanks::Significant).into()),
-        B::More => Value::Bool(compare(a, Compare::More, b, Blanks::Significant).into()),
-        B::MoreEq => Value::Bool(compare(a, Compare::MoreEq, b, Blanks::Significant).into()),
-        B::Contains => Value::Bool(compare(a, Compare::Contains, b, Blanks::Significant).into()),
-        B::NotContains => {
-            Value::Bool(compare(a, Compare::NotContains, b, Blanks::Significant).into())
+    use Value as V;
+    // The comparisons do their own promotion, and are not arithmetic.
+    let comparison = match op {
+        B::Eq => Some(Compare::Eq),
+        B::NotEq => Some(Compare::NotEq),
+        B::Less => Some(Compare::Less),
+        B::LessEq => Some(Compare::LessEq),
+        B::More => Some(Compare::More),
+        B::MoreEq => Some(Compare::MoreEq),
+        B::Contains => Some(Compare::Contains),
+        B::NotContains => Some(Compare::NotContains),
+        _ => None,
+    };
+    if let Some(compare_op) = comparison {
+        return Some(Value::Bool(compare(a, compare_op, b, Blanks::Significant).into()));
+    }
+
+    // `vle = FcConfigPromote (vl, vr); vre = FcConfigPromote (vr, vle)`. The
+    // second is promoted against the *result* of the first, not the original
+    // -- which is only observable if promoting the left could change what the
+    // right promotes to, and none of the rules chain that way, but this is
+    // the order upstream writes.
+    let left = promote(a, b);
+    let left = left.as_ref().unwrap_or(a);
+    let right = promote(b, left);
+    let right = right.as_ref().unwrap_or(b);
+
+    Some(match (op, left, right) {
+        (B::Or, l, r) => Value::Bool((as_bool(l)? || as_bool(r)?).into()),
+        (B::And, l, r) => Value::Bool((as_bool(l)? && as_bool(r)?).into()),
+        // Plus concatenates strings and unions sets; minus subtracts sets,
+        // which is how a configuration takes a language away from a font that
+        // only appears to have it.
+        (B::Plus, V::String(l), V::String(r)) => Value::String(format!("{l}{r}")),
+        (B::Plus, V::LangSet(l), V::LangSet(r)) => Value::LangSet(l.union(r)),
+        (B::Plus, V::CharSet(l), V::CharSet(r)) => Value::CharSet(l.union(r)),
+        (B::Minus, V::LangSet(l), V::LangSet(r)) => Value::LangSet(l.subtract(r)),
+        (B::Minus, V::CharSet(l), V::CharSet(r)) => Value::CharSet(l.subtract(r)),
+        // `FcMatrixMultiply`. The only operator a matrix has.
+        (B::Times, V::Matrix(l), V::Matrix(r)) => Value::Matrix(Matrix {
+            xx: l.xx * r.xx + l.xy * r.yx,
+            xy: l.xx * r.xy + l.xy * r.yy,
+            yx: l.yx * r.xx + l.yy * r.yx,
+            yy: l.yx * r.xy + l.yy * r.yy,
+        }),
+        // Everything else is arithmetic, in double, and the result collapses
+        // to an integer whenever it lands on one -- for division too, which
+        // is why `<divide><int>4</int><int>2</int></divide>` is `2` and not
+        // `2.0`. That distinction is invisible in printed output and visible
+        // in a written cache.
+        (B::Plus | B::Minus | B::Times | B::Divide, l, r) => {
+            let (l, r) = (as_number(l)?, as_number(r)?);
+            let result = match op {
+                B::Plus => l + r,
+                B::Minus => l - r,
+                B::Times => l * r,
+                _ => l / r,
+            };
+            number_result(result)
         }
-        // Plus concatenates strings, unions sets, and adds everything else.
-        B::Plus => match (a, b) {
-            (Value::String(a), Value::String(b)) => Value::String(format!("{a}{b}")),
-            (Value::LangSet(a), Value::LangSet(b)) => Value::LangSet(a.union(b)),
-            (Value::CharSet(a), Value::CharSet(b)) => Value::CharSet(a.union(b)),
-            _ => number_result(as_number(a)? + as_number(b)?, both_int(a, b)),
-        },
-        // Minus subtracts sets as well as numbers, which is how a config
-        // takes a language away from a font that only appears to have it.
-        B::Minus => match (a, b) {
-            (Value::LangSet(a), Value::LangSet(b)) => Value::LangSet(a.subtract(b)),
-            (Value::CharSet(a), Value::CharSet(b)) => Value::CharSet(a.subtract(b)),
-            _ => number_result(as_number(a)? - as_number(b)?, both_int(a, b)),
-        },
-        B::Times => number_result(as_number(a)? * as_number(b)?, both_int(a, b)),
-        B::Divide => {
-            let divisor = as_number(b)?;
-            // Division always produces a double, even between two integers.
-            Value::Double(as_number(a)? / divisor)
-        }
+        _ => return None,
     })
 }
 

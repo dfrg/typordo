@@ -1,11 +1,18 @@
 # Working through an external audit
 
-An audit of this crate against fontconfig was carried out independently, by
-agents belonging to someone other than its author, and reported 25 findings.
-It pinned typordo at `cf45c33` and compared against fontconfig **2.18.3**,
-while this crate targets **2.17.0** deliberately — so some findings are gaps
-and some are version drift, and telling those apart is the first thing each
-entry does.
+Two audits of this crate against fontconfig have been carried out
+independently, by agents belonging to someone other than its author.
+
+The first reported 25 findings, pinned typordo at `cf45c33` and compared
+against fontconfig **2.18.3**, while this crate targets **2.17.0**
+deliberately — so some findings are gaps and some are version drift, and
+telling those apart is the first thing each entry does.
+
+The second pinned `dedb888` and compared against **2.17.1**, reproducing each
+finding at runtime against a fontconfig built from source. It reported 13, one
+of which is a finding from the first audit that this file had marked fixed and
+which was not (9.5, below). That correction is the most useful thing either
+audit produced.
 
 This file records what came of each one: what was actually wrong, how it was
 checked, and where the fix is. It is kept because a finding marked "fixed" is
@@ -69,7 +76,8 @@ corpus does not contain.
 | 20 | Cache stayed current when its directory vanished | Test fails on old behaviour | `e2db80c` |
 | 19 | Traversal accepted partially corrupt caches | Test fails on old behaviour | `8e41e5b` |
 | 17 | Relocated cache kept the build machine's paths | DIFF->MATCH against `fc-list` | `5c3406a`, `f9455fd` |
-| 9.2-9.5 | Range, charset, langset and matrix comparison | 36 cases against `fc-pattern -c` | `31575bb` |
+| 9.2-9.4 | Range, charset and langset comparison | 36 cases against `fc-pattern -c` | `31575bb` |
+| 9.5 | Matrix *multiplication*, missed by the row above | 10 edit cases against `fc-pattern -c` | *this commit* |
 | 6 | Conditional `<alias>` tests discarded | DIFF->MATCH against `fc-pattern -c` | `31575bb` |
 | 7 | Empty selector patterns inverted accept/reject | DIFF->MATCH against `fc-list` | `7d16166` |
 | 8 | `prgname`, `desktop` and `order` never set | Both agree against `fc-pattern -c -d` | `702677d` |
@@ -223,7 +231,35 @@ Worth saying that relocation is not exotic. The copy that causes it -- `tar
 timestamps, so the relocated cache reads as perfectly current in its new home,
 which is exactly when nothing warns you.
 
-**9.2-9.5 - comparison.** `FcConfigCompareValue` dispatches on type, and
+**9.5 - matrix multiplication, and a row that overclaimed.** This was marked
+fixed and was not. The audit's 9.2 through 9.5 were folded into one row and
+one paragraph about `FcConfigCompareValue`, and 9.5 is not about comparison at
+all -- it is `<times>` on two matrices, in `FcConfigEvaluate`. `apply_binary`
+still read `as_number` on both operands, so a matrix made the whole expression
+evaluate to nothing.
+
+The consequence is not academic. Stock `90-synthetic.conf` shears a face that
+has no italic of its own with
+
+```xml
+<edit name="matrix" mode="assign"><times><name>matrix</name>
+  <matrix><double>1</double><double>0.2</double><double>0</double><double>1</double></matrix>
+</times></edit>
+```
+
+and the rest of that rule fired here, so a family with no italic was reported
+oblique and rendered upright. A second audit found it; the row is now split so
+the two halves cannot hide each other again.
+
+Fixing it needed two things beyond the multiply. `apply_binary` never promoted
+its operands, so even with a matrix arm the `<name>matrix</name>` half would
+have failed -- `FcConfigEvaluate` promotes both before dispatching on the type
+they share, which is what turns an absent value into the identity matrix. And
+`Expr::Field` yielded *no* values for an absent property where
+`FcPatternObjectGet (p, object, 0, &v)` yields `FcTypeVoid`; nothing to
+promote is not the same as Void.
+
+**9.2-9.4 - comparison.** `FcConfigCompareValue` dispatches on type, and
 this crate handled three of the eight. Charsets and language sets had no arm
 at all, so every `<test>` against one answered false. Two ranges had no arm.
 A number against a range was handled, and backwards.
@@ -579,7 +615,7 @@ performance table it had silently invalidated. Found by bisecting the
 benchmark, after the README's figures stopped reproducing and the discrepancy
 was chased instead of restated.
 
-**9.2-9.5 moved a font forty places, and two harnesses caught it at once.**
+**9.2-9.4 moved a font forty places, and two harnesses caught it at once.**
 Parsing `:lang=en` into a language set -- correctly, as `FcNameParse` does --
 put a shape into queries that had never been there before, and one place was
 not ready for it. `add_default_langs` decides whether the query already asks

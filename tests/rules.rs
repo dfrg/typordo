@@ -231,9 +231,15 @@ fn a_config_can_invent_a_property_and_read_it_back() {
     config.substitute(&mut query);
 
     // The first rule stored a factor, the second read it back into weight.
+    //
+    // `24 / 8` is an *integer* to fontconfig even though both operands were
+    // written as doubles and division is a double operation: `FcConfigEvaluate`
+    // computes in double and collapses the result to an integer whenever it
+    // lands on one. `fc-pattern` shows the same for `<times><double>12.5</double>
+    // <int>2</int></times>`, which it prints as `25(i)`.
     let custom = query.custom("scratchfactor").expect("custom property kept");
     assert_eq!(custom.len(), 1);
-    assert_eq!(custom[0].0, Value::Double(3.0));
+    assert_eq!(custom[0].0, Value::Int(3));
     assert_eq!(query.number(Object::Weight), Some(72.0));
 }
 

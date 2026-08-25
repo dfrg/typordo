@@ -160,6 +160,88 @@ run_case '<test name="weight" compare="eq"><const>Bold</const></test>' ':weight=
 run_case '<test name="weight" compare="eq"><const>bold</const></test>' ':weight=80' "const bold vs 80"
 run_case '<test name="weight" compare="eq"><const>nosuchconst</const></test>' ':weight=200' "const unknown"
 
+# Reduce either side's notation to "<number> <TYPE>", so the comparison is
+# about the value and its type rather than about how each prints them.
+normalise() {
+  python3 - "$1" "$2" <<'PY'
+import re, sys
+side, text = sys.argv[1], sys.argv[2].strip()
+def trim(n):
+    # 1.0 and 1 are the same number; only the type says which it is.
+    return n[:-2] if n.endswith(".0") else n
+if side == "theirs":
+    text = re.sub(r"\((?:w|s)\)$", "", text)
+    m = re.match(r"^(.*)\(i\)$", text)
+    if m: print(f"{trim(m.group(1))} INT"); raise SystemExit
+    m = re.match(r"^(.*)\(f\)$", text)
+    if m: print(f"{trim(m.group(1))} DOUBLE"); raise SystemExit
+    m = re.match(r"^\[(.*)\]$", text)
+    if m:
+        print("[%s] MATRIX" % " ".join(trim(p) for p in m.group(1).replace(";", " ; ").split()))
+        raise SystemExit
+else:
+    m = re.match(r"^Int\((-?\d+)\)$", text)
+    if m: print(f"{m.group(1)} INT"); raise SystemExit
+    m = re.match(r"^Double\((-?[\d.]+)\)$", text)
+    if m: print(f"{trim(m.group(1))} DOUBLE"); raise SystemExit
+    m = re.match(r"^Matrix\(Matrix \{ xx: (\S+), xy: (\S+), yx: (\S+), yy: (\S+) \}\)$", text)
+    if m:
+        a, b, c, d = (trim(g.rstrip(",")) for g in m.groups())
+        print(f"[{a} {b} ; {c} {d}] MATRIX"); raise SystemExit
+print(text)
+PY
+}
+
+# `<edit>` expressions, which no harness reached before. The value is read
+# back off the substituted pattern rather than treated as a yes/no, since what
+# is being compared is the value and its *type*.
+edit_case() { # $1 = edit body, $2 = property, $3 = label
+  cat > "$D/f.conf" <<XML
+<?xml version="1.0"?>
+<fontconfig>
+<match target="pattern">
+  <edit name="$2" mode="assign">$1</edit>
+</match>
+</fontconfig>
+XML
+  theirs=$(FONTCONFIG_FILE="$D/f.conf" fc-pattern -c serif 2>/dev/null            | sed -n "s/^[[:space:]]*$2: //p" | head -1)
+  ours=$(cargo run -q --release --example fc_match --            --config "$D/f.conf" --dump-query serif 2>/dev/null            | sed -n "s/^$2	//p" | head -1 | cut -f1)
+  # Both sides say the same thing in different notation, so compare the
+  # normalised form: the number and whether it is an integer or a double.
+  # The two print the same value in different notation, so both are reduced
+  # to "<number> <TYPE>" before comparing -- the type is half the point here,
+  # since an integral result is an Integer to fontconfig and that is invisible
+  # in the number alone.
+  theirs=$(normalise theirs "$theirs")
+  ours=$(normalise ours "$ours")
+  if [ "$ours" = "$theirs" ]; then
+    printf '  %-46s %-22s MATCH
+' "$3" "$theirs"
+  else
+    printf '  %-46s ours=[%s] theirs=[%s] DIFF
+' "$3" "$ours" "$theirs"
+    fail
+  fi
+}
+
+echo "=== <edit> expressions: arithmetic result types"
+edit_case '<times><double>12.5</double><int>2</int></times>' pixelsize "times(12.5,2) is an integer"
+edit_case '<divide><int>4</int><int>2</int></divide>' pixelsize "divide(4,2) is an integer"
+edit_case '<divide><int>5</int><int>2</int></divide>' pixelsize "divide(5,2) is a double"
+edit_case '<plus><int>1</int><int>2</int></plus>' pixelsize "plus(1,2)"
+edit_case '<plus><double>1.5</double><double>2.25</double></plus>' pixelsize "plus(1.5,2.25)"
+edit_case '<minus><int>10</int><double>0.5</double></minus>' pixelsize "minus(10,0.5)"
+
+echo "=== <edit> expressions: matrices (FcMatrixMultiply)"
+SHEAR='<matrix><double>1</double><double>0.2</double><double>0</double><double>1</double></matrix>'
+edit_case "$SHEAR" matrix "a matrix assigned as it is"
+edit_case "<times>$SHEAR$SHEAR</times>" matrix "shear times shear"
+# What 90-synthetic.conf does: the query has no matrix, so `<name>` yields
+# Void, which promotes to the identity -- without that a font with no italic
+# face is reported oblique and rendered upright.
+edit_case "<times><name>matrix</name>$SHEAR</times>" matrix "times(name matrix, shear)"
+edit_case "<times>$SHEAR<name>matrix</name></times>" matrix "times(shear, name matrix)"
+
 echo "=== a conditional <alias> (FcParseAlias keeps its tests)"
 run_alias "$(t lang contains "$(str ja)")" 'serif:lang=ja' "ja alias, ja query"
 run_alias "$(t lang contains "$(str ja)")" 'serif:lang=de' "ja alias, de query"
