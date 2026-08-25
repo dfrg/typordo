@@ -134,6 +134,29 @@ pub(crate) fn binding_at(data: Bytes<'_>, node: usize) -> Result<Binding> {
 /// Offsets inside a value are relative to the value itself, not to the field
 /// holding them — `FcValueString` in `fcint.h` passes the whole `FcValue` as
 /// the base.
+/// Check that the value at `at` is structurally sound, without reading it.
+///
+/// What `FcCacheOffsetsValid` does per value: the type tag has to be one it
+/// knows, and an indirect type's offset has to land inside the file. It does
+/// not decode the string, and neither does this -- validating UTF-8 for every
+/// string in every cache is most of the cost of a full read, and buys nothing
+/// the read itself will not catch when it happens.
+pub(crate) fn check_at(data: Bytes<'_>, at: usize) -> Result<()> {
+    let union = at + L.union;
+    match data.i32(at)? {
+        0 | 1 | 4 => {}
+        2 => {
+            data.f64(union)?;
+        }
+        // Indirect: the offset has to resolve, and that is all.
+        3 | 5 | 6 | 8 | 9 => {
+            data.follow(at, union)?.ok_or(Error::BadOffset { base: at, delta: 0 })?;
+        }
+        other => return Err(Error::BadCount(other)),
+    }
+    Ok(())
+}
+
 pub(crate) fn value_at<'a>(data: Bytes<'a>, at: usize) -> Result<ValueRef<'a>> {
     let union = at + L.union;
     Ok(match data.i32(at)? {

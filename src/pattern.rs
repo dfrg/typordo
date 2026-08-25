@@ -185,7 +185,7 @@ impl<'a> ElementRef<'a> {
         let mut budget = self.budget();
         while let Some(at) = node {
             budget = budget.checked_sub(1).ok_or(Error::ChainTooLong)?;
-            value::value_at(self.data, at + L.node_value)?;
+            value::check_at(self.data, at + L.node_value)?;
             value::binding_at(self.data, at)?;
             node = self.data.follow(at, at)?;
         }

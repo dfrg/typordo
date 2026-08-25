@@ -468,3 +468,48 @@ fn a_cache_for_a_vanished_directory_is_not_used() {
     assert_eq!(caches.skipped().len(), 1);
     assert_eq!(caches.skipped()[0].reason, typordo::SkipReason::DirectoryUnavailable);
 }
+
+/// A cache damaged past its header is refused whole, not walked into.
+///
+/// `FcDirCacheMapFd` runs `FcCacheOffsetsValid` on every map and rejects the
+/// file entire. Reading one record at a time and skipping what does not hold
+/// up yields a partial font set from a cache fontconfig would have refused,
+/// and prunes whatever subdirectory tree hung below the skipped record.
+#[cfg(feature = "scan")]
+#[test]
+fn a_cache_damaged_past_its_header_is_refused() {
+    let root = std::env::temp_dir().join("typordo-damaged-cache");
+    let _ = std::fs::remove_dir_all(&root);
+    let (fonts, caches) = (root.join("fonts"), root.join("caches"));
+    std::fs::create_dir_all(&fonts).unwrap();
+    std::fs::create_dir_all(&caches).unwrap();
+    let conf = root.join("fonts.conf");
+    std::fs::write(
+        &conf,
+        format!(
+            "<?xml version=\"1.0\"?>\n<fontconfig>\n<dir>{}</dir>\n<cachedir>{}</cachedir>\n\
+             </fontconfig>\n",
+            fonts.display(),
+            caches.display()
+        ),
+    )
+    .unwrap();
+
+    let config = Config::load_from(&conf).unwrap();
+    assert_eq!(config.build_fonts().count(), 1);
+    let path = caches.join(config.cache_basename(&fonts.to_string_lossy()));
+
+    // Damage the body, leaving the header -- magic, version and length --
+    // intact, so only whole-cache validation can catch it.
+    let mut bytes = std::fs::read(&path).unwrap();
+    let len = bytes.len();
+    assert!(len > 96, "cache should be bigger than its header");
+    for byte in &mut bytes[64..len.min(160)] {
+        *byte ^= 0xff;
+    }
+    std::fs::write(&path, &bytes).unwrap();
+
+    let mut caches = config.caches(CachePolicy::read_only());
+    assert_eq!(caches.by_ref().count(), 0, "a damaged cache must not be handed out");
+    assert_eq!(caches.skipped().len(), 1, "{:?}", caches.skipped());
+}

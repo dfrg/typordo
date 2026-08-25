@@ -1550,6 +1550,20 @@ impl Caches<'_> {
             }
             existed = true;
             let Ok(cache) = Cache::open(&on_disk) else { continue };
+            // Whole-cache validation, as `FcDirCacheMapFd` does before it
+            // will hand one out: it runs `FcCacheOffsetsValid` on every map
+            // and rejects the file entire rather than letting a caller walk
+            // into the damaged part. `Cache::open` checks only the header,
+            // and the iterators skip records that do not hold up, which
+            // silently yields a partial font set from a cache fontconfig
+            // would have refused -- and, worse, prunes whatever subdirectory
+            // tree hung below the record that was skipped.
+            //
+            // A cache that fails is passed over like any other candidate, so
+            // a good one further down still gets its chance.
+            if cache.validate().is_err() {
+                continue;
+            }
             match crate::stamp::freshness(dir, &cache) {
                 crate::stamp::Freshness::Current => return Some(cache),
                 // The directory is gone, so no cache for it is worth
