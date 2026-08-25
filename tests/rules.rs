@@ -411,3 +411,61 @@ fn an_alias_applies_only_when_its_own_tests_pass() {
         families(&config, &mut light).into_iter().map(|(name, _)| name).collect();
     assert!(!names.contains(&"Heavy Substitute".to_string()), "{names:?}");
 }
+
+/// `FcDefaultSubstitute` ends by adding `prgname`, `desktop` and `order`, and
+/// `FcConfigSubstituteWithPat` adds `prgname` again before any pattern rule
+/// runs. None of the three is scored against: they are there so a
+/// configuration can test them, and a `<test name="prgname">` rule cannot
+/// fire against a property nothing ever sets.
+#[test]
+fn substitution_supplies_the_properties_a_config_may_test() {
+    let mut query = with_family("serif");
+    query.default_substitute();
+
+    let prgname = query.get(Object::Prgname).and_then(|e| {
+        e.values().find_map(|(v, _)| match v {
+            Value::String(s) => Some(s.clone()),
+            _ => None,
+        })
+    });
+    // The test binary's own name, whatever cargo called it.
+    assert!(prgname.is_some_and(|n| !n.is_empty()), "prgname should name this executable");
+
+    let order = query.get(Object::Order).and_then(|e| {
+        e.values().find_map(|(v, _)| match v {
+            Value::Int(i) => Some(*i),
+            _ => None,
+        })
+    });
+    assert_eq!(order, Some(0));
+
+    // `desktop` follows XDG_CURRENT_DESKTOP and is absent when that is unset
+    // or empty, so its presence is not asserted -- only that a value already
+    // in the pattern is left alone, which is the rule for all three.
+    let mut kept = with_family("serif");
+    kept.add(Object::Order, 42);
+    kept.add(Object::Prgname, "chosen");
+    kept.default_substitute();
+    let orders: Vec<i32> = kept
+        .get(Object::Order)
+        .map(|e| {
+            e.values()
+                .filter_map(|(v, _)| match v {
+                    Value::Int(i) => Some(*i),
+                    _ => None,
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    assert_eq!(orders, [42], "a value already present is not joined by a default");
+}
+
+/// A pattern rule testing `prgname` has to see it, which means substitution
+/// supplies it before the rules run rather than leaving it to the defaults.
+#[test]
+fn a_pattern_rule_can_test_prgname() {
+    let config = config();
+    let mut query = with_family("serif");
+    config.substitute(&mut query);
+    assert!(query.contains(Object::Prgname), "prgname must be set before pattern rules run");
+}

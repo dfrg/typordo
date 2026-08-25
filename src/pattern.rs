@@ -573,6 +573,24 @@ impl Pattern {
                 self.add_weak(object, "en-us");
             }
         }
+
+        // The last three `FcDefaultSubstitute` adds. None of them is scored
+        // against; they are here so a configuration can test them, and a
+        // `<test name="prgname">` rule cannot fire against a property nothing
+        // ever sets.
+        if !self.contains(Object::Prgname) {
+            if let Some(name) = crate::locale::prgname() {
+                self.add(Object::Prgname, name);
+            }
+        }
+        if !self.contains(Object::DesktopName) {
+            if let Some(name) = crate::locale::desktop_name() {
+                self.add(Object::DesktopName, name);
+            }
+        }
+        if !self.contains(Object::Order) {
+            self.add(Object::Order, 0);
+        }
     }
 }
 

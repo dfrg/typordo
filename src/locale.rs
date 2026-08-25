@@ -1,8 +1,50 @@
-//! The languages the environment says a query should ask for.
+//! What the environment says about a query: the languages it should ask for,
+//! and the two names a configuration is allowed to test against.
 //!
 //! Fontconfig fills a pattern's `lang` from the locale when the caller named
 //! none, and the tag it uses is not the locale string: `FcLangNormalize`
 //! strips what the language list cannot name.
+
+use std::sync::OnceLock;
+
+/// The running program's name, as a configuration may test it.
+///
+/// `FcConfigGetPrgname`: the basename of the executable, with `.exe` removed
+/// on Windows. It exists so a configuration can say "this application gets
+/// different fonts" -- `<test name="prgname">` is how a distribution stops a
+/// terminal from being given a proportional font -- and a rule testing it can
+/// never fire if the property is never set.
+///
+/// `None` when it cannot be determined, in which case fontconfig adds
+/// nothing rather than adding an empty string.
+///
+/// Cached, as fontconfig caches it on the configuration: the executable does
+/// not change under a running process.
+pub(crate) fn prgname() -> Option<&'static str> {
+    static PRGNAME: OnceLock<Option<String>> = OnceLock::new();
+    PRGNAME
+        .get_or_init(|| {
+            let path = std::env::current_exe().ok()?;
+            let name = path.file_name()?.to_str()?;
+            // `GetModuleFileNameA` then strips a `.exe` suffix; on Unix the
+            // basename is taken as it stands.
+            let name = if cfg!(windows) { name.strip_suffix(".exe").unwrap_or(name) } else { name };
+            (!name.is_empty()).then(|| name.to_string())
+        })
+        .as_deref()
+}
+
+/// The desktop environment's name, as a configuration may test it.
+///
+/// `FcConfigGetDesktopName` reads `XDG_CURRENT_DESKTOP` and treats an empty
+/// value as absent. Same purpose as [`prgname`]: it lets one configuration
+/// serve several desktops.
+pub(crate) fn desktop_name() -> Option<&'static str> {
+    static DESKTOP: OnceLock<Option<String>> = OnceLock::new();
+    DESKTOP
+        .get_or_init(|| std::env::var("XDG_CURRENT_DESKTOP").ok().filter(|s| !s.is_empty()))
+        .as_deref()
+}
 
 /// The languages fontconfig assumes when a query names none.
 ///

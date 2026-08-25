@@ -866,6 +866,17 @@ impl Config {
     /// the rules run first and the defaults only fill what is still missing.
     pub fn substitute(&self, query: &mut Pattern) {
         add_default_langs(query);
+        // `FcConfigSubstituteWithPat` adds `prgname` here as well as in the
+        // defaults, and the repetition is the point: a `<match
+        // target="pattern">` testing it runs before `FcDefaultSubstitute` is
+        // ever called, so waiting for the defaults would leave those rules
+        // looking at a pattern that has no `prgname` yet. Neither `desktop`
+        // nor `order` is added here, and fontconfig does not add them either.
+        if !query.contains(Object::Prgname) {
+            if let Some(name) = crate::locale::prgname() {
+                query.add(Object::Prgname, name);
+            }
+        }
         self.substitute_kind(query, MatchKind::Pattern, None);
     }
 

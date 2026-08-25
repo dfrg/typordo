@@ -54,7 +54,8 @@ corpus does not contain.
 | 17 | Relocated cache kept the build machine's subdirectory paths | Test fails on old behaviour | `5c3406a` (part) |
 | 9.2-9.5 | Range, charset, langset and matrix comparison | 36 cases against `fc-pattern -c` | `31575bb` |
 | 6 | Conditional `<alias>` tests discarded | DIFF->MATCH against `fc-pattern -c` | `31575bb` |
-| 7 | Empty selector patterns inverted accept/reject | DIFF->MATCH against `fc-list` | *this commit* |
+| 7 | Empty selector patterns inverted accept/reject | DIFF->MATCH against `fc-list` | `7d16166` |
+| 8 | `prgname`, `desktop` and `order` never set | Both agree against `fc-pattern -c -d` | *this commit* |
 
 **9.1 — `ignore-blanks`.** `FcConfigCompareValue` uses
 `FcStrCmpIgnoreBlanksAndCase` only when `FcOpFlagIgnoreBlanks` is set and
@@ -233,6 +234,24 @@ it and failed. Both now agree with `fc-list` on the whole corpus -- 0 files for
 an empty reject, 2385 for an empty accept, and 0 for a reject on `namelang`
 alone, which reduces to the empty case once the element is skipped.
 
+**8 - the properties a configuration tests.** `FcDefaultSubstitute` ends by
+adding `prgname` (the executable's basename), `desktop` (from
+`XDG_CURRENT_DESKTOP`, empty treated as absent) and `order` (0). None is
+scored against, which is why their absence showed up in no harness: they exist
+so a configuration can test them. A distribution's `<test name="prgname">`
+rule -- the usual way a terminal is kept off a proportional font -- could not
+fire here, because the property it tests was never set.
+
+`prgname` is added twice upstream, and the repetition matters:
+`FcConfigSubstituteWithPat` adds it before any pattern rule runs, so waiting
+for the defaults would leave exactly those rules looking at a pattern without
+it. `desktop` and `order` are not added there, and are not here either.
+
+Checked by giving both implementations the same rule keyed on their own
+executable name: `fc-pattern` fires the `fc-pattern` rule and this crate fires
+its own, each reporting the name it should. `order: 0` matches, and `desktop`
+appears in both or neither as `XDG_CURRENT_DESKTOP` is set or empty.
+
 ### Version drift, not gaps
 
 | # | Finding | Why it stands |
@@ -254,7 +273,6 @@ cannot be mistaken for "all of it".
 | --- | --- | --- |
 | 2 | Root configuration search and startup fallback | High |
 | 3.1, 3.2 | Include resolution and `ignore_missing` | High |
-| 8 | Substitution omits `prgname`, `desktop_name`, `order` | Medium |
 | 10 | `<const>` resolution | Medium |
 | 11 | XML character data | Low-medium |
 | 12 | `Pattern` equality and insertion | Medium |
