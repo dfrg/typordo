@@ -68,7 +68,7 @@ orderings -- `less` asks whether the two differ and the right side is
 | `FcConfigGetCacheDirs` | `Config::cache_dirs()` |
 | `FcConfigGetConfigFiles` | `Config::files()` |
 | `FcConfigUptoDate` | partly: `CachePolicy` decides, `Caches::skipped()` reports |
-| `FcConfigAppFontAddFile` / `AddDir` | scan, then `CacheWriter` — see below |
+| `FcConfigAppFontAddFile` / `AddDir` | scan, then `Cache::from_fonts` — see below |
 | `FcConfigAppFontClear` | drop the `Cache` |
 | `FcSetSystem` / `FcSetApplication` | — no font sets; matching takes an iterator |
 
@@ -90,9 +90,7 @@ caller's:
 
 ```rust
 // Owned patterns -- what scanning gives you -- as something matchable.
-let mut writer = CacheWriter::new("/app/fonts");
-for font in &scanned { writer.font(font); }
-let app = Cache::new(writer.finish().into_boxed_slice())?;
+let app = Cache::from_fonts("/app/fonts", &scanned)?;
 
 let (font, _) = best(&query, system.fonts()?.chain(app.fonts()?))?;
 ```
@@ -102,7 +100,7 @@ ties for them. `tests/app_fonts.rs` pins both orders.
 
 The cache is the bridge because a `PatternRef` is a cursor into cache bytes;
 there is nothing else for a borrowed pattern to borrow from. It costs one pass
-over the patterns and no font parsing.
+over the patterns and no font parsing, and nothing is written to disk.
 
 ## Building and reading a pattern
 

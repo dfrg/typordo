@@ -7,12 +7,13 @@
 //! order, and an application font set is a chained iterator.
 //!
 //! What that needs is a way to get from owned patterns, which is what
-//! scanning produces, to the borrowed ones matching scores. Building a cache
-//! in memory is that bridge, and these tests are here to show it holds.
+//! scanning produces, to the borrowed ones matching scores.
+//! [`Cache::from_fonts`] is that bridge, and these tests are here to show it
+//! holds.
 
 use std::path::Path;
 
-use typordo::{best, sorted, Cache, CacheWriter, Object, Pattern, PatternRef, Value};
+use typordo::{best, sorted, Cache, Object, Pattern, PatternRef, Value};
 
 fn system() -> Cache {
     let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/cantarell-le64.cache-9");
@@ -22,11 +23,7 @@ fn system() -> Cache {
 /// Owned patterns as a cache that can be matched against, which is what
 /// `FcConfigAppFontAddFile` produces internally.
 fn app_font_set(dir: &str, fonts: &[Pattern]) -> Cache {
-    let mut writer = CacheWriter::new(dir);
-    for font in fonts {
-        writer.font(font);
-    }
-    Cache::new(writer.finish().into_boxed_slice()).expect("a cache we just wrote")
+    Cache::from_fonts(dir, fonts).expect("a cache we just built")
 }
 
 /// One pattern from the fixture, renamed, standing in for a font an
@@ -133,4 +130,29 @@ fn an_application_font_keeps_its_properties() {
         let after = read_back.value(object).map(|v| Value::from_value(&v));
         assert_eq!(before, after, "{object} did not survive");
     }
+}
+
+/// `Cache::from_fonts` takes anything that yields patterns, not just a slice,
+/// so a caller need not collect first.
+#[test]
+fn from_fonts_accepts_any_iterator_of_patterns() {
+    let system = system();
+    let owned: Vec<Pattern> =
+        system.fonts().unwrap().map(|font| Pattern::from_pattern(&font)).collect();
+
+    let from_slice = Cache::from_fonts("/app/fonts", &owned).unwrap();
+    let from_iter = Cache::from_fonts("/app/fonts", owned.iter().take(1)).unwrap();
+
+    assert_eq!(from_slice.fonts().unwrap().count(), owned.len());
+    assert_eq!(from_iter.fonts().unwrap().count(), 1);
+    assert_eq!(from_slice.dir().unwrap(), "/app/fonts");
+}
+
+/// An empty set is a cache with no fonts, not an error: an application that
+/// bundles none should not have to special-case that.
+#[test]
+fn from_fonts_accepts_nothing_at_all() {
+    let cache = Cache::from_fonts("/app/fonts", &[]).expect("an empty cache is still a cache");
+    assert_eq!(cache.fonts().unwrap().count(), 0);
+    assert_eq!(cache.dir().unwrap(), "/app/fonts");
 }

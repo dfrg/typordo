@@ -585,14 +585,12 @@ let (font, _) = best(&query, chained)?;
 
 The one thing that needs saying is how to get from owned patterns -- which is
 what scanning produces -- to the borrowed ones matching scores. A `PatternRef`
-is a cursor into cache bytes, so the bridge is to build a cache in memory,
-which `CacheWriter` and `Cache::new` already do and `Cache::rebased` already
-relies on:
+is a cursor into cache bytes, so the bridge is a cache built in memory, which
+`CacheWriter` and `Cache::new` already did and `Cache::rebased` already relied
+on. `Cache::from_fonts` is that, named:
 
 ```rust
-let mut writer = CacheWriter::new(dir);
-for font in &scanned { writer.font(font); }
-let app = Cache::new(writer.finish().into_boxed_slice())?;
+let app = Cache::from_fonts("/app/fonts", &scanned)?;
 ```
 
 `tests/app_fonts.rs` holds four tests that pin this: an application font is
@@ -600,18 +598,15 @@ matched alongside the system's, it takes its place in a full sort, every
 property survives the round trip into the cache, and the chain order decides a
 tie -- in both directions, which is the thing fontconfig cannot express.
 
-What is left is ergonomics, not capability. A caller has to know to build the
-cache, and nothing in the API points at it. Whether that deserves a named
-constructor is a question about this crate's surface rather than about
-fontconfig, and it is the last thing on this list.
+The constructor is the whole of the change. Everything it does was already
+possible; what it adds is a name a reader looking for
+`FcConfigAppFontAddFile` can find, and a doc comment saying what the second
+font set was for.
 
 ### Nothing open that fontconfig decides
 
 Every finding has now been read against both trees and either fixed, disputed
-with evidence, or shown to need no change. What remains is one question about
-this crate's own ergonomics -- whether supplying application fonts deserves a
-named constructor rather than three lines of `CacheWriter` -- which fontconfig
-has no opinion about.
+with evidence, or shown to need no change. Nothing is open.
 
 **13 - `FcDontCare`.** Fontconfig's booleans have three states, and the third
 is not decorative: `FcCompareBool` takes the *font's* value when the pattern

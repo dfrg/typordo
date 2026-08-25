@@ -106,7 +106,52 @@ impl Cache {
         Self::from_storage(Storage::Owned(bytes.into_boxed_slice()))
     }
 
-    /// This cache with every path it holds moved under `dir`.
+    /// A cache holding `fonts`, built in memory.
+    ///
+    /// What `FcConfigAppFontAddFile` is for: fonts an application ships
+    /// rather than finds. Fontconfig keeps those in a second font set and
+    /// walks `{ system, application }` in that order; this crate has no
+    /// second set because matching takes an iterator of fonts, so an
+    /// application font set is a cache you chain on:
+    ///
+    /// ```no_run
+    /// # use typordo::{best, Cache, CachePolicy, Config, Pattern};
+    /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
+    /// # let (config, query): (Config, Pattern) = unimplemented!();
+    /// # let scanned: Vec<Pattern> = unimplemented!();
+    /// let app = Cache::from_fonts("/app/fonts", &scanned)?;
+    /// // The caches have to outlive the iterator: a `PatternRef` borrows
+    /// // from the one it came out of.
+    /// let caches: Vec<_> = config.caches(CachePolicy::read_only()).collect();
+    /// let system = caches.iter().flat_map(|(_, cache)| cache.fonts().into_iter().flatten());
+    /// let chosen = best(&query, system.chain(app.fonts()?));
+    /// # let _ = chosen; Ok(())
+    /// # }
+    /// ```
+    ///
+    /// Order decides a tie, and it is the caller's. Chaining the application
+    /// first wins ties for it, which is the thing fontconfig cannot be asked
+    /// for -- `FcFontSetMatchInternal` keeps its incumbent unless a font
+    /// scores *strictly* better, and it sees the system's fonts first.
+    ///
+    /// The cache exists because a [`PatternRef`] is a cursor into cache
+    /// bytes, and scanning produces owned [`Pattern`]s; this is the bridge,
+    /// and it costs one pass over the patterns and no font parsing.
+    ///
+    /// `dir` is recorded as the directory the cache describes and is never
+    /// read from. Nothing is written to disk. The recorded modification time
+    /// is zero, which for a cache that is never checked against a directory
+    /// means nothing at all -- but it would read as "never stale" if one were
+    /// written out, so write it only with a stamp you meant.
+    pub fn from_fonts<'a>(dir: &str, fonts: impl IntoIterator<Item = &'a Pattern>) -> Result<Self> {
+        let mut writer = CacheWriter::new(dir);
+        for font in fonts {
+            writer.font(font);
+        }
+        Self::new(writer.finish().into_boxed_slice())
+    }
+
+    /// This cache with every path it holds moved under `dir`.    /// This cache with every path it holds moved under `dir`.
     ///
     /// A cache found for a directory it was not built for -- copied into an
     /// image, reached through a sysroot, or simply moved -- describes the
