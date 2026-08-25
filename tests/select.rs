@@ -128,11 +128,27 @@ fn a_const_resolves_to_its_numeric_value() {
 #[test]
 fn an_unevaluable_selector_never_matches() {
     let cache = cantarell();
-    for name in ["const-unknown.conf", "langset-poison.conf", "unknown-object.conf"] {
+    for name in ["langset-poison.conf", "unknown-object.conf"] {
         let config = fixture(name);
         let kept = cache.fonts().unwrap().filter(|f| config.accepts(f)).count();
         assert_eq!(kept, 6, "{name} narrowed to its understood half and rejected fonts");
     }
+}
+
+/// A `<const>` naming nothing is *not* one of those. Fontconfig resolves it
+/// -- to `FcTypeVoid` -- and `FcParsePatelt` stops at the first Void value,
+/// so the `<patelt>` adds nothing to the pattern and the elements beside it
+/// still apply. This fixture pairs the unknown constant with a family that
+/// matches, and the family alone is enough to reject.
+///
+/// Checked against `fc-list`, which keeps exactly as many fonts for
+/// `family + unknown const` as for `family` alone.
+#[test]
+fn an_unknown_const_drops_its_element_rather_than_the_selector() {
+    let config = fixture("const-unknown.conf");
+    let cache = cantarell();
+    let kept = cache.fonts().unwrap().filter(|f| config.accepts(f)).count();
+    assert_eq!(kept, 0, "the family element should still have rejected every instance");
 }
 
 /// Selector strings are compared with full Unicode case folding, not ASCII

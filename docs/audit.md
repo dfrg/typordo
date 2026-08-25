@@ -57,6 +57,7 @@ corpus does not contain.
 | 7 | Empty selector patterns inverted accept/reject | DIFF->MATCH against `fc-list` | `7d16166` |
 | 8 | `prgname`, `desktop` and `order` never set | Both agree against `fc-pattern -c -d` | `702677d` |
 | 3.2 | `ignore_missing` never read; a missing include was silent | Test fails on old behaviour | `207a0fe` |
+| 10 | `<const>` was case-sensitive, and an unknown one poisoned | DIFF->MATCH against `fc-list` | *this commit* |
 
 **9.1 — `ignore-blanks`.** `FcConfigCompareValue` uses
 `FcStrCmpIgnoreBlanksAndCase` only when `FcOpFlagIgnoreBlanks` is set and
@@ -280,6 +281,30 @@ selects the non-scalable fonts; treating it as unusable left 18 more fonts in
 the list than fontconfig leaves. Ten spellings are now compared against
 `fc-list` in `select_parity`, and all ten agree.
 
+**10 - `<const>`.** The table itself was complete and in the right order, and
+the reason the order matters was already written down. Two things around it
+were wrong.
+
+`FcNameGetConstant` compares with `FcStrCmpIgnoreCase`, so `<const>Bold</const>`
+resolves exactly as `<const>bold</const>` does. Ours compared exactly, and the
+capitalised spelling silently resolved to nothing.
+
+Which led to the second, and the more interesting one. A name the table does
+not hold is `FcTypeVoid`, and `FcParsePatelt` stops at the first Void value it
+pops -- so the `<patelt>` adds *nothing to the pattern*, and the elements
+beside it still apply. This crate treated it as unevaluable and poisoned the
+whole selector, on the principle that narrowing a selector to the half we
+understood would reject fonts fontconfig keeps. The principle is right and
+still holds for the cases it was written for; an unknown `<const>` is not one
+of them, because fontconfig does not fail to evaluate it -- it evaluates it to
+nothing.
+
+`fc-list` settles it: a selector of `family + unknown const` keeps exactly as
+many fonts as `family` alone. A test asserting the opposite has been corrected;
+it was encoding this crate's guess, not upstream's behaviour, which is the
+failure mode worth naming -- a test can pin a mistake as firmly as it pins a
+fix.
+
 ### What fixing 9.2-9.5 broke, and how it showed
 
 Parsing `:lang=en` into a language set -- correctly, as `FcNameParse` does --
@@ -326,7 +351,6 @@ cannot be mistaken for "all of it".
 | # | Finding | Priority as reported |
 | --- | --- | --- |
 | 2 | Root configuration search and startup fallback | High |
-| 10 | `<const>` resolution | Medium |
 | 11 | XML character data | Low-medium |
 | 12 | `Pattern` equality and insertion | Medium |
 | 13 | Tri-state boolean collapsed | Medium |

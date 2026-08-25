@@ -282,6 +282,20 @@ for spell in true yes on 1 True false no off 0 bogus; do
   check "bool-$spell.conf"
 done
 
+# `<const>` resolves through `FcNameGetConstant`, which compares with
+# `FcStrCmpIgnoreCase`, so the spelling does not matter. A name the table does
+# not hold is `FcTypeVoid`, and `FcParsePatelt` stops at the first Void value
+# -- so the <patelt> adds nothing, leaving an empty <pattern> that matches
+# every font and rejects the lot.
+for spell in bold Bold BOLD nosuchconst; do
+  write_conf "const-$spell.conf" "    <rejectfont>
+      <pattern>
+        <patelt name=\"weight\"><const>$spell</const></patelt>
+      </pattern>
+    </rejectfont>"
+  check "const-$spell.conf"
+done
+
 if [ "$FAILURES" -gt 0 ]; then
   echo
   echo "FAILED: $FAILURES difference(s) -- see above"

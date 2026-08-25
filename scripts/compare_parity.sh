@@ -131,6 +131,12 @@ run_case "$(t family eq '<int>1</int>')"           ':family=Foo' "'Foo' eq 1"
 run_case "$(t family not_contains '<int>1</int>')" ':family=Foo' "'Foo' not_contains 1"
 run_case "$(t family less '<int>1</int>')"         ':family=Foo' "'Foo' less 1"
 
+echo "=== <const> in a rule (FcNameGetConstant, case-insensitive)"
+run_case '<test name="weight" compare="eq"><const>bold</const></test>' ':weight=200' "const bold vs 200"
+run_case '<test name="weight" compare="eq"><const>Bold</const></test>' ':weight=200' "const Bold vs 200"
+run_case '<test name="weight" compare="eq"><const>bold</const></test>' ':weight=80' "const bold vs 80"
+run_case '<test name="weight" compare="eq"><const>nosuchconst</const></test>' ':weight=200' "const unknown"
+
 echo "=== a conditional <alias> (FcParseAlias keeps its tests)"
 run_alias "$(t lang contains "$(str ja)")" 'serif:lang=ja' "ja alias, ja query"
 run_alias "$(t lang contains "$(str ja)")" 'serif:lang=de' "ja alias, de query"

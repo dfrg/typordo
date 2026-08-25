@@ -236,6 +236,15 @@ enum SelectorValue {
     Range(Range),
     /// Languages, from `<langset>`.
     LangSet(LangSet),
+    /// A `<const>` naming no known constant.
+    ///
+    /// `FcPopValue` returns `FcTypeVoid` for it, and `FcParsePatelt` stops as
+    /// soon as it sees one, so the `<patelt>` adds nothing to the pattern.
+    /// That is not the same as [`SelectorValue::Unsupported`]: an element
+    /// with no values matches every font that has the property, and a
+    /// `<pattern>` left with no elements matches every font at all. Getting
+    /// this wrong is what an empty `<rejectfont>` gets wrong, in miniature.
+    Void,
     /// A value this crate cannot evaluate.
     ///
     /// It never matches, and poisons the selector that holds it. Dropping it
@@ -265,10 +274,11 @@ impl SelectorValue {
             // selecting nothing -- poisoning the selector here would leave
             // more fonts in the list than fontconfig leaves.
             "bool" => Self::Bool(name_bool(body).unwrap_or(false)),
-            "const" => match constant(body) {
-                Some(value) => Self::Int(value),
-                None => Self::Unsupported,
-            },
+            // A name the table does not hold is `FcTypeVoid`, and `FcPopValue`
+            // returning Void makes `FcParsePatelt` stop taking values -- so
+            // the element contributes nothing at all rather than contributing
+            // something that cannot match. See `SelectorValue::Void`.
+            "const" => constant(body).map_or(Self::Void, Self::Int),
             _ => Self::Unsupported,
         }
     }
@@ -375,6 +385,10 @@ fn value_expr(value: SelectorValue) -> Expr {
             }
             Expr::Value(Value::CharSet(coverage))
         }
+        // In a rule, `FcOpConst` that resolves to nothing evaluates to
+        // `FcTypeVoid` -- a real value that compares equal to another Void
+        // and contains everything -- rather than to no value at all.
+        SelectorValue::Void => Expr::Value(Value::Void),
         SelectorValue::Unsupported => Expr::Unknown,
     }
 }
@@ -667,7 +681,12 @@ static CONSTANTS: &[(&str, i32)] = &[
 /// per property to 100 would be the more sensible answer and the wrong one;
 /// `fc-list` rejects nothing for that selector, and so must this.
 fn constant(name: &str) -> Option<i32> {
-    CONSTANTS.iter().find(|(constant, _)| *constant == name).map(|(_, value)| *value)
+    // `FcStrCmpIgnoreCase`, so `<const>Bold</const>` resolves as readily as
+    // the lowercase spelling.
+    CONSTANTS
+        .iter()
+        .find(|(constant, _)| constant.eq_ignore_ascii_case(name))
+        .map(|(_, value)| *value)
 }
 
 /// Read a boolean the way `FcNameBool` does.
@@ -1237,8 +1256,21 @@ impl Config {
             }
             "patelt" => {
                 if let Some(parent) = stack.last_mut() {
+                    // `FcParsePatelt` stops at the first `FcTypeVoid` value
+                    // and never calls `FcPatternAdd`, so a `<patelt>` holding
+                    // an unresolvable `<const>` puts nothing in the pattern.
+                    // Not even an empty element: an element that is not there
+                    // is not one a font has to have.
+                    let values: Vec<SelectorValue> = frame
+                        .values
+                        .into_iter()
+                        .take_while(|v| *v != SelectorValue::Void)
+                        .collect();
+                    if values.is_empty() {
+                        return Ok(());
+                    }
                     match frame.object.as_deref().and_then(Object::from_name) {
-                        Some(object) => parent.elements.push((object, frame.values)),
+                        Some(object) => parent.elements.push((object, values)),
                         // A property name fontconfig assigns at runtime cannot
                         // be resolved here, so the selector must not narrow to
                         // its remaining elements.
