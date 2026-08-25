@@ -128,7 +128,7 @@ fn base_pattern(font: &FontRef<'_>, path: &str, index: i32) -> Pattern {
     if let Some(spacing) = spacing(font) {
         pattern.add(Object::Spacing, spacing);
     }
-    add_coverage(sfnt_coverage(font), &mut pattern);
+    add_coverage(sfnt_coverage(font), is_symbol(font), &mut pattern);
     pattern
 }
 
@@ -137,11 +137,16 @@ fn base_pattern(font: &FontRef<'_>, path: &str, index: i32) -> Pattern {
 /// The language set is derived from the coverage rather than declared by the
 /// font: fontconfig asks, for each language it knows an orthography for,
 /// whether every codepoint that language needs is present.
-fn add_coverage(coverage: CharSet, pattern: &mut Pattern) {
+fn add_coverage(coverage: CharSet, symbol: bool, pattern: &mut Pattern) {
     if coverage.is_empty() {
         return;
     }
-    let langs = LangSet::from_char_set(&coverage);
+    // "Symbol fonts don't cover any language, even though they claim to
+    // support Latin1 range" -- fontconfig builds an empty set for one rather
+    // than asking what its private-use codepoints imply. The Latin1 range it
+    // means is the copy made just above, which would otherwise answer for
+    // most of Europe.
+    let langs = if symbol { LangSet::new() } else { LangSet::from_char_set(&coverage) };
     pattern.add(Object::Charset, Value::CharSet(coverage));
     // Always, even when the set is empty. A font covering a script
     // fontconfig has no language for -- Adlam, and a dozen others -- gets an
@@ -292,6 +297,22 @@ fn sfnt_coverage(font: &FontRef<'_>) -> CharSet {
             coverage.insert(c);
         }
     });
+
+    // A symbol font addresses its glyphs at U+F000 and up, and Windows also
+    // reaches them at the same offsets from zero. Fontconfig copies the range
+    // down so that either spelling finds the glyph, citing the OpenType
+    // recommendations for non-standard fonts.
+    if is_symbol(font) {
+        for code in 0xf000..0xf100u32 {
+            let (Some(high), Some(low)) = (char::from_u32(code), char::from_u32(code - 0xf000))
+            else {
+                continue;
+            };
+            if coverage.contains(high) {
+                coverage.insert(low);
+            }
+        }
+    }
     coverage
 }
 
@@ -302,9 +323,14 @@ fn walk_mappings(font: &FontRef<'_>, mut visit: impl FnMut(u32, read_fonts::type
     let Ok(cmap) = font.cmap() else {
         return;
     };
+
+    // Fontconfig tries `FT_ENCODING_UNICODE` and then `FT_ENCODING_MS_SYMBOL`,
+    // and stops at the first that selects: a font with a Unicode subtable is
+    // read through it alone, and only a font without one is read through its
+    // symbol table. `is_symbol` decides the same way, so the two agree on
+    // which kind of font this is.
+    let mut walked = false;
     for record in cmap.encoding_records() {
-        // Only the Unicode-addressed subtables say anything about coverage;
-        // a symbol or Mac-Roman subtable indexes something else.
         let unicode = matches!(
             (record.platform_id(), record.encoding_id()),
             (PlatformId::Unicode, _) | (PlatformId::Windows, 1 | 10)
@@ -316,6 +342,23 @@ fn walk_mappings(font: &FontRef<'_>, mut visit: impl FnMut(u32, read_fonts::type
             continue;
         };
         walk_subtable(&subtable, &mut visit);
+        walked = true;
+    }
+    if walked {
+        return;
+    }
+
+    // No Unicode subtable, so the symbol one is what the font has. Its
+    // codepoints are private-use and mean nothing outside the font, but they
+    // are still what it covers, and dropping them leaves a font that appears
+    // to cover nothing at all.
+    for record in cmap.encoding_records() {
+        if (record.platform_id(), record.encoding_id()) != (PlatformId::Windows, 0) {
+            continue;
+        }
+        if let Ok(subtable) = record.subtable(cmap.offset_data()) {
+            walk_subtable(&subtable, &mut visit);
+        }
     }
 }
 
@@ -1063,7 +1106,9 @@ fn scan_type1(data: &[u8], path: &str) -> Result<Vec<Pattern>, ScanError> {
             coverage.insert(c);
         }
     }
-    add_coverage(coverage, &mut pattern);
+    // A Type 1 font has no cmap to be symbol-encoded through, and reports
+    // `symbol=false` just below.
+    add_coverage(coverage, false, &mut pattern);
     pattern.add(Object::Weight, type1_weight(font.weight()));
     pattern.add(Object::Width, 100.0);
     // A Type 1 font states its slant as an angle, so anything non-zero is
