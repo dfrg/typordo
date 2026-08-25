@@ -523,6 +523,7 @@ fn scan_face(font: &FontRef<'_>, path: &str, index: i32) -> Vec<Pattern> {
     let Some(instances) = named_instances(font) else {
         let mut pattern = base;
         add_attributes(font, &mut pattern, None);
+        add_optical_size(font, &mut pattern, false);
         pattern.add(Object::Variable, false);
         pattern.add(Object::NamedInstance, false);
         return vec![pattern];
@@ -533,6 +534,13 @@ fn scan_face(font: &FontRef<'_>, path: &str, index: i32) -> Vec<Pattern> {
     // The default instance first, as the font comes out of the box.
     let mut default = base.clone();
     add_attributes(font, &mut default, None);
+    // The default face sits at the `opsz` axis default, which is a single
+    // size rather than the whole span the variable pattern reports.
+    let axis_default = axis_default(font, b"opsz");
+    if let Some(size) = axis_default {
+        default.add(Object::Size, size);
+    }
+    add_optical_size(font, &mut default, axis_default.is_some());
     default.add(Object::Variable, false);
     default.add(Object::NamedInstance, false);
     patterns.push(default);
@@ -546,6 +554,10 @@ fn scan_face(font: &FontRef<'_>, path: &str, index: i32) -> Vec<Pattern> {
         }
         let mut pattern = base.clone();
         add_attributes(font, &mut pattern, Some(instance));
+        if let Some(size) = instance.size {
+            pattern.add(Object::Size, size);
+        }
+        add_optical_size(font, &mut pattern, instance.size.is_some());
         pattern.add(Object::Variable, false);
         pattern.add(Object::NamedInstance, true);
         // The index carries the instance: ordinal in the high half, face in
@@ -594,7 +606,8 @@ fn scan_face(font: &FontRef<'_>, path: &str, index: i32) -> Vec<Pattern> {
 
     // Finally the variable font itself, carrying ranges rather than values.
     let mut variable = base;
-    add_variable_attributes(font, &mut variable);
+    let variable_size = add_variable_attributes(font, &mut variable);
+    add_optical_size(font, &mut variable, variable_size);
     variable.add(Object::Variable, true);
     variable.add(Object::NamedInstance, false);
     // A variable pattern is not one face, so it carries none of the things
@@ -613,8 +626,18 @@ fn scan_face(font: &FontRef<'_>, path: &str, index: i32) -> Vec<Pattern> {
 struct Instance {
     subfamily: u16,
     postscript: Option<u16>,
+    /// `wght` as a multiple of the axis default, not the axis value.
+    ///
+    /// `FcFreeTypeQueryFaceInternal` computes `mult = value / default` and
+    /// applies it to `usWeightClass`, so an instance's weight is the *face's*
+    /// weight scaled by how far along the axis it sits. The two agree only
+    /// when `OS/2` agrees with the `fvar` default, which a variable font whose
+    /// default master is not Regular does not.
     weight: Option<f64>,
+    /// `wdth` as a multiple of the axis default, for the same reason.
     width: Option<f64>,
+    /// The `opsz` coordinate, which becomes `size` directly.
+    size: Option<f64>,
     /// Every axis it pins, for naming.
     axes: Vec<Axis>,
     /// Whether it pins every axis to that axis's default.
@@ -655,11 +678,21 @@ fn named_instances(font: &FontRef<'_>) -> Option<Vec<Instance>> {
                 })
             })
             .collect();
+        // `mult = default ? value / default : 1`, which is what upstream
+        // applies to the OS/2 classes.
+        let multiplier = |tag: &[u8; 4]| -> Option<f64> {
+            let wanted = read_fonts::types::Tag::new(tag);
+            let index = axes.iter().position(|axis| axis.axis_tag() == wanted)?;
+            let value = instance.coordinates.get(index)?.get().to_f64();
+            let default = axes.get(index)?.default_value().to_f64();
+            Some(if default != 0.0 { value / default } else { 1.0 })
+        };
         out.push(Instance {
             subfamily: instance.subfamily_name_id.to_u16(),
             postscript: instance.post_script_name_id.map(|id| id.to_u16()),
-            weight: coord(b"wght"),
-            width: coord(b"wdth"),
+            weight: multiplier(b"wght"),
+            width: multiplier(b"wdth"),
+            size: coord(b"opsz"),
             axes: pinned,
             is_default,
         });
@@ -667,15 +700,25 @@ fn named_instances(font: &FontRef<'_>) -> Option<Vec<Instance>> {
     Some(out)
 }
 
-/// The weight and width axes as ranges, for the variable pattern.
-fn add_variable_attributes(font: &FontRef<'_>, pattern: &mut Pattern) {
+/// The variable axes as ranges, for the variable pattern.
+///
+/// Returns whether an `opsz` axis was found, which decides whether the `OS/2`
+/// optical size is consulted afterwards: upstream's `variable_size` guard.
+fn add_variable_attributes(font: &FontRef<'_>, pattern: &mut Pattern) -> bool {
     add_attributes(font, pattern, None);
-    let Ok(fvar) = font.fvar() else { return };
-    let Ok(axes) = fvar.axes() else { return };
+    let Ok(fvar) = font.fvar() else { return false };
+    let Ok(axes) = fvar.axes() else { return false };
+    let mut variable_size = false;
     for axis in axes.iter() {
+        // `opsz` is in points, which is what `size` is in, so it needs no
+        // conversion -- unlike `wght`, which is OpenType's scale.
         let (object, convert): (Object, fn(f64) -> f64) = match &axis.axis_tag().to_be_bytes() {
             b"wght" => (Object::Weight, weight::from_opentype),
             b"wdth" => (Object::Width, |v| v),
+            b"opsz" => {
+                variable_size = true;
+                (Object::Size, |v| v)
+            }
             _ => continue,
         };
         let range = crate::value::Range {
@@ -684,6 +727,44 @@ fn add_variable_attributes(font: &FontRef<'_>, pattern: &mut Pattern) {
         };
         pattern.remove(object);
         pattern.add(object, crate::value::Value::Range(range));
+    }
+    variable_size
+}
+
+/// One axis's default value, if the font has that axis.
+fn axis_default(font: &FontRef<'_>, tag: &[u8; 4]) -> Option<f64> {
+    let wanted = read_fonts::types::Tag::new(tag);
+    let axes = font.fvar().ok()?.axes().ok()?;
+    axes.iter().find(|axis| axis.axis_tag() == wanted).map(|axis| axis.default_value().to_f64())
+}
+
+/// The optical size the font declares, in points.
+///
+/// Four sources, in upstream's order. A variable face reports the `opsz`
+/// axis's whole span; a named instance reports the coordinate it pins; the
+/// default face reports the axis default. Only when none of those applies --
+/// `variable_size` false -- does `OS/2` version 5 get a turn, where the two
+/// fields are *twips*, a twentieth of a point each, and equal bounds mean a
+/// single size rather than an empty range.
+///
+/// No font in the 2385 this crate is measured against declares one at all,
+/// which is why this was missing entirely.
+fn add_optical_size(font: &FontRef<'_>, pattern: &mut Pattern, variable_size: bool) {
+    if variable_size {
+        return;
+    }
+    let Some(os2) = usable_os2(font).filter(|os2| os2.version() >= 5) else { return };
+    let (Some(lower), Some(upper)) =
+        (os2.us_lower_optical_point_size(), os2.us_upper_optical_point_size())
+    else {
+        return;
+    };
+    let (lower, upper) = (f64::from(lower) / 20.0, f64::from(upper) / 20.0);
+    pattern.remove(Object::Size);
+    if lower == upper {
+        pattern.add(Object::Size, lower);
+    } else {
+        pattern.add(Object::Size, crate::value::Range { begin: lower, end: upper });
     }
 }
 
@@ -887,10 +968,11 @@ fn add_attributes(font: &FontRef<'_>, pattern: &mut Pattern, instance: Option<&I
     // Failing both, the style name is searched for a weight word, and only
     // then does the bold flag decide: `FcContainsWeight` at `:1885`, then
     // `FT_STYLE_FLAG_BOLD` at `:1916`.
-    let fc_weight = instance
-        .and_then(|i| i.weight)
-        .map(weight::from_opentype)
-        .or_else(|| os2.as_ref().map(|os2| weight::from_opentype(f64::from(os2.us_weight_class()))))
+    let weight_mult = instance.and_then(|i| i.weight).unwrap_or(1.0);
+    let width_mult = instance.and_then(|i| i.width).unwrap_or(1.0);
+    let fc_weight = os2
+        .as_ref()
+        .map(|os2| weight::from_opentype(f64::from(os2.us_weight_class()) * weight_mult))
         .filter(|w| *w >= 0.0)
         .or_else(|| styles.iter().find_map(|style| contains_weight(style)))
         .unwrap_or(if bold { 200.0 } else { 100.0 });
@@ -900,9 +982,10 @@ fn add_attributes(font: &FontRef<'_>, pattern: &mut Pattern, instance: Option<&I
     // has no default, so it leaves the value unset and falls through to the
     // style name. Mapping it to normal instead loses a `Condensed` that the
     // name states plainly.
-    let fc_width = instance
-        .and_then(|i| i.width)
-        .or_else(|| os2.as_ref().and_then(|os2| width_from_class(os2.us_width_class())))
+    let fc_width = os2
+        .as_ref()
+        .and_then(|os2| width_from_class(os2.us_width_class()))
+        .map(|width| width * width_mult)
         .or_else(|| styles.iter().find_map(|style| contains_width(style)))
         .unwrap_or(100.0);
     pattern.add(Object::Width, fc_width);

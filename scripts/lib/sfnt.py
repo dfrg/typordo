@@ -102,3 +102,52 @@ OS2_WEIGHT_CLASS = 4
 OS2_WIDTH_CLASS = 6
 OS2_FS_SELECTION = 62
 HEAD_MAC_STYLE = 44
+
+
+def fvar(axes, instances):
+    """An `fvar` table.
+
+    `axes` is [(tag, min, default, max, name_id)] in points/user units;
+    `instances` is [(subfamily_name_id, [coord, ...])].
+    """
+    count = len(axes)
+    # majorVersion, minorVersion, axesArrayOffset, reserved, axisCount,
+    # axisSize, instanceCount, instanceSize. An instance record is the
+    # subfamily name id, its flags, and one Fixed per axis.
+    header = struct.pack(">HHHHHHHH", 1, 0, 16, 2, count, 20,
+                         len(instances), 4 + 4 * count)
+    body = b""
+    for tag, lo, default, hi, name_id in axes:
+        body += struct.pack(">4siiiHH", tag.encode("latin1"),
+                            int(lo * 65536), int(default * 65536), int(hi * 65536),
+                            0, name_id)
+    for subfamily, coords in instances:
+        body += struct.pack(">HH", subfamily, 0)
+        body += b"".join(struct.pack(">i", int(c * 65536)) for c in coords)
+    return header + body
+
+
+def add_table(data, tag, new):
+    """`data` with `tag` added as a new directory entry.
+
+    The directory grows by one entry, which moves everything after it, so each
+    surviving entry's offset is bumped -- unlike `replace_table`, which can
+    leave them all alone.
+    """
+    count = struct.unpack(">H", data[4:6])[0]
+    tag = tag.encode("latin1") if isinstance(tag, str) else tag
+    entries = [bytearray(data[12 + i * 16:12 + (i + 1) * 16]) for i in range(count)]
+    shift = 16
+    for entry in entries:
+        offset = struct.unpack(">I", entry[8:12])[0]
+        struct.pack_into(">I", entry, 8, offset + shift)
+    head = bytearray(data[:12])
+    struct.pack_into(">H", head, 4, count + 1)
+    rest = data[12 + count * 16:]
+    out = bytearray(bytes(head) + b"".join(bytes(e) for e in entries) + b"\0" * 16 + rest)
+    out += b"\0" * ((4 - len(out) % 4) % 4)
+    offset = len(out)
+    out += new + b"\0" * ((4 - len(new) % 4) % 4)
+    at = 12 + count * 16
+    struct.pack_into(">4sIII", out, at, tag, _checksum(new), offset, len(new))
+    return bytes(out)

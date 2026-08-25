@@ -17,10 +17,10 @@ produced.
 | F1 | rules | `<times>` on matrices missing — synthetic oblique gets no `matrix` | Fixed, `740423c` |
 | F7 | rules | `<name>` in an edit yields every value; upstream yields the first | Fixed, `740423c` |
 | F11 | rules | Arithmetic result type: upstream collapses integral doubles to Integer | Fixed, `740423c` |
-| F2 | prepare | Localized family/style/fullname never promoted for the requested language | Fixed, *this commit* |
-| F3 | scanner | `size` never produced (no `opsz` axis, no OS/2 v5 optical range) | |
+| F2 | prepare | Localized family/style/fullname never promoted for the requested language | Fixed, `7fcc614` |
+| F3 | scanner | `size` never produced (no `opsz` axis, no OS/2 v5 optical range) | Fixed, *this commit* |
 | F4 | matching | Range resolution uses the first query value, not the winning one | Fixed, `e080b89` |
-| F5 | scanner | Named-instance weight/width ignore the OS/2 × (instance/default) multiplier | |
+| F5 | scanner | Named-instance weight/width ignore the OS/2 × (instance/default) multiplier | Fixed, *this commit* |
 | F6 | scanner | Missing name fallbacks: `Regular` style, family from the filename, PS-name sanitisation | |
 | F8 | rules | Multi-valued `<test name="family">` has different semantics | |
 | F9 | cache | Binding encoding inverted; cache values read Strong where upstream reads Weak | |
@@ -120,3 +120,36 @@ names in two languages, queried with `familylang=` in four languages and
 through `LC_ALL`, compared across all six name and language properties. The
 field sweep above could not reach it — it runs under an English locale, so the
 name a query would promote is always the one already first.
+
+## F3, F5 — optical size, and what a named instance's weight actually is
+
+Both live in the same forty lines of `fcfreetype.c` and went in together.
+
+**F3.** `size` was never produced at all, from any source. Upstream has four,
+in order: a variable face reports the `opsz` axis's whole span as a range; a
+named instance reports the coordinate it pins; the default face reports the
+axis default; and failing all of those, `OS/2` version 5 carries
+`usLowerOpticalPointSize` and `usUpperOpticalPointSize` -- in *twips*, a
+twentieth of a point each -- where equal bounds mean a single size rather than
+an empty range.
+
+**F5.** A named instance's weight is not its `wght` coordinate. Upstream
+computes `mult = coordinate / axis default` and applies it to
+`usWeightClass`, so the instance's weight is the *face's* weight scaled by how
+far along the axis it sits; the same for width. The two agree only when `OS/2`
+agrees with the `fvar` defaults, which is not true of any variable font whose
+default master is not Regular. This crate used the axis value directly.
+
+Neither could be checked against the corpus. Of the 2385 fonts this crate is
+measured against, **not one declares an optical size** -- `fc-query` reports a
+`size` for none of them -- and none has an `OS/2` that disagrees with its
+`fvar` defaults. So the fonts were built: `scripts/lib/sfnt.py` gained an
+`fvar` writer and a table *inserter* (which has to shift every other table's
+offset, unlike replacing one in place), and `fallback_parity.sh` now crafts an
+`OS/2` v5 font in both shapes and a three-axis variable font whose
+`usWeightClass` is 700 against an `fvar` default of 400.
+
+That last font is the one worth having. It produces five patterns, and every
+one of them exercises something different: the default face, three named
+instances at both ends and the middle of the axis, and the variable pattern
+carrying ranges. 270/270 fields identical over 18 crafted fonts.

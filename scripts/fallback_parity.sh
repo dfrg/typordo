@@ -38,6 +38,7 @@ if [ -z "$SOURCE" ]; then
 fi
 
 python3 - "$WORK" "$SOURCE" <<'PY'
+import struct
 import sys
 sys.path.insert(0, "scripts/lib")
 import sfnt
@@ -89,16 +90,43 @@ d = sfnt.set_names(src, named("Bold"))
 d = sfnt.patch_u16(d, "OS/2", sfnt.OS2_WEIGHT_CLASS, 900)
 d = sfnt.patch_u16(d, "OS/2", sfnt.OS2_WIDTH_CLASS, 9)
 write("os2-version-ffff", sfnt.patch_u16(d, "OS/2", sfnt.OS2_VERSION, 0xFFFF))
+
+# Optical size from `OS/2` version 5, whose two fields are twips. Equal bounds
+# mean one size rather than an empty range. No font in the corpus declares an
+# optical size at all, so crafting one is the only way to reach the path.
+at, length = sfnt.tables(src)["OS/2"]
+os2 = bytearray(src[at:at + length])
+def version5(lower_twips, upper_twips):
+    b = bytearray(os2)
+    struct.pack_into(">H", b, 0, 5)
+    # v0 is 78 bytes, v1 86, v2-v4 96, v5 100. A short table is not a v5 one.
+    b = b[:96] + bytes(96 - len(b[:96]))
+    return bytes(b) + struct.pack(">HH", lower_twips, upper_twips)
+write("size-os2v5-range", sfnt.replace_table(src, "OS/2", version5(160, 280)))
+write("size-os2v5-single", sfnt.replace_table(src, "OS/2", version5(240, 240)))
+
+# A variable font whose `OS/2` disagrees with its `fvar` defaults, which is
+# every VF whose default master is not Regular. An instance's weight is the
+# face's weight scaled by how far along the axis it sits, not the axis value,
+# and the `opsz` axis gives a size to the face, each instance and the variable
+# pattern in three different shapes.
+d = sfnt.patch_u16(src, "OS/2", sfnt.OS2_WEIGHT_CLASS, 700)
+d = sfnt.patch_u16(d, "OS/2", sfnt.OS2_WIDTH_CLASS, 3)
+axes = [("wght", 100, 400, 900, 256), ("wdth", 50, 100, 200, 257), ("opsz", 6, 16, 144, 258)]
+instances = [(2, [100, 100, 16]), (2, [400, 100, 16]), (2, [900, 100, 16]), (2, [400, 75, 8])]
+write("vf-opsz-multiplier", sfnt.add_table(d, "fvar", sfnt.fvar(axes, instances)))
 PY
 
-FIELDS="weight width slant foundry outline scalable family style fullname postscriptname spacing"
+FIELDS="weight width size slant foundry outline scalable family style fullname
+        postscriptname spacing variable namedinstance index"
 files=0; total=0; bad=0
 for font in "$WORK"/*.ttf; do
   files=$((files + 1))
   differing=0
   for field in $FIELDS; do
-    theirs=$(fc-query --format="%{$field}\n" "$font" 2>&1 | head -1)
-    ours=$("$QUERY" --format "$field" "$font" 2>&1 | head -1)
+    # Several patterns per file for a variable font, so every line counts.
+    theirs=$(fc-query --format="%{$field}\n" "$font" 2>&1)
+    ours=$("$QUERY" --format "$field" "$font" 2>&1)
     total=$((total + 1))
     if [ "$theirs" != "$ours" ]; then
       bad=$((bad + 1)); differing=$((differing + 1))
