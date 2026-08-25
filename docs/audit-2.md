@@ -23,7 +23,7 @@ produced.
 | F5 | scanner | Named-instance weight/width ignore the OS/2 × (instance/default) multiplier | Fixed, `efbeb00` |
 | F6 | scanner | Missing name fallbacks: `Regular` style, family from the filename, PS-name sanitisation | Fixed, `b230fd6` |
 | F8 | rules | Multi-valued `<test name="family">` has different semantics | Fixed, `0eb5534` |
-| F9 | cache, matching | Binding encoding inverted, cache values read strong, and no rebinding after a match | Fixed, pending |
+| F9 | cache, matching | Binding encoding inverted, cache values read strong, and no rebinding after a match | Fixed, `08eade1` |
 | F10 | prepare | `fontvariations` number formatting / weight rounding differs | Fixed, `e080b89` |
 | F12 | rules | Edit marks tracked by index, not by value node | Fixed, `0eb5534` |
 | F13 | scanner | Empty `capability` string vs absent element | Fixed, `f887f9c` |
