@@ -526,62 +526,82 @@ impl Test {
             };
         };
 
-        // `FcConfigMatchValueList` walks a comma list in order, and for
-        // `family` each listed name the pattern does *not* carry resets what
-        // the earlier ones matched -- so the last one decides, and
-        // `<test name="family">Alpha,Zeta</test>` does not fire for a query
-        // of just `Alpha`. It reads as a quirk and it is the behaviour
-        // configurations are written against.
+        // `FcConfigMatchValueList`, whose shape decides two things at once:
+        // whether the test fires, and which value it marks for a later
+        // match-relative edit to insert next to.
         //
-        // Guarded on there being more than one value so a single-valued test
-        // -- which is every family test in all 1364 of them shipped on this
-        // system -- takes exactly the path it did before.
-        if wanted.len() > 1
-            && self.compare == Compare::Eq
-            && std::ptr::eq(source, query)
-            && self.object == Property::Known(Object::Family)
-        {
-            let blanks = if self.ignore_blanks { Blanks::Ignored } else { Blanks::Significant };
-            let carried = |want: &Value| match want {
-                // The table is keyed by string; anything else skips the check
-                // upstream, where `FcValueString` would not give it a key.
-                Value::String(name) => {
-                    families.might_hold(name)
-                        && values.iter().any(|(got, _)| compare(got, Compare::Eq, want, blanks))
+        // The loops nest the way they look: the *expressions* outside, the
+        // pattern's values inside. So the first listed value that matches
+        // anything sets the mark, and `if (!ret) ret = v` keeps every later
+        // expression from moving it. Marking the first pattern value that
+        // matched any expression -- the obvious reading, and what this did --
+        // gets a different value whenever the query lists them in another
+        // order than the test does.
+        let blanks = if self.ignore_blanks { Blanks::Ignored } else { Blanks::Significant };
+        // Only the query's own families are indexed, so the table is out of
+        // play for a `target="pattern"` test reached from a font rule --
+        // which is exactly when upstream passes `table = NULL`.
+        let tabled = self.object == Property::Known(Object::Family) && std::ptr::eq(source, query);
+        let carried = |want: &Value| match want {
+            // Keyed by string upstream, where `FcValueString` gives anything
+            // else no key at all, so the lookup is skipped for it.
+            Value::String(name) => {
+                families.might_hold(name)
+                    && values.iter().any(|(got, _)| compare(got, Compare::Eq, want, blanks))
+            }
+            _ => true,
+        };
+
+        let mut mark: Option<usize> = None;
+        for want in wanted {
+            // The family fast path, which is not only a shortcut: a listed
+            // family the query does not carry *clears* the mark, so a test
+            // naming several of them is decided by the last one -- and
+            // `<test name="family">Alpha,Zeta</test>` does not fire for a
+            // query of just `Alpha`. It reads as an accident and it is the
+            // behaviour configurations are written against.
+            if tabled {
+                match self.compare {
+                    Compare::Eq => {
+                        if !carried(want) {
+                            mark = None;
+                            continue;
+                        }
+                    }
+                    Compare::NotEq if self.qual == Qual::All => {
+                        mark = (!carried(want)).then_some(0);
+                        continue;
+                    }
+                    _ => {}
                 }
-                _ => true,
-            };
-            if !wanted.last().is_some_and(carried) {
-                return None;
+            }
+            for (index, (got, _)) in values.iter().enumerate() {
+                if compare(got, self.compare, want, blanks) {
+                    if mark.is_none() {
+                        mark = Some(index);
+                    }
+                    // `all` is the one qualifier that has to see every value.
+                    if self.qual != Qual::All {
+                        break;
+                    }
+                } else if self.qual == Qual::All {
+                    mark = None;
+                    break;
+                }
             }
         }
 
-        let hit = |(got, _): &(Value, Binding)| {
-            wanted.iter().any(|want| {
-                compare(
-                    got,
-                    self.compare,
-                    want,
-                    if self.ignore_blanks { Blanks::Ignored } else { Blanks::Significant },
-                )
-            })
-        };
-
-        // Each qualifier stops as soon as its answer is known. That matters
-        // more than it looks: rules append to the family list as they go, so
-        // a query carries a hundred families by the end of a substitution
-        // pass, and a test that scanned all of them to report the first match
-        // was doing ninety-nine comparisons it could not use.
+        // `first` and `not_first` are not part of the scan at all. Upstream
+        // applies them to its result: the mark has to be the head of the list,
+        // or anything but the head. Reading them as "does value 0 match" and
+        // "does any later value match" agrees only while a test lists one
+        // value, since the mark can be set by a value those readings never
+        // look at.
+        let mark = mark?;
         match self.qual {
-            Qual::Any => values.iter().position(hit).map(Some),
-            // Only the first value is consulted, however many there are.
-            Qual::First if values.first().is_some_and(hit) => Some(Some(0)),
-            Qual::First => None,
-            Qual::NotFirst => values.iter().skip(1).position(hit).map(|i| Some(i + 1)),
-            // The only qualifier that has to see everything -- but it can
-            // still stop at the first value that fails.
-            Qual::All if values.iter().all(hit) => Some((!values.is_empty()).then_some(0)),
-            Qual::All => None,
+            Qual::First if mark != 0 => None,
+            Qual::NotFirst if mark == 0 => None,
+            _ => Some(Some(mark)),
         }
     }
 }

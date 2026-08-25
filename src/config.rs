@@ -675,75 +675,75 @@ fn unary_op(name: &str) -> UnaryOp {
 /// The named constants, in `_FcBaseConstants` declaration order.
 ///
 /// The order is load-bearing: see [`constant`].
-static CONSTANTS: &[(&str, i32)] = &[
+static CONSTANTS: &[(&str, Object, i32)] = &[
     // weight
-    ("thin", 0),
-    ("extralight", 40),
-    ("ultralight", 40),
-    ("demilight", 55),
-    ("semilight", 55),
-    ("light", 50),
-    ("book", 75),
-    ("regular", 80),
-    ("normal", 80),
-    ("medium", 100),
-    ("demibold", 180),
-    ("semibold", 180),
-    ("bold", 200),
-    ("extrabold", 205),
-    ("ultrabold", 205),
-    ("black", 210),
-    ("heavy", 210),
-    ("extrablack", 215),
-    ("ultrablack", 215),
+    ("thin", Object::Weight, 0),
+    ("extralight", Object::Weight, 40),
+    ("ultralight", Object::Weight, 40),
+    ("demilight", Object::Weight, 55),
+    ("semilight", Object::Weight, 55),
+    ("light", Object::Weight, 50),
+    ("book", Object::Weight, 75),
+    ("regular", Object::Weight, 80),
+    ("normal", Object::Weight, 80),
+    ("medium", Object::Weight, 100),
+    ("demibold", Object::Weight, 180),
+    ("semibold", Object::Weight, 180),
+    ("bold", Object::Weight, 200),
+    ("extrabold", Object::Weight, 205),
+    ("ultrabold", Object::Weight, 205),
+    ("black", Object::Weight, 210),
+    ("heavy", Object::Weight, 210),
+    ("extrablack", Object::Weight, 215),
+    ("ultrablack", Object::Weight, 215),
     // slant
-    ("roman", 0),
-    ("italic", 100),
-    ("oblique", 110),
+    ("roman", Object::Slant, 0),
+    ("italic", Object::Slant, 100),
+    ("oblique", Object::Slant, 110),
     // width -- note "normal" is 100 here, but the weight entry above shadows it
-    ("ultracondensed", 50),
-    ("extracondensed", 63),
-    ("condensed", 75),
-    ("semicondensed", 87),
-    ("normal", 100),
-    ("semiexpanded", 113),
-    ("expanded", 125),
-    ("extraexpanded", 150),
-    ("ultraexpanded", 200),
+    ("ultracondensed", Object::Width, 50),
+    ("extracondensed", Object::Width, 63),
+    ("condensed", Object::Width, 75),
+    ("semicondensed", Object::Width, 87),
+    ("normal", Object::Width, 100),
+    ("semiexpanded", Object::Width, 113),
+    ("expanded", Object::Width, 125),
+    ("extraexpanded", Object::Width, 150),
+    ("ultraexpanded", Object::Width, 200),
     // spacing
-    ("proportional", 0),
-    ("dual", 90),
-    ("mono", 100),
-    ("charcell", 110),
+    ("proportional", Object::Spacing, 0),
+    ("dual", Object::Spacing, 90),
+    ("mono", Object::Spacing, 100),
+    ("charcell", Object::Spacing, 110),
     // rgba
-    ("unknown", 0),
-    ("rgb", 1),
-    ("bgr", 2),
-    ("vrgb", 3),
-    ("vbgr", 4),
-    ("none", 5),
+    ("unknown", Object::Rgba, 0),
+    ("rgb", Object::Rgba, 1),
+    ("bgr", Object::Rgba, 2),
+    ("vrgb", Object::Rgba, 3),
+    ("vbgr", Object::Rgba, 4),
+    ("none", Object::Rgba, 5),
     // hintstyle
-    ("hintnone", 0),
-    ("hintslight", 1),
-    ("hintmedium", 2),
-    ("hintfull", 3),
+    ("hintnone", Object::HintStyle, 0),
+    ("hintslight", Object::HintStyle, 1),
+    ("hintmedium", Object::HintStyle, 2),
+    ("hintfull", Object::HintStyle, 3),
     // the boolean constants, each named after its own property
-    ("antialias", 1),
-    ("hinting", 1),
-    ("verticallayout", 1),
-    ("autohint", 1),
-    ("globaladvance", 1),
-    ("outline", 1),
-    ("scalable", 1),
-    ("minspace", 1),
-    ("embolden", 1),
-    ("embeddedbitmap", 1),
-    ("decorative", 1),
+    ("antialias", Object::Antialias, 1),
+    ("hinting", Object::Hinting, 1),
+    ("verticallayout", Object::VerticalLayout, 1),
+    ("autohint", Object::Autohint, 1),
+    ("globaladvance", Object::GlobalAdvance, 1),
+    ("outline", Object::Outline, 1),
+    ("scalable", Object::Scalable, 1),
+    ("minspace", Object::Minspace, 1),
+    ("embolden", Object::Embolden, 1),
+    ("embeddedbitmap", Object::EmbeddedBitmap, 1),
+    ("decorative", Object::Decorative, 1),
     // lcdfilter
-    ("lcdnone", 0),
-    ("lcddefault", 1),
-    ("lcdlight", 2),
-    ("lcdlegacy", 3),
+    ("lcdnone", Object::LcdFilter, 0),
+    ("lcddefault", Object::LcdFilter, 1),
+    ("lcdlight", Object::LcdFilter, 2),
+    ("lcdlegacy", Object::LcdFilter, 3),
 ];
 
 /// The value of a `<const>` name inside a `<patelt>`.
@@ -759,12 +759,42 @@ static CONSTANTS: &[(&str, i32)] = &[
 /// per property to 100 would be the more sensible answer and the wrong one;
 /// `fc-list` rejects nothing for that selector, and so must this.
 fn constant(name: &str) -> Option<i32> {
-    // `FcStrCmpIgnoreCase`, so `<const>Bold</const>` resolves as readily as
-    // the lowercase spelling.
+    named_constant(name).map(|(_, value)| value)
+}
+
+/// A named constant and the property it belongs to.
+///
+/// `FcNameGetConstant`: the **first** entry with this name in
+/// `_FcBaseConstants` order, whatever property is being set. Two names are
+/// declared twice -- `normal` for weight and width -- and this is the lookup
+/// that resolves them to the first.
+///
+/// Used where fontconfig uses the name-only form: a `<const>` in a
+/// configuration, and a bare `:bold` in a name string, where the constant is
+/// the only thing that says which property is meant.
+pub fn named_constant(name: &str) -> Option<(Object, i32)> {
+    // `FcStrCmpIgnoreCase`, so `Bold` resolves as readily as `bold`.
     CONSTANTS
         .iter()
-        .find(|(constant, _)| constant.eq_ignore_ascii_case(name))
-        .map(|(_, value)| *value)
+        .find(|(constant, _, _)| constant.eq_ignore_ascii_case(name))
+        .map(|(_, object, value)| (*object, *value))
+}
+
+/// The value of a named constant *for* a property.
+///
+/// `FcNameConstantWithObjectCheck`, which is what `name=value` in a name
+/// string goes through, and the reason `:width=normal` is 100 there while
+/// `<patelt name="width"><const>normal` is 80. A constant belonging to some
+/// other property is **rejected** rather than borrowed, so `:width=bold`
+/// yields nothing at all rather than a width of 200.
+pub fn constant_for(object: Object, name: &str) -> Option<i32> {
+    CONSTANTS
+        .iter()
+        .find(|(constant, owner, _)| *owner == object && constant.eq_ignore_ascii_case(name))
+        .map(|(_, _, value)| *value)
+        // The name-only lookup still runs, and still has to agree: upstream
+        // falls back to it and then compares the property it found.
+        .or_else(|| named_constant(name).filter(|(owner, _)| *owner == object).map(|(_, v)| v))
 }
 
 /// Parse an integer the way `FcParseInt` does, with `strtol` base 0.

@@ -483,7 +483,9 @@ impl From<String> for Value {
 
 #[cfg(test)]
 mod tristate_tests {
-    use super::Tristate;
+    use super::{binding_at, Binding, Tristate};
+    use crate::bytes::Bytes;
+    use crate::layout::NATIVE as L;
 
     /// `FcNameBool`, which is what reads both `<bool>` in a configuration and
     /// `:scalable=True` in a name. Those were two functions once, and drifted:
@@ -535,5 +537,30 @@ mod tristate_tests {
         assert_eq!(Tristate::True.as_bool(), Some(true));
         assert_eq!(Tristate::False.as_bool(), Some(false));
         assert_eq!(Tristate::DontCare.as_bool(), None);
+    }
+
+    /// The tags the decoder answers to, which is the half that still matters.
+    ///
+    /// Nothing this crate writes sets this field -- upstream does not either,
+    /// so a cache always holds zero there -- but a decoder still has to read
+    /// the right thing, and `FcValueBinding` in `fontconfig.h` is weak,
+    /// strong, same. That is the order a reasonable person guesses wrong, and
+    /// one this crate had backwards in both directions at once, so its own
+    /// caches round-tripped and the test covering exactly that passed.
+    #[test]
+    fn binding_tags_are_fontconfigs() {
+        let mut node = vec![0u8; L.binding + 8];
+        for (tag, expected) in [
+            (0, Binding::Weak),
+            (1, Binding::Strong),
+            (2, Binding::Same),
+            // Anything else falls to weak, for the same reason zero does:
+            // it is what an unwritten field holds.
+            (7, Binding::Weak),
+            (-1, Binding::Weak),
+        ] {
+            node[L.binding..L.binding + 4].copy_from_slice(&i32::to_ne_bytes(tag));
+            assert_eq!(binding_at(Bytes::new(&node), 0).unwrap(), expected, "tag {tag}");
+        }
     }
 }

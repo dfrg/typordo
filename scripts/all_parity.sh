@@ -11,7 +11,7 @@ FAILURES=0
 for s in parity select_parity match_parity prepare_parity sort_parity \
          lang_parity charset_parity cover_parity name_parity scan_parity \
          symbol_parity write_parity compare_parity cff_parity woff_parity fallback_parity \
-         bind_parity; do
+         bind_parity parse_parity; do
   echo "########## $s"
   # Captured rather than piped: `head` closing the pipe would send SIGPIPE
   # upstream, and a harness killed by a signal is indistinguishable from one

@@ -118,6 +118,26 @@ check() {
   done
   echo "  fc-match: $ok identical, $bad differing"
   [ "$bad" -eq 0 ] || fail
+
+  # Bindings, which nothing above can see. `FcValueListSerialize` copies the
+  # value and the next pointer and leaves the binding word at the zero its
+  # block was allocated with, so every value in a fontconfig cache is weak.
+  # A writer that stored the real binding instead would produce a cache
+  # fontconfig reads and then matches differently from its own -- with no
+  # visible difference in any field.
+  local bok=0 bbad=0
+  for q in $QUERIES; do
+    local x y
+    x=$(FONTCONFIG_FILE="$CONF"    fc-match -v "$q" 2>/dev/null </dev/null         | python3 scripts/lib/bindings.py theirs | sort)
+    y=$(FONTCONFIG_FILE="$SYSCONF" fc-match -v "$q" 2>/dev/null </dev/null         | python3 scripts/lib/bindings.py theirs | sort)
+    if [ "$x" = "$y" ]; then bok=$((bok+1)); else
+      bbad=$((bbad+1))
+      echo "    bindings DIFF $q:"
+      diff <(echo "$y") <(echo "$x") | head -4
+    fi
+  done
+  echo "  bindings: $bok identical, $bbad differing"
+  [ "$bbad" -eq 0 ] || fail
 }
 
 rm -rf "$OURS"; mkdir -p "$OURS"

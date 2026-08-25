@@ -12,8 +12,8 @@
 use std::path::PathBuf;
 
 use typordo::{
-    render_prepare, CachePolicy, Config, LangSet, Object, Pattern, PatternRef, Range, Score,
-    Tristate, Value, ValueType,
+    render_prepare, CachePolicy, CharSet, Config, LangSet, Matrix, Object, Pattern, PatternRef,
+    Range, Score, Tristate, Value, ValueType,
 };
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -23,6 +23,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut debug = false;
     let mut dump = false;
     let mut dump_match = false;
+    let mut substitute = true;
     let mut batch = false;
     // Some(true) = sorted and trimmed (-s), Some(false) = sorted, untrimmed (-a).
     let mut sort: Option<bool> = None;
@@ -40,6 +41,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             "--debug" => debug = true,
             "--dump-query" => dump = true,
             "--dump-match" => dump_match = true,
+            // `fc-pattern` without `-c`: the name as parsed, before any
+            // rule or default has touched it.
+            "--no-substitute" => substitute = false,
+            // Everything after `--` is a query, however it starts. A name
+            // may begin with `-` -- that is how a bare size is written --
+            // and `fc-pattern` needs the same separator to see it.
+            "--" => terms.extend(args.by_ref()),
             other => terms.push(other.to_string()),
         }
     }
@@ -90,13 +98,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     for term in &terms {
         parse_name(&mut query, term)?;
     }
-    config.substitute(&mut query);
-    query.default_substitute();
+    if substitute {
+        config.substitute(&mut query);
+        query.default_substitute();
+    }
 
     if dump {
         for element in query.elements() {
             for (value, binding) in element.values() {
-                println!("{}	{value:?}	{}", element.object(), mark(binding));
+                println!("{}	{}	{}", element.object(), dumped(value), mark(binding));
             }
         }
         return Ok(());
@@ -110,7 +120,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let prepared = render_prepare(&config, &query, &best, Some(&score));
             for element in prepared.elements() {
                 for (value, binding) in element.values() {
-                    println!("{}	{value:?}	{}", element.object(), mark(binding));
+                    println!("{}	{}	{}", element.object(), dumped(value), mark(binding));
                 }
             }
         }
@@ -178,6 +188,20 @@ fn answer(
             }
             None => println!(),
         },
+    }
+}
+
+/// A value as a harness can compare it.
+///
+/// `Debug` for everything whose type is worth seeing -- `Int(200)` and
+/// `Double(200.0)` are a difference a name parser can get wrong -- but a
+/// character or language set has to be spelled the way fontconfig spells it,
+/// since `Debug` on those prints the bitmap.
+fn dumped(value: &Value) -> String {
+    match value {
+        Value::CharSet(c) => format!("CharSet({})", typordo::AnyCharSet::Owned(c)),
+        Value::LangSet(l) => format!("LangSet({})", typordo::AnyLangSet::Owned(l)),
+        other => format!("{other:?}"),
     }
 }
 
@@ -270,7 +294,27 @@ fn parse_name(query: &mut Pattern, name: &str) -> Result<(), String> {
         let (property, d, r) = take_until(rest, ":");
         delim = d;
         rest = r;
-        let Some((key, value)) = property.split_once('=') else {
+        // `FcNameFindNext (name, "=_:")`: either character separates a
+        // property from its value, and `_` is not a rare spelling -- it is
+        // what a name has to use where `=` would be taken for something else.
+        let split = property.find(['=', '_']).map(|at| property.split_at(at));
+        let Some((key, value)) = split.map(|(k, v)| (k, &v[1..])) else {
+            // No separator, so the term is a bare constant and names its own
+            // property: `:bold` is weight 200, `:italic` slant 100. Upstream
+            // adds it as an **integer** whatever the property's declared type
+            // is -- `FcPatternAddInteger` even for range-typed weight -- and
+            // silently drops a word that is not a constant.
+            if let Some((object, value)) = typordo::named_constant(property.trim()) {
+                match object.value_type() {
+                    ValueType::Bool => {
+                        query.add(object, Tristate::from_i32(value));
+                    }
+                    ValueType::Int | ValueType::Double | ValueType::Range => {
+                        query.add(object, value);
+                    }
+                    _ => {}
+                }
+            }
             continue;
         };
         let object =
@@ -298,31 +342,46 @@ fn add_typed(query: &mut Pattern, object: Object, value: &str) {
             // `FcNameBool`, so `True`, `yes`, `on`, `1` and `dontcare` all work.
             query.add(object, Tristate::parse(value).unwrap_or(Tristate::False));
         }
-        // A number that will not parse is left as text. `FcNameConvert`
-        // would look it up as a constant -- `slant=italic` is 100 -- but that
-        // table is not public here; see docs/audit-1.md on `<const>`.
+        // A named constant first, then `atoi`, which yields 0 for anything
+        // that is not a number at all. The constant has to belong to *this*
+        // property: `slant=italic` is 100, and `slant=bold` is not 200.
         ValueType::Int => {
-            match value.parse::<i32>() {
-                Ok(int) => query.add(object, int),
-                Err(_) => query.add(object, value),
-            };
+            let int =
+                typordo::constant_for(object, value).or_else(|| leading_int(value)).unwrap_or(0);
+            query.add(object, int);
         }
+        // `strtod` and nothing else -- `FcNameConvert` looks up no constant
+        // for a plain double, however tempting.
         ValueType::Double => {
-            match value.parse::<f64>() {
-                Ok(double) => query.add(object, double),
-                Err(_) => query.add(object, value),
-            };
+            query.add(object, leading_double(value).unwrap_or(0.0));
         }
         ValueType::Range => {
             match parse_range(value) {
-                Some(range) => query.add(object, range),
-                // `FcNameConvert` falls back to a double, so a scalar reaches a
-                // range-typed property as a number, not as a one-point range.
-                None => match value.parse::<f64>() {
-                    Ok(number) => query.add(object, number),
-                    Err(_) => query.add(object, value),
+                Some(range) => {
+                    query.add(object, range);
+                }
+                // `[light bold]` -- a range written with constants, which
+                // both have to resolve for this property or the whole term
+                // falls through to the scalar reading below.
+                None => match parse_constant_range(object, value) {
+                    Some(range) => {
+                        query.add(object, range);
+                    }
+                    // A scalar reaches a range-typed property as a number,
+                    // not as a one-point range. A word that is neither a
+                    // constant for this property nor a number reaches it as
+                    // nothing at all: upstream sets `FcTypeVoid`, so
+                    // `:width=bold` adds no width rather than a wrong one.
+                    None => {
+                        if let Some(number) = typordo::constant_for(object, value)
+                            .map(f64::from)
+                            .or_else(|| whole_double(value))
+                        {
+                            query.add(object, number);
+                        }
+                    }
                 },
-            };
+            }
         }
         ValueType::LangSet => {
             let mut set = LangSet::new();
@@ -331,10 +390,28 @@ fn add_typed(query: &mut Pattern, object: Object, value: &str) {
             }
             query.add(object, set);
         }
-        // A charset is written as hex ranges; a matrix as four numbers. No
-        // query here uses either, so they stay text rather than being parsed
-        // half-heartedly.
-        ValueType::String | ValueType::CharSet | ValueType::Matrix => {
+        // `FcNameParseCharSet`: space-separated hex codepoints, each on its
+        // own or as a `first-last` range. One unreadable item and the whole
+        // set is discarded, value and all.
+        ValueType::CharSet => {
+            if let Some(set) = parse_charset(value) {
+                query.add(object, set);
+            }
+        }
+        // `sscanf ("%lg %lg %lg %lg")` over an identity matrix, so a short
+        // list leaves the rest of the identity in place.
+        ValueType::Matrix => {
+            let mut matrix = Matrix::IDENTITY;
+            let mut numbers = value.split_whitespace().filter_map(|n| n.parse::<f64>().ok());
+            for slot in [&mut matrix.xx, &mut matrix.xy, &mut matrix.yx, &mut matrix.yy] {
+                match numbers.next() {
+                    Some(number) => *slot = number,
+                    None => break,
+                }
+            }
+            query.add(object, matrix);
+        }
+        ValueType::String => {
             query.add(object, value);
         }
     }
@@ -345,6 +422,62 @@ fn parse_range(value: &str) -> Option<Range> {
     let inner = value.strip_prefix('[')?.strip_suffix(']')?;
     let (begin, end) = inner.split_once([' ', '-'])?;
     Some(Range { begin: begin.trim().parse().ok()?, end: end.trim().parse().ok()? })
+}
+
+/// `FcNameParseCharSet`: `41 42 43` or `41-43`, in hex.
+fn parse_charset(value: &str) -> Option<CharSet> {
+    let mut set = CharSet::new();
+    for item in value.split_whitespace() {
+        let (first, last) = match item.split_once('-') {
+            Some((a, b)) => (a, b),
+            None => (item, item),
+        };
+        let first = u32::from_str_radix(first, 16).ok()?;
+        let last = u32::from_str_radix(last, 16).ok()?;
+        for code in first..=last {
+            set.insert(char::from_u32(code)?);
+        }
+    }
+    Some(set)
+}
+
+/// `[light bold]`, a range written with two constants of this property.
+///
+/// Both have to resolve, and for *this* property -- `FcNameConvert` gives up
+/// on the pair as soon as either does not, rather than mixing a constant with
+/// a number.
+fn parse_constant_range(object: Object, value: &str) -> Option<Range> {
+    let inner = value.strip_prefix('[')?.strip_suffix(']')?;
+    let (begin, end) = inner.split_once(' ')?;
+    Some(Range {
+        begin: typordo::constant_for(object, begin.trim())? as f64,
+        end: typordo::constant_for(object, end.trim())? as f64,
+    })
+}
+
+/// `atoi`: the leading integer, and nothing where there is not one.
+///
+/// Not `str::parse`, which rejects the trailing text `atoi` ignores.
+fn leading_int(value: &str) -> Option<i32> {
+    leading_double(value).map(|d| d as i32)
+}
+
+/// `strtod`: the leading number, ignoring whatever follows it.
+fn leading_double(value: &str) -> Option<f64> {
+    let text = value.trim_start();
+    let mut end = 0;
+    for (at, _) in text.char_indices() {
+        if text[..=at].parse::<f64>().is_ok() {
+            end = at + 1;
+        }
+    }
+    (end > 0).then(|| text[..end].parse().unwrap())
+}
+
+/// `strtod` that has to consume the whole string, which is the check
+/// `FcNameConvert` makes before deciding a range-typed value is unusable.
+fn whole_double(value: &str) -> Option<f64> {
+    value.trim().parse().ok()
 }
 
 /// Read up to the first unescaped character in `delims`.

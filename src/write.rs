@@ -31,7 +31,7 @@ use crate::charset::CharSet;
 use crate::langset::LangSet;
 use crate::pattern::Pattern;
 use crate::value::Value;
-use crate::value::{Binding, Matrix, Range};
+use crate::value::{Matrix, Range};
 
 /// `FcRef` for a structure that is not reference counted, `FC_REF_CONSTANT`.
 ///
@@ -175,7 +175,15 @@ fn pattern(buf: &mut Buffer, query: &Pattern, charsets: &mut CharSets) -> usize 
                 // Relative to the element, not to the array: `FcPatternElt`.
                 None => buf.encoded(elt + L.values, elt, node),
             }
-            buf.i32(node + L.binding, code(binding));
+            // The binding is deliberately not written. `FcValueListSerialize`
+            // copies the value and the next pointer and nothing else, over a
+            // block it allocated zeroed, so the field is zero --
+            // `FcValueBindingWeak` -- in every cache fontconfig has ever
+            // written. Writing the real binding here would be a cache that
+            // says `family` is strongly bound where fontconfig's says weakly,
+            // and fontconfig reading it would match differently. Values do
+            // not survive a cache with their bindings, for either of us.
+            let _ = binding;
             write_value(buf, node + L.node_value, value, charsets);
             previous = Some(node);
         }
@@ -298,23 +306,6 @@ fn write_langset(buf: &mut Buffer, set: &LangSet) -> usize {
         buf.u32(at + L.map + index * 4, *word);
     }
     at
-}
-
-/// The `FcValueBinding` a binding is stored as.
-///
-/// The order is upstream's and is worth naming, because it is the one a
-/// reasonable person would guess wrong: `FcValueBindingWeak` is **zero**.
-/// Upstream also never writes this field -- `FcValueListSerialize` copies the
-/// value and the next pointer -- and allocates the cache block with `memset`
-/// to zero, so every value read back out of a cache is weak. Encoding weak as
-/// zero is therefore not only the right tag, it is what makes our caches and
-/// theirs say the same thing.
-fn code(binding: Binding) -> i32 {
-    match binding {
-        Binding::Weak => 0,
-        Binding::Strong => 1,
-        Binding::Same => 2,
-    }
 }
 
 /// The buffer being built, with the alignment invariant that makes offsets
@@ -449,6 +440,21 @@ mod tests {
         font
     }
 
+    /// The same pattern as a cache can express it.
+    ///
+    /// A cache carries no bindings -- see `bindings_do_not_survive_a_cache` --
+    /// so a round trip is compared against the pattern with every value made
+    /// weak, which is what reading one back gives.
+    fn as_a_cache_holds_it(font: &Pattern) -> Pattern {
+        let mut out = Pattern::new();
+        for element in font.elements() {
+            for (value, _) in element.values() {
+                out.add_with_binding(element.object(), value.clone(), Binding::Weak);
+            }
+        }
+        out
+    }
+
     #[test]
     fn every_value_type_round_trips() {
         let font = kitchen_sink();
@@ -457,11 +463,22 @@ mod tests {
         let cache = round_trip(&writer);
 
         let read = cache.fonts().unwrap().next().expect("one font");
-        assert_eq!(Pattern::from_pattern(&read), font);
+        assert_eq!(Pattern::from_pattern(&read), as_a_cache_holds_it(&font));
     }
 
+    /// Bindings do not survive a cache, and that is the correct behaviour.
+    ///
+    /// `FcValueListSerialize` copies the value and the next pointer; the
+    /// binding is never written, over a block allocated zeroed. So the field
+    /// is `FcValueBindingWeak` in every cache fontconfig has written, and a
+    /// cache of ours that said anything else would make fontconfig match its
+    /// contents differently from its own.
+    ///
+    /// Nothing is lost by it. `FcCompareValueList` reads bindings off the
+    /// *query*, and `FcFontSetMatchInternal` rewrites the matched font's from
+    /// the scores before anything looks at them -- see `Score::binding`.
     #[test]
-    fn bindings_round_trip() {
+    fn bindings_do_not_survive_a_cache() {
         let mut font = Pattern::new();
         font.add(Object::Family, "Strong");
         font.add_weak(Object::Family, "Weak");
@@ -481,39 +498,12 @@ mod tests {
         assert_eq!(
             bindings,
             [
-                ("Strong".to_string(), Binding::Strong),
+                ("Strong".to_string(), Binding::Weak),
                 ("Weak".to_string(), Binding::Weak),
-                ("Same".to_string(), Binding::Same),
-            ]
+                ("Same".to_string(), Binding::Weak),
+            ],
+            "every value in a cache is weak, whatever it was in the pattern"
         );
-    }
-
-    /// The tags themselves, not just that they survive a round trip.
-    ///
-    /// A round trip agrees with itself whichever way round the encoding is,
-    /// which is how this was wrong in both directions at once for as long as
-    /// it was. What matters is the number in the file, so this asserts the
-    /// number: `FcValueBinding` in `fontconfig.h` is weak, strong, same.
-    ///
-    /// Zero being *weak* is the load-bearing half. Upstream never writes this
-    /// field -- `FcValueListSerialize` copies the value and the next pointer
-    /// and nothing else -- over a block it allocated zeroed, so every value
-    /// in a fontconfig-written cache reads back weak, and only an encoding
-    /// that agrees zero means weak reads those caches correctly.
-    #[test]
-    fn binding_tags_are_fontconfigs() {
-        assert_eq!(super::code(Binding::Weak), 0);
-        assert_eq!(super::code(Binding::Strong), 1);
-        assert_eq!(super::code(Binding::Same), 2);
-
-        let mut font = Pattern::new();
-        font.add(Object::Family, "Written");
-        let mut writer = CacheWriter::new("/fonts");
-        writer.font(&font);
-        let cache = round_trip(&writer);
-        let read = cache.fonts().unwrap().next().unwrap();
-        let node = read.get(Object::Family).unwrap().values().bindings().next().unwrap();
-        assert_eq!(node.1, Binding::Strong);
     }
 
     /// Values keep the order they were added in: fontconfig treats the first
@@ -553,7 +543,7 @@ mod tests {
         let cache = round_trip(&many);
         assert_eq!(cache.fonts().unwrap().count(), 10);
         for read in cache.fonts().unwrap() {
-            assert_eq!(Pattern::from_pattern(&read), font);
+            assert_eq!(Pattern::from_pattern(&read), as_a_cache_holds_it(&font));
         }
     }
 
