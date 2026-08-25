@@ -244,8 +244,12 @@ impl<'a> Builder<'a> {
         // temporary file, and each could rename the other's half of it into
         // place. `fc-cache` and a desktop session starting at once is not a
         // hypothetical; it is the usual way a machine boots.
-        let _lock = Lock::take(&on_disk)?;
-        let temp = on_disk.with_extension("NEW");
+        let lock = Lock::take(&on_disk)?;
+        lock.clear_stale_new(&on_disk);
+        // `with_suffix`, not `with_extension`: the latter would replace the
+        // `.cache-9` and write `<hash>-le64.NEW`, which is neither the name
+        // fontconfig uses nor one the lock beside it protects.
+        let temp = with_suffix(&on_disk, ".NEW");
         std::fs::write(&temp, bytes)?;
         // Rename over an existing file is atomic on Unix and, since Windows
         // 10, on NTFS as well.
@@ -387,6 +391,14 @@ impl Lock {
             },
             Err(e) => Err(e),
         }
+    }
+
+    /// Remove a `.NEW` left behind by a writer that did not finish.
+    ///
+    /// `FcAtomicLock` unlinks it on the way out, and it is safe here for the
+    /// same reason: holding the lock means nobody else is writing that name.
+    fn clear_stale_new(&self, cache: &Path) {
+        let _ = std::fs::remove_file(with_suffix(cache, ".NEW"));
     }
 
     fn is_stale(lock: &Path) -> bool {
@@ -604,13 +616,18 @@ mod lock_tests {
     use super::{with_suffix, Lock};
     use std::path::Path;
 
+    /// A cache file ends `.cache-9`, so `with_extension` replaces the version
+    /// rather than adding to the name. For the lock that would produce a file
+    /// which excludes nobody; for the temporary it produced a name fontconfig
+    /// does not use. Both were written with `with_extension` first, which is
+    /// why this is spelled out.
     #[test]
     fn a_suffix_is_added_not_substituted() {
         let path = Path::new("/tmp/abc-le64.cache-9");
         assert_eq!(with_suffix(path, ".LCK"), Path::new("/tmp/abc-le64.cache-9.LCK"));
-        // `with_extension` would have produced `abc-le64.LCK`, which is a
-        // different file and would not exclude anyone.
+        assert_eq!(with_suffix(path, ".NEW"), Path::new("/tmp/abc-le64.cache-9.NEW"));
         assert_ne!(with_suffix(path, ".LCK"), path.with_extension("LCK"));
+        assert_ne!(with_suffix(path, ".NEW"), path.with_extension("NEW"));
     }
 
     #[test]
