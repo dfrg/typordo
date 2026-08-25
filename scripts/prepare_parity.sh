@@ -84,6 +84,58 @@ for line in sys.stdin:
         shown+=1"
   fi
 done
+# Localized names, which the field sweep above cannot reach: it runs under an
+# English locale, so the name a query would promote is always the one already
+# first. A font with names in two languages and a query naming one of them is
+# the only shape that shows whether promotion happens at all.
+localized=0; localized_bad=0
+MULTILINGUAL=$(fc-list --format='%{familylang}|%{family}
+' 2>/dev/null | python3 -c "
+import sys
+for line in sys.stdin:
+    langs, _, families = line.partition('|')
+    # More than one distinct language, so there is something to choose between.
+    if len(set(langs.split(','))) > 1:
+        print(families.split(',')[0].strip())
+        break
+")
+if [ -n "$MULTILINGUAL" ]; then
+  echo "=== localized names ($MULTILINGUAL) ==="
+  for lang in ja en zh-cn de; do
+    for field in family familylang style stylelang fullname fullnamelang; do
+      q="$MULTILINGUAL:familylang=$lang"
+      theirs=$(FONTCONFIG_FILE="$CONF" fc-match --format="%{$field}" "$q" </dev/null 2>/dev/null)
+      ours=$(cargo run -q --release --example fc_match --                --config "$CONF" --format "$field" "$q" 2>/dev/null)
+      localized=$((localized + 1))
+      if [ "$theirs" != "$ours" ]; then
+        localized_bad=$((localized_bad + 1))
+        printf '  DIFF familylang=%-6s %-14s
+    ours:   %.60s
+    theirs: %.60s
+'           "$lang" "$field" "$ours" "$theirs"
+      fi
+    done
+  done
+  # And through the locale, which is how a desktop actually asks.
+  for locale in ja_JP.UTF-8 en_US.UTF-8; do
+    theirs=$(LC_ALL=$locale FONTCONFIG_FILE="$CONF" fc-match --format='%{family}' "$MULTILINGUAL" </dev/null 2>/dev/null)
+    ours=$(LC_ALL=$locale cargo run -q --release --example fc_match --              --config "$CONF" --format family "$MULTILINGUAL" 2>/dev/null)
+    localized=$((localized + 1))
+    if [ "$theirs" != "$ours" ]; then
+      localized_bad=$((localized_bad + 1))
+      printf '  DIFF LC_ALL=%-14s family
+    ours:   %.60s
+    theirs: %.60s
+'         "$locale" "$ours" "$theirs"
+    fi
+  done
+  printf '  %-16s %s   %s ok, %s differing
+' "localized"     "$([ "$localized_bad" -eq 0 ] && echo MATCH || echo DIFF)"     "$((localized - localized_bad))" "$localized_bad"
+  [ "$localized_bad" -eq 0 ] || fail
+else
+  echo "=== localized names: no font here carries names in two languages ==="
+fi
+
 echo
 echo "prepare parity: $total_ok identical, $total_bad differing"
 [ "$total_bad" -eq 0 ] || fail

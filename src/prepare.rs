@@ -154,14 +154,24 @@ fn copy_localized(
         order
     };
 
-    for (position, index) in order(&names).into_iter().enumerate() {
-        let binding =
-            if position == 0 && promote.is_some() { Binding::Strong } else { Binding::Weak };
+    // The names keep the bindings the font gave them, promoted one included:
+    // upstream prepends the winning name with `l1->binding` and only marks the
+    // *language* strong. Saying the name is strong claims the font insists on
+    // it, which it does not -- the query does.
+    let name_bindings: Vec<Binding> =
+        font.get(name).map(|e| e.values().bindings().map(|(_, b)| b).collect()).unwrap_or_default();
+    for index in order(&names) {
+        let binding = name_bindings.get(index).copied().unwrap_or(Binding::Weak);
         out.add_with_binding(name, names[index].clone(), binding);
     }
+    let lang_bindings: Vec<Binding> =
+        font.get(lang).map(|e| e.values().bindings().map(|(_, b)| b).collect()).unwrap_or_default();
     for (position, index) in order(&langs).into_iter().enumerate() {
-        let binding =
-            if position == 0 && promote.is_some() { Binding::Strong } else { Binding::Weak };
+        let binding = if position == 0 && promote.is_some() {
+            Binding::Strong
+        } else {
+            lang_bindings.get(index).copied().unwrap_or(Binding::Weak)
+        };
         out.add_with_binding(lang, langs[index].clone(), binding);
     }
 }

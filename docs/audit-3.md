@@ -18,7 +18,7 @@ symbol cmap detection, and the structure of `render_prepare`.
 | G2 | scanner | Width ignores style names; invalid `usWidthClass` collapses to 100 | Fixed, `8db25e6` |
 | G3 | scanner | Slant fallback reads `head.macStyle`; FreeType prefers `OS/2.fsSelection` | Fixed, `8db25e6` |
 | G5 | scanner | `OS/2.version == 0xffff` is not treated as "no OS/2 table" | Fixed, `8db25e6` |
-| G4 | prepare | A font's `DontCare` bool is kept instead of adopting the query's value | Fixed, *this commit* |
+| G4 | prepare | A font's `DontCare` bool is kept instead of adopting the query's value | Fixed, `e080b89` |
 
 ## G1, G2, G3, G5 — the fallback chains
 

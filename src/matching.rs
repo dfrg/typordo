@@ -797,7 +797,19 @@ pub struct BestValue {
 
 /// Find which font value answers `query` best for `object`.
 pub fn best_value(query: &Pattern, font: &PatternRef<'_>, object: Object) -> Option<BestValue> {
-    let matcher = matcher(object)?;
+    // `FcObjectToMatcher (object, include_lang = FcTrue)`. The name-language
+    // objects have no comparison of their own; they borrow `lang`'s, which is
+    // how a query asking for `familylang=ja` picks the Japanese name out of a
+    // font that lists several. Upstream passes `FcTrue` at exactly one call
+    // site, and it is the one that computes a best value.
+    //
+    // Only the comparison is borrowed. The values still come from the object
+    // that was asked about -- reading `lang` here would compare the languages
+    // the font can *write* against the languages its names are written in.
+    let matcher = matcher(match object {
+        Object::Familylang | Object::Stylelang | Object::Fullnamelang => Object::Lang,
+        other => other,
+    })?;
     let element = query.get(object)?;
     let wanted: Vec<(ValueRef<'_>, Binding)> =
         element.values().map(|(v, b)| (v.as_value(), b)).collect();

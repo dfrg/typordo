@@ -17,14 +17,14 @@ produced.
 | F1 | rules | `<times>` on matrices missing — synthetic oblique gets no `matrix` | Fixed, `740423c` |
 | F7 | rules | `<name>` in an edit yields every value; upstream yields the first | Fixed, `740423c` |
 | F11 | rules | Arithmetic result type: upstream collapses integral doubles to Integer | Fixed, `740423c` |
-| F2 | prepare | Localized family/style/fullname never promoted for the requested language | |
+| F2 | prepare | Localized family/style/fullname never promoted for the requested language | Fixed, *this commit* |
 | F3 | scanner | `size` never produced (no `opsz` axis, no OS/2 v5 optical range) | |
-| F4 | matching | Range resolution uses the first query value, not the winning one | Fixed, *this commit* |
+| F4 | matching | Range resolution uses the first query value, not the winning one | Fixed, `e080b89` |
 | F5 | scanner | Named-instance weight/width ignore the OS/2 × (instance/default) multiplier | |
 | F6 | scanner | Missing name fallbacks: `Regular` style, family from the filename, PS-name sanitisation | |
 | F8 | rules | Multi-valued `<test name="family">` has different semantics | |
 | F9 | cache | Binding encoding inverted; cache values read Strong where upstream reads Weak | |
-| F10 | prepare | `fontvariations` number formatting / weight rounding differs | Fixed, *this commit* |
+| F10 | prepare | `fontvariations` number formatting / weight rounding differs | Fixed, `e080b89` |
 | F12 | rules | Edit marks tracked by index, not by value node | |
 | F13 | scanner | Empty `capability` string vs absent element | |
 
@@ -89,3 +89,34 @@ decimal places: `13.33333` prints as `13.3333` and `1234567` as `1.23457e+06`.
 
 The `%g` cases are unit-tested rather than compared against a font, because no
 font carries a value that reaches them.
+
+## F2 — the name a non-English desktop sees
+
+`FcFontRenderPrepare` compares the *pattern's* `familylang` against the
+*font's* with the **lang** matcher, and moves the winning name and its language
+to the front. It reaches that matcher through
+`FcObjectToMatcher (object, include_lang = FcTrue)`, which maps `familylang`,
+`stylelang` and `fullnamelang` onto `lang` — they have no comparison of their
+own. `FcTrue` is passed at exactly one call site, and it is the one that
+computes a best value.
+
+Here `best_value` started with `matcher(object)?`, no such mapping existed, so
+the promotion never happened and the font's names were copied in cache order.
+Source Han Sans JP asked for with `familylang=ja` reported
+`Source Han Sans JP` where fontconfig reports `源ノ角ゴシック JP` — the value
+most clients display, on every non-English desktop.
+
+Only the *comparison* is borrowed, which is worth stating because it is the
+easy thing to get wrong: reading `lang`'s values here would compare the
+languages the font can write against the languages its names are written in.
+
+A binding detail came with it, and it is F9's third point. Upstream prepends
+the winning name with `l1->binding` — the font's own — and marks only the
+*language* strong. This crate forced position 0 strong on both lists. Saying
+the name is strong claims the font insists on it; the query does.
+
+`prepare_parity` gained the runs that would have caught this: a font carrying
+names in two languages, queried with `familylang=` in four languages and
+through `LC_ALL`, compared across all six name and language properties. The
+field sweep above could not reach it — it runs under an English locale, so the
+name a query would promote is always the one already first.
