@@ -48,8 +48,9 @@ corpus does not contain.
 | 15 | Symbol cmap coverage discarded | 4 real symbol fonts, 12 comparisons | `fe7727d` |
 | 16 | OS/2 CJK exclusivity ignored | 145 Windows fonts: 6 differing → 0 | `e6afbdf` |
 | 1 | `FONTCONFIG_SYSROOT` ignored | End-to-end against `fc-list` in a built root | `a22d645` |
-| 18 | Cache lookup stopped at the first candidate | Test fails on old behaviour | *this commit* |
-| 20 | Cache stayed current when its directory vanished | Test fails on old behaviour | *this commit* |
+| 18 | Cache lookup stopped at the first candidate | Test fails on old behaviour | `e2db80c` |
+| 20 | Cache stayed current when its directory vanished | Test fails on old behaviour | `e2db80c` |
+| 19 | Traversal accepted partially corrupt caches | Test fails on old behaviour | `8e41e5b` |
 
 **9.1 — `ignore-blanks`.** `FcConfigCompareValue` uses
 `FcStrCmpIgnoreBlanksAndCase` only when `FcOpFlagIgnoreBlanks` is set and
@@ -128,6 +129,26 @@ stat and so does the rescan behind it -- and it is right to. Reported through
 `Caches::skipped` as `DirectoryUnavailable`, which is a different complaint
 from a missing or stale cache and worth telling apart.
 
+**19 — a cache damaged past its header.** `FcDirCacheMapFd` runs
+`FcCacheOffsetsValid` on every map, unconditionally, and refuses the file
+entire. Here the header was checked on open, the full walk was a separate
+call the traversal never made, and the iterators quietly skipped records that
+did not hold up -- yielding a partial font set from a cache fontconfig would
+have rejected, and pruning whatever subdirectory tree hung below the skipped
+record. The walk now runs before a cache is handed out, and a failing one is
+passed over like any other candidate, so a good one further down still gets
+its chance.
+
+This one has a price, and it is the entry worth reading twice. Load went from
+1.47x fontconfig to **0.77x** the moment the deep check went in. Most of that
+was doing more than fontconfig does: `value_at` decodes every value, which for
+a string means scanning for a terminator and validating UTF-8, while
+`FcCacheOffsetsValid` checks the type tag and that an indirect offset lands
+inside the file. A structural-only `value::check_at` brings it to **0.85x** --
+slower than not checking, and about what fontconfig costs, which is the
+comparison that means anything, since it now does the same work. The earlier
+figure was measuring the absence of a safety check.
+
 ### Version drift, not gaps
 
 | # | Finding | Why it stands |
@@ -159,7 +180,6 @@ cannot be mistaken for "all of it".
 | 13 | Tri-state boolean collapsed | Medium |
 | 14 | WOFF/WOFF2 and standalone CFF not scanned | Medium-high |
 | 17 | Relocated caches keep embedded paths | High |
-| 19 | Traversal accepts partially corrupt caches | Medium-high |
 | 21 | Rebuilds lack an inter-process lock | Medium |
 | 22 | LangSet copying, comparison, default insertion | Medium |
 | 25 | Application-font preference not representable | API |

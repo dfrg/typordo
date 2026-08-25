@@ -20,6 +20,7 @@
 //! `<remap-dir>` and its `salt` attribute are unhandled, so a sandboxed
 //! configuration that remaps font paths will not find its caches.
 
+use std::borrow::Cow;
 use std::collections::{HashMap, HashSet, VecDeque};
 
 use crate::fnv::BuildFnv;
@@ -1480,6 +1481,19 @@ pub enum SkipReason {
     RebuildFailed(String),
 }
 
+/// A path under `dir` carrying `path`'s last component.
+///
+/// `FcStrBuildFilename (forDir, FcStrBasename (path), NULL)`: what a relocated
+/// cache's entries are rewritten to. A path with no final component -- a root,
+/// or a trailing separator -- is left alone, since there is nothing to carry
+/// over and inventing one would name a different file.
+fn rebase(dir: &str, path: &str) -> String {
+    match Path::new(path).file_name().and_then(|n| n.to_str()) {
+        Some(name) => Path::new(dir).join(name).to_string_lossy().into_owned(),
+        None => path.to_string(),
+    }
+}
+
 /// Iterator over every cache a [`Config`] reaches.
 ///
 /// Directories are visited breadth-first from the configured roots, following
@@ -1516,12 +1530,26 @@ impl Iterator for Caches<'_> {
                 continue;
             }
             let Some(cache) = self.open(&dir) else { continue };
+            // A cache found for a directory it was not built for -- copied
+            // into an image, or reached through a sysroot -- describes the
+            // build machine's layout. `FcConfigAddCache` compares the two and,
+            // when they differ, rebuilds each subdirectory as the requested
+            // directory plus the old basename. Without that the walk descends
+            // into paths belonging to a filesystem that is not this one.
+            let relocated = cache.dir().is_ok_and(|d| d != dir);
             if let Ok(subdirs) = cache.subdirs() {
                 for subdir in subdirs.flatten() {
+                    let subdir = if relocated {
+                        Cow::Owned(rebase(&dir, subdir))
+                    } else {
+                        Cow::Borrowed(subdir)
+                    };
                     // A rejected directory prunes the walk, the same way
                     // fontconfig filters subdirectories as it descends.
-                    if !self.seen.contains(subdir) && self.config.accepts_filename(subdir) {
-                        self.pending.push_back(subdir.to_string());
+                    if !self.seen.contains(subdir.as_ref())
+                        && self.config.accepts_filename(&subdir)
+                    {
+                        self.pending.push_back(subdir.into_owned());
                     }
                 }
             }
