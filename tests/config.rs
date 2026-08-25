@@ -290,3 +290,44 @@ fn a_stale_cache_is_used_or_skipped_as_asked() {
     assert_eq!(after.by_ref().count(), 1, "a rebuilt cache should be current");
     assert!(after.skipped().is_empty(), "{:?}", after.skipped());
 }
+
+// --- <reset-dirs/> --------------------------------------------------------
+
+/// `<reset-dirs/>` discards the font directories declared so far.
+///
+/// `FcParseResetDirs` calls `FcConfigResetFontDirs`, which is a
+/// `FcStrSetDeleteAll` on the font directory set alone. Cache directories and
+/// anything already parsed survive, which is the point: a sandboxed
+/// configuration includes the system one for its rules and then drops the
+/// host directories it brought along.
+#[test]
+fn reset_dirs_drops_the_directories_before_it() {
+    let path = fixture_dir().join("reset.conf");
+    let config = Config::load_from(&path).expect("fixture should load");
+
+    let dirs: Vec<_> = config.font_dirs().filter_map(|d| d.to_str()).collect();
+    assert_eq!(dirs, ["/synthetic/mine"], "only what follows the reset survives");
+
+    // The reset is font directories only.
+    let caches: Vec<_> = config.cache_dirs().iter().filter_map(|d| d.to_str()).collect();
+    assert!(caches.contains(&"/synthetic/cache"), "cache dirs survive: {caches:?}");
+}
+
+/// A `conf.d` entry without a numeric prefix is not read.
+///
+/// `FcConfigParseAndLoadDir` takes only names of the form `[0-9]*.conf`. The
+/// prefixes are what order the rules, so a file without one has no defined
+/// place in the sequence and fontconfig ignores it rather than guessing. A
+/// stray `local.conf` or an editor's leftover would otherwise contribute
+/// rules that no other implementation can see.
+#[test]
+fn a_conf_d_file_without_a_numeric_prefix_is_ignored() {
+    let config = config();
+    let dirs: Vec<_> = config.font_dirs().filter_map(|d| d.to_str()).collect();
+    assert!(
+        !dirs.contains(&"/synthetic/should-never-load"),
+        "conf.d/local.conf must not be read: {dirs:?}"
+    );
+    // And the numerically prefixed neighbours in the same directory are.
+    assert!(dirs.contains(&"/synthetic/first"), "{dirs:?}");
+}

@@ -991,6 +991,12 @@ impl Config {
     ) -> Result<(), ConfigError> {
         let body = frame.text.trim();
         match frame.name.as_str() {
+            // `FcParseResetDirs` calls `FcConfigResetFontDirs`, which empties
+            // the font directory list and nothing else -- cache directories
+            // and already-parsed rules survive. It exists so a generated or
+            // sandboxed configuration can discard the host directories it
+            // inherited by including the system config first.
+            "reset-dirs" => self.font_dirs.clear(),
             "dir" | "cachedir" | "include" | "remap-dir" => {
                 let salt = attr(&frame, "salt");
                 let as_path = attr(&frame, "as-path");
@@ -1238,9 +1244,13 @@ impl Config {
                         map: as_path.map(PathBuf::from),
                         salt: salt.map(str::to_string),
                     };
-                    if !self.font_dirs.iter().any(|d| d.path == entry.path) {
-                        self.font_dirs.push(entry);
-                    }
+                    // `FcConfigAddFontDir` deletes any existing entry for the
+                    // same source path before inserting, so a later mapping or
+                    // salt replaces an earlier one rather than being dropped.
+                    // Position follows the newest declaration, as it does
+                    // upstream.
+                    self.font_dirs.retain(|d| d.path != entry.path);
+                    self.font_dirs.push(entry);
                 }
                 "cachedir" => push_unique(&mut self.cache_dirs, path),
                 _ => {}
@@ -1259,10 +1269,18 @@ impl Config {
         if path.is_dir() {
             // Order matters: the numeric prefixes on conf.d files are there to
             // sequence the rules, so read them sorted by name.
+            //
+            // And the prefix is required, not conventional. Fontconfig takes
+            // only names of the form `[0-9]*.conf`, so a `local.conf` or an
+            // editor's `50-foo.conf.orig` left in `conf.d` is ignored -- and
+            // picking it up would insert rules nothing else can see.
             let mut entries: Vec<_> = std::fs::read_dir(path)
                 .map_err(|e| ConfigError::Io(path.to_path_buf(), e))?
                 .filter_map(|entry| entry.ok().map(|e| e.path()))
-                .filter(|p| p.extension().is_some_and(|e| e == "conf"))
+                .filter(|p| {
+                    let name = p.file_name().and_then(|n| n.to_str()).unwrap_or_default();
+                    name.starts_with(|c: char| c.is_ascii_digit()) && name.ends_with(".conf")
+                })
                 .collect();
             entries.sort();
             for entry in entries {

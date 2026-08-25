@@ -93,6 +93,14 @@ check "remapped subdir" "$fonts/sub" "  <remap-dir as-path=\"/usr/share/fonts\">
 check "remapped and salted" "$fonts" \
   "  <remap-dir as-path=\"/usr/share/fonts\" salt=\"pepper\">$fonts</remap-dir>"
 
+# Declaring the same directory twice: FcConfigAddFontDir deletes the existing
+# entry before inserting, so the later salt names the cache. Keeping the first
+# would read a cache nothing writes.
+check "later salt replaces earlier" "$fonts"   "  <dir salt=\"first\">$fonts</dir>"   "  <dir salt=\"second\">$fonts</dir>"
+
+# The same when a remapping arrives after a plain declaration.
+check "later remap replaces plain" "$fonts"   "  <dir>$fonts</dir>"   "  <remap-dir as-path=\"/usr/share/fonts\">$fonts</remap-dir>"
+
 # Fontconfig takes the first font directory that contains the path, not the
 # longest, so a plain <dir> listed first shadows a <remap-dir> beneath it.
 check "shadowed by an earlier dir" "$fonts/sub" \
