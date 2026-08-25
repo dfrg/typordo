@@ -16,6 +16,17 @@ fail() { FAILURES=$((FAILURES + 1)); }
 cd "$(dirname "$0")/.." || exit 1
 export PATH="$HOME/.cargo/bin:$PATH"
 export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$PWD/target}"
+# An absolute path, or cargo builds inside the repository. That is not
+# hypothetical: a shell that mangled `$HOME` once handed these scripts
+# `C:Userscbrok/fct`, which has no leading slash, and cargo dutifully created
+# it here -- where `git add -A` then committed it. Twice.
+case "$CARGO_TARGET_DIR" in
+  /*) ;;
+  *)
+    echo "CARGO_TARGET_DIR must be an absolute path, got: $CARGO_TARGET_DIR" >&2
+    exit 1
+    ;;
+esac
 cargo build -q --release --example fc_list || exit 1
 
 CONF=/tmp/typordo-select

@@ -6,3 +6,8 @@
 # already two versions of it from two Pythons.
 __pycache__/
 *.pyc
+
+# A cargo target directory built from a mangled absolute path. The scripts
+# now refuse a relative CARGO_TARGET_DIR, which is what creates one; this is
+# the second line of defence, because the first one was me.
+/[A-Z]*Users*/
