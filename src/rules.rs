@@ -236,6 +236,14 @@ pub struct Test {
     pub object: Property,
     /// How to compare.
     pub compare: Compare,
+    /// Whether a string comparison ignores spaces as well as case.
+    ///
+    /// `<test ignore-blanks="true">`. Off by default, which is what makes
+    /// `"Deja Vu"` and `"DejaVu"` different names to a plain `<test>` --
+    /// fontconfig folds case either way, but only strips blanks when asked.
+    /// The comparison an `<alias>` generates always asks, and so does
+    /// `<selectfont>`; a hand-written `<test>` does not unless it says so.
+    pub ignore_blanks: bool,
     /// What to compare against.
     pub expr: Expr,
 }
@@ -377,6 +385,8 @@ impl Rule {
             qual: Qual::Any,
             object: Property::Known(crate::Object::Family),
             compare: Compare::Eq,
+            // `FC_OP (FcOpEqual, FcOpFlagIgnoreBlanks)` in `FcParseAlias`.
+            ignore_blanks: true,
             expr: family,
         })];
         for (expr, mode) in [
@@ -499,7 +509,14 @@ impl Test {
         };
 
         let hit = |(got, _): &(Value, Binding)| {
-            wanted.iter().any(|want| compare(got, self.compare, want))
+            wanted.iter().any(|want| {
+                compare(
+                    got,
+                    self.compare,
+                    want,
+                    if self.ignore_blanks { Blanks::Ignored } else { Blanks::Significant },
+                )
+            })
         };
 
         // Each qualifier stops as soon as its answer is known. That matters
@@ -743,14 +760,14 @@ fn apply_binary(op: BinaryOp, a: &Value, b: &Value) -> Option<Value> {
     Some(match op {
         B::Or => Value::Bool(as_bool(a)? || as_bool(b)?),
         B::And => Value::Bool(as_bool(a)? && as_bool(b)?),
-        B::Eq => Value::Bool(compare(a, Compare::Eq, b)),
-        B::NotEq => Value::Bool(compare(a, Compare::NotEq, b)),
-        B::Less => Value::Bool(compare(a, Compare::Less, b)),
-        B::LessEq => Value::Bool(compare(a, Compare::LessEq, b)),
-        B::More => Value::Bool(compare(a, Compare::More, b)),
-        B::MoreEq => Value::Bool(compare(a, Compare::MoreEq, b)),
-        B::Contains => Value::Bool(compare(a, Compare::Contains, b)),
-        B::NotContains => Value::Bool(compare(a, Compare::NotContains, b)),
+        B::Eq => Value::Bool(compare(a, Compare::Eq, b, Blanks::Significant)),
+        B::NotEq => Value::Bool(compare(a, Compare::NotEq, b, Blanks::Significant)),
+        B::Less => Value::Bool(compare(a, Compare::Less, b, Blanks::Significant)),
+        B::LessEq => Value::Bool(compare(a, Compare::LessEq, b, Blanks::Significant)),
+        B::More => Value::Bool(compare(a, Compare::More, b, Blanks::Significant)),
+        B::MoreEq => Value::Bool(compare(a, Compare::MoreEq, b, Blanks::Significant)),
+        B::Contains => Value::Bool(compare(a, Compare::Contains, b, Blanks::Significant)),
+        B::NotContains => Value::Bool(compare(a, Compare::NotContains, b, Blanks::Significant)),
         // Plus concatenates strings, unions sets, and adds everything else.
         B::Plus => match (a, b) {
             (Value::String(a), Value::String(b)) => Value::String(format!("{a}{b}")),
@@ -779,12 +796,34 @@ fn apply_binary(op: BinaryOp, a: &Value, b: &Value) -> Option<Value> {
 /// Strings compare with case folding; `eq` on a family also ignores blanks,
 /// which is `FcOpFlagIgnoreBlanks`. `contains` is a substring test for
 /// strings and a range test for numbers.
-pub(crate) fn compare(got: &Value, op: Compare, want: &Value) -> bool {
+/// Whether a string comparison treats spaces as characters.
+///
+/// Fontconfig carries this as `FcOpFlagIgnoreBlanks` on the operator rather
+/// than as a separate operator, and only some comparisons consult it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Blanks {
+    /// `"Deja Vu"` is not `"DejaVu"`. A plain `<test>`.
+    Significant,
+    /// `"Deja Vu"` is `"DejaVu"`. `<alias>`, `<selectfont>`, and a
+    /// `<test ignore-blanks="true">`.
+    Ignored,
+}
+
+pub(crate) fn compare(got: &Value, op: Compare, want: &Value, blanks: Blanks) -> bool {
     use Value as V;
     match (got, want) {
         (V::String(got), V::String(want)) => match op {
-            Compare::Eq => casefold::eq_ignoring_blanks(got, want),
-            Compare::NotEq => !casefold::eq_ignoring_blanks(got, want),
+            // `FcStrCmpIgnoreBlanksAndCase` when the flag is set,
+            // `FcStrCmpIgnoreCase` when it is not. `contains` has no such
+            // choice upstream: it is always `FcStrStrIgnoreCase`.
+            Compare::Eq => match blanks {
+                Blanks::Ignored => casefold::eq_ignoring_blanks(got, want),
+                Blanks::Significant => casefold::eq(got, want),
+            },
+            Compare::NotEq => !match blanks {
+                Blanks::Ignored => casefold::eq_ignoring_blanks(got, want),
+                Blanks::Significant => casefold::eq(got, want),
+            },
             Compare::Contains => contains_folded(got, want),
             Compare::NotContains => !contains_folded(got, want),
             _ => false,

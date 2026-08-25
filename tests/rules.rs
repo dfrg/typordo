@@ -341,3 +341,51 @@ fn a_matrix_literal_is_assigned() {
         other => panic!("matrix became {other:?}"),
     }
 }
+
+// --- ignore-blanks --------------------------------------------------------
+
+fn blanks_config() -> Config {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/rules/blanks.conf");
+    Config::load_from(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()))
+}
+
+/// A plain `<test>` folds case but not blanks.
+///
+/// `FcConfigCompareValue` reaches for `FcStrCmpIgnoreBlanksAndCase` only when
+/// `FcOpFlagIgnoreBlanks` is set, and `FcStrCmpIgnoreCase` otherwise. This
+/// crate used to strip blanks for every string equality, which made a
+/// `<test>` fire on names fontconfig considers different.
+#[test]
+fn a_plain_test_treats_a_space_as_a_character() {
+    let config = blanks_config();
+
+    // Exactly the name the test asks for, spaces included.
+    let mut exact = Pattern::new();
+    exact.add(Object::Family, "DejaVu Sans");
+    config.substitute(&mut exact);
+    assert_eq!(exact.string(Object::Foundry), Some("blanks-significant"));
+
+    // The same name without the space is a different name.
+    let mut squashed = Pattern::new();
+    squashed.add(Object::Family, "DejaVuSans");
+    config.substitute(&mut squashed);
+    assert_eq!(squashed.string(Object::Foundry), None, "a blank must not be ignored here");
+
+    // Case still folds, blanks and all.
+    let mut shouted = Pattern::new();
+    shouted.add(Object::Family, "DEJAVU SANS");
+    config.substitute(&mut shouted);
+    assert_eq!(shouted.string(Object::Foundry), Some("blanks-significant"));
+}
+
+/// `ignore-blanks="true"` is what makes the two spellings the same name.
+#[test]
+fn ignore_blanks_makes_a_space_invisible() {
+    let config = blanks_config();
+    for family in ["DejaVuSans", "DejaVu Sans", "Deja Vu Sans", "dejavusans"] {
+        let mut query = Pattern::new();
+        query.add(Object::Family, family);
+        config.substitute(&mut query);
+        assert_eq!(query.number(Object::Weight), Some(210.0), "{family}");
+    }
+}

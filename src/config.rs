@@ -1091,6 +1091,9 @@ impl Config {
                     qual: Qual::parse(frame.attr("qual")),
                     object,
                     compare,
+                    // Anything but "true" leaves blanks significant, which
+                    // is what fontconfig does with a value it cannot read.
+                    ignore_blanks: frame.attr("ignore-blanks") == Some("true"),
                     expr: frame.expr(),
                 };
                 if let Some(parent) = stack.last_mut() {
