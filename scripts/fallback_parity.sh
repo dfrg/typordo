@@ -115,10 +115,22 @@ d = sfnt.patch_u16(d, "OS/2", sfnt.OS2_WIDTH_CLASS, 3)
 axes = [("wght", 100, 400, 900, 256), ("wdth", 50, 100, 200, 257), ("opsz", 6, 16, 144, 258)]
 instances = [(2, [100, 100, 16]), (2, [400, 100, 16]), (2, [900, 100, 16]), (2, [400, 75, 8])]
 write("vf-opsz-multiplier", sfnt.add_table(d, "fvar", sfnt.fvar(axes, instances)))
+
+# The name fallbacks, each of which is the last thing standing between a font
+# and being unusable: a font that names no family is unmatchable by name, and
+# one that names no style cannot be picked by `style=Regular`.
+write("names-no-style", sfnt.set_names(src, [(3, 1, 0x409, 1, "Probe Family")]))
+write("names-none", sfnt.set_names(src, [(3, 1, 0x409, 5, "Version 1.0")]))
+# A family carrying characters PostScript will not take in a literal name.
+write("names-psname-chars", sfnt.set_names(src, [(3, 1, 0x409, 1, "Tuffy Two (Test)"),
+                                                 (3, 1, 0x409, 2, "Regular")]))
+write("names-psname-brackets", sfnt.set_names(src, [(3, 1, 0x409, 1, "A<B>C[D]E{F}G/H"),
+                                                    (3, 1, 0x409, 2, "Regular")]))
 PY
 
 FIELDS="weight width size slant foundry outline scalable family style fullname
-        postscriptname spacing variable namedinstance index"
+        postscriptname familylang stylelang fullnamelang spacing variable
+        namedinstance index"
 files=0; total=0; bad=0
 for font in "$WORK"/*.ttf; do
   files=$((files + 1))

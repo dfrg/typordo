@@ -18,10 +18,10 @@ produced.
 | F7 | rules | `<name>` in an edit yields every value; upstream yields the first | Fixed, `740423c` |
 | F11 | rules | Arithmetic result type: upstream collapses integral doubles to Integer | Fixed, `740423c` |
 | F2 | prepare | Localized family/style/fullname never promoted for the requested language | Fixed, `7fcc614` |
-| F3 | scanner | `size` never produced (no `opsz` axis, no OS/2 v5 optical range) | Fixed, *this commit* |
+| F3 | scanner | `size` never produced (no `opsz` axis, no OS/2 v5 optical range) | Fixed, `efbeb00` |
 | F4 | matching | Range resolution uses the first query value, not the winning one | Fixed, `e080b89` |
-| F5 | scanner | Named-instance weight/width ignore the OS/2 × (instance/default) multiplier | Fixed, *this commit* |
-| F6 | scanner | Missing name fallbacks: `Regular` style, family from the filename, PS-name sanitisation | |
+| F5 | scanner | Named-instance weight/width ignore the OS/2 × (instance/default) multiplier | Fixed, `efbeb00` |
+| F6 | scanner | Missing name fallbacks: `Regular` style, family from the filename, PS-name sanitisation | Fixed, *this commit* |
 | F8 | rules | Multi-valued `<test name="family">` has different semantics | |
 | F9 | cache | Binding encoding inverted; cache values read Strong where upstream reads Weak | |
 | F10 | prepare | `fontvariations` number formatting / weight rounding differs | Fixed, `e080b89` |
@@ -153,3 +153,27 @@ That last font is the one worth having. It produces five patterns, and every
 one of them exercises something different: the default face, three named
 instances at both ends and the middle of the axis, and the variable pattern
 carrying ranges. 270/270 fields identical over 18 crafted fonts.
+
+## F6 — the names a font does not have
+
+Five fallbacks, all in `FcFreeTypeQueryFaceInternal`, and each is the last
+thing standing between a font and being unusable:
+
+- no family from the `name` table, and FreeType has none either -> the
+  **file name**, basename with the last extension removed. Without it the font
+  has no `family` at all and nothing can ask for it by name.
+- no style -> **`Regular`**, with `stylelang=en`. Without it `style=Regular`
+  selects nothing.
+- no full name -> **family + `" "` + style**, which this crate already did.
+- no PostScript name -> the English family with every character PostScript
+  will not take in a literal name replaced by a **hyphen**. This crate removed
+  whitespace instead, so `Tuffy Two (Test)` became `TuffyTwo(Test)` where
+  fontconfig gives `Tuffy-Two--Test-` -- a different name, not just a
+  differently-spaced one, and the brackets it leaves in are exactly the
+  characters the rule exists to remove.
+- the English family is preferred over the first for both of the last two,
+  which the full-name path already did and the PostScript path did not.
+
+Four more crafted fonts in `fallback_parity`, and the field list grew to
+include the three `*lang` properties, since a fallback that supplies a name
+has to supply its language too. 396/396 fields over 22 fonts.

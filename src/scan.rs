@@ -167,7 +167,7 @@ fn base_pattern(font: &FontRef<'_>, path: &str, index: i32) -> Pattern {
     }
     // Names first: the slant and whether the face is decorative are both
     // read off the style name.
-    add_names(font, &mut pattern);
+    add_names(font, &mut pattern, path);
     pattern.add(Object::Decorative, is_decorative(&pattern));
     pattern.add(Object::Symbol, is_symbol(font));
     if let Some(spacing) = spacing(font) {
@@ -1144,7 +1144,7 @@ const INSTANCE_FULLNAME_IDS: [u16; 1] = [18];
 const PLATFORM_ORDER: [u16; 4] = [3, 0, 1, 2]; // Microsoft, Unicode, Mac, ISO
 
 /// Family, style, full name and PostScript name from the `name` table.
-fn add_names(font: &FontRef<'_>, pattern: &mut Pattern) {
+fn add_names(font: &FontRef<'_>, pattern: &mut Pattern, path: &str) {
     for (ids, object, lang_object) in [
         (&FAMILY_IDS[..], Object::Family, Object::Familylang),
         (&STYLE_IDS[..], Object::Style, Object::Stylelang),
@@ -1155,18 +1155,53 @@ fn add_names(font: &FontRef<'_>, pattern: &mut Pattern) {
             pattern.add(lang_object, lang);
         }
     }
+    // A font that named no family gets one from its file name: the basename
+    // with the last extension taken off. It is the last thing between a font
+    // and being unmatchable by name, and it costs nothing to provide -- so
+    // fontconfig does, and so must anything reading the same caches.
+    if !pattern.contains(Object::Family) {
+        let stem = path.rsplit(['/', '\\']).next().unwrap_or(path);
+        let stem = stem.rsplit_once('.').map_or(stem, |(before, _)| before);
+        if !stem.is_empty() {
+            pattern.add(Object::Family, stem);
+            pattern.add(Object::Familylang, "en");
+        }
+    }
+    // And one that named no style is Regular. Without this such a font cannot
+    // be selected by `style=Regular` at all.
+    if !pattern.contains(Object::Style) {
+        pattern.add(Object::Style, "Regular");
+        pattern.add(Object::Stylelang, "en");
+    }
     add_synthetic_fullname(pattern);
+
     // The PostScript name is not localized -- fontconfig records no language
     // for it -- so unlike the others it is taken whatever language it is
     // filed under. A font with no name id 6 at all, which the Terminus
-    // bitmaps are, gets one built from its family with the spaces removed.
+    // bitmaps are, gets one built from its family.
     let ps = any_name(font, 6).or_else(|| {
-        let family = any_name(font, 16).or_else(|| any_name(font, 1))?;
-        Some(family.chars().filter(|c| !c.is_whitespace()).collect())
+        let family = english_value(pattern, Object::Family, Object::Familylang)?;
+        Some(postscript_literal(&family))
     });
     if let Some(ps) = ps {
         pattern.add(Object::PostscriptName, ps.as_str());
     }
+}
+
+/// A family name made safe to use as a PostScript literal name.
+///
+/// Not "the spaces removed", which is what this crate did: fontconfig
+/// *replaces* each character PostScript will not take with a hyphen, so
+/// `Tuffy Two (Test)` becomes `Tuffy-Two--Test-` rather than
+/// `TuffyTwo(Test)`. The result is cut at 255 characters -- a literal name is
+/// architecturally limited to 127, and upstream's comment says 255 is assumed
+/// to be enough.
+fn postscript_literal(family: &str) -> String {
+    // The set `fcfreetype.c` spells as a C string literal; the NUL that
+    // terminates it there is not part of the set.
+    const EXCLUDED: [char; 15] =
+        ['\u{4}', '(', ')', '/', '<', '>', '[', ']', '{', '}', '\t', '\u{c}', '\r', '\n', ' '];
+    family.chars().take(255).map(|c| if EXCLUDED.contains(&c) { '-' } else { c }).collect()
 }
 
 /// A full name built from the family and style, when the face has none.
