@@ -270,6 +270,18 @@ write_conf namelang-with-family.conf '    <rejectfont>
     </rejectfont>'
 check namelang-with-family.conf
 
+# `<bool>` is read by `FcNameBool`, where the first letter decides: true,
+# yes, on and 1 are all true. A spelling it does not know is false -- not
+# ignored -- so `<bool>bogus</bool>` still selects the non-scalable fonts.
+for spell in true yes on 1 True false no off 0 bogus; do
+  write_conf "bool-$spell.conf" "    <rejectfont>
+      <pattern>
+        <patelt name=\"scalable\"><bool>$spell</bool></patelt>
+      </pattern>
+    </rejectfont>"
+  check "bool-$spell.conf"
+done
+
 if [ "$FAILURES" -gt 0 ]; then
   echo
   echo "FAILED: $FAILURES difference(s) -- see above"

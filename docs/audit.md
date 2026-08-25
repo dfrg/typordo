@@ -55,7 +55,8 @@ corpus does not contain.
 | 9.2-9.5 | Range, charset, langset and matrix comparison | 36 cases against `fc-pattern -c` | `31575bb` |
 | 6 | Conditional `<alias>` tests discarded | DIFF->MATCH against `fc-pattern -c` | `31575bb` |
 | 7 | Empty selector patterns inverted accept/reject | DIFF->MATCH against `fc-list` | `7d16166` |
-| 8 | `prgname`, `desktop` and `order` never set | Both agree against `fc-pattern -c -d` | *this commit* |
+| 8 | `prgname`, `desktop` and `order` never set | Both agree against `fc-pattern -c -d` | `702677d` |
+| 3.2 | `ignore_missing` never read; a missing include was silent | Test fails on old behaviour | *this commit* |
 
 **9.1 — `ignore-blanks`.** `FcConfigCompareValue` uses
 `FcStrCmpIgnoreBlanksAndCase` only when `FcOpFlagIgnoreBlanks` is set and
@@ -252,6 +253,39 @@ executable name: `fc-pattern` fires the `fc-pattern` rule and this crate fires
 its own, each reporting the name it should. `order: 0` matches, and `desktop`
 appears in both or neither as `XDG_CURRENT_DESKTOP` is set or empty.
 
+**3.1 - include resolution.** Read against both trees and found already
+correct. `FcConfigGetFilename` sends a `~` path to the home directory, an
+absolute path straight through, an `xdg` prefix to `XDG_CONFIG_HOME`, and
+anything else to each `FONTCONFIG_PATH` entry in turn and then the built-in
+configuration directory -- **not** to the including file's own directory,
+which is the plausible wrong answer. That is what `include_paths` does.
+
+**3.2 - `ignore_missing`.** The attribute was never read, and a missing
+`<include>` was passed over in silence. Fontconfig prints `Cannot load config
+file` and loads everything else, so the font list is the same either way --
+which is the whole problem. An include naming a path that has moved goes on
+contributing nothing, and nothing tells you.
+
+`Config::warnings` now reports it, the same bargain `Caches::skipped` already
+makes. It is not an error and does not fail the load, because upstream does
+not fail either: `fc-list` returns all 2385 fonts with a missing include and
+prints the complaint to stderr.
+
+Reading `ignore_missing` meant reading `FcNameBool`, where the first letter
+decides -- `yes`, `on`, `1` and `True` are all true -- and that turned up a
+gap beside it: `<bool>` elements accepted only the literal `true` and `false`,
+so `<bool>yes</bool>` in a selector was discarded. Worse, a spelling
+fontconfig cannot read is **false** to it, not ignored, so `<bool>bogus</bool>`
+selects the non-scalable fonts; treating it as unusable left 18 more fonts in
+the list than fontconfig leaves. Ten spellings are now compared against
+`fc-list` in `select_parity`, and all ten agree.
+
+### Examined and found correct
+
+| # | Finding | What it actually does |
+| --- | --- | --- |
+| 3.1 | Include resolution | Already matches `FcConfigGetFilename` |
+
 ### Version drift, not gaps
 
 | # | Finding | Why it stands |
@@ -272,7 +306,6 @@ cannot be mistaken for "all of it".
 | # | Finding | Priority as reported |
 | --- | --- | --- |
 | 2 | Root configuration search and startup fallback | High |
-| 3.1, 3.2 | Include resolution and `ignore_missing` | High |
 | 10 | `<const>` resolution | Medium |
 | 11 | XML character data | Low-medium |
 | 12 | `Pattern` equality and insertion | Medium |

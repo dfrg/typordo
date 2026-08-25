@@ -140,7 +140,8 @@ pub use build::{Builder, Built};
 pub use cache::{Cache, Fonts, Subdirs, VERSION};
 pub use charset::{AnyCharSet, CharSet, CharSetRef};
 pub use config::{
-    CachePolicy, Caches, Config, ConfigError, IfMissing, IfStale, SkipReason, Skipped, ARCHITECTURE,
+    CachePolicy, Caches, Config, ConfigError, ConfigWarning, IfMissing, IfStale, SkipReason,
+    Skipped, ARCHITECTURE,
 };
 pub use error::{Error, Result};
 pub use langset::{AnyLangSet, LangResult, LangSet, LangSetRef};

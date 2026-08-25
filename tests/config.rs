@@ -9,6 +9,7 @@ use std::path::{Path, PathBuf};
 
 use typordo::CachePolicy;
 use typordo::Config;
+use typordo::ConfigWarning;
 
 fn fixture_dir() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/config")
@@ -571,4 +572,49 @@ fn a_relocated_cache_has_its_subdirectories_rebased() {
         ],
         "the subdirectory must be reported under the directory it was found in"
     );
+}
+
+/// A missing `<include>` is reported unless the include said not to bother.
+///
+/// Fontconfig prints "Cannot load config file" and loads everything else, so
+/// the font list is unaffected either way -- which is exactly why it needs
+/// saying out loud. An include naming a path that moved contributes nothing
+/// and, without this, says nothing.
+#[test]
+fn a_missing_include_is_reported_unless_it_says_not_to() {
+    let root = std::env::temp_dir().join("typordo-missing-include");
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&root).unwrap();
+
+    let load = |include: &str| {
+        let path = root.join("fonts.conf");
+        std::fs::write(
+            &path,
+            format!("<?xml version=\"1.0\"?>\n<fontconfig>\n{include}\n</fontconfig>\n"),
+        )
+        .unwrap();
+        Config::load_from(&path).unwrap()
+    };
+
+    assert_eq!(load("").warnings(), &[]);
+
+    let absent = "/typordo-no-such-directory/nope.conf";
+    assert_eq!(
+        load(&format!("<include>{absent}</include>")).warnings(),
+        &[ConfigWarning::MissingInclude(absent.to_string())],
+    );
+    // `FcNameBool`, so every spelling fontconfig accepts works here.
+    for yes in ["yes", "true", "on", "1", "Yes"] {
+        let config = load(&format!("<include ignore_missing=\"{yes}\">{absent}</include>"));
+        assert_eq!(config.warnings(), &[], "ignore_missing={yes}");
+    }
+    for no in ["no", "false", "off", "0"] {
+        let config = load(&format!("<include ignore_missing=\"{no}\">{absent}</include>"));
+        assert_eq!(config.warnings().len(), 1, "ignore_missing={no}");
+    }
+
+    // A file that is there produces no warning.
+    std::fs::write(root.join("real.conf"), "<?xml version=\"1.0\"?>\n<fontconfig/>\n").unwrap();
+    let real = root.join("real.conf");
+    assert_eq!(load(&format!("<include>{}</include>", real.display())).warnings(), &[]);
 }

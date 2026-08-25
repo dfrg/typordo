@@ -79,9 +79,39 @@ impl std::fmt::Display for ConfigError {
 
 impl std::error::Error for ConfigError {}
 
+/// Something a configuration file said that could not be carried out.
+///
+/// Not an error: fontconfig prints these and loads everything else, so a
+/// configuration with one still works. They are reported rather than dropped
+/// because the failure is silent otherwise -- an `<include>` naming a path
+/// that moved goes on contributing nothing, and nothing says so.
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum ConfigWarning {
+    /// An `<include>` named a file or directory that is not there, and did
+    /// not carry `ignore_missing`.
+    ///
+    /// The path is as the configuration wrote it. A relative one is looked
+    /// for under every entry of `FONTCONFIG_PATH` and then the built-in
+    /// configuration directory, and is reported missing only when none of
+    /// them had it.
+    MissingInclude(String),
+}
+
+impl std::fmt::Display for ConfigWarning {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::MissingInclude(path) => write!(f, "cannot load config file \"{path}\""),
+        }
+    }
+}
+
 /// The font and cache directories a system is configured to use.
 #[derive(Clone, Debug, Default)]
 pub struct Config {
+    /// What the configuration asked for and did not get; see
+    /// [`Config::warnings`].
+    warnings: Vec<ConfigWarning>,
     /// A root to read everything under, from `FONTCONFIG_SYSROOT`.
     ///
     /// Set when inspecting a filesystem that is not the running one: an
@@ -109,6 +139,8 @@ struct Applied<'a> {
     salt: Option<&'a str>,
     /// The `as-path` attribute of a `<remap-dir>`.
     as_path: Option<&'a str>,
+    /// The `ignore_missing` attribute of an `<include>`.
+    ignore_missing: bool,
     from: &'a Path,
     depth: usize,
     seen: &'a mut HashSet<PathBuf>,
@@ -224,11 +256,15 @@ impl SelectorValue {
             "string" => Self::String(body.to_string()),
             "int" => parse_int(body).map_or(Self::Unsupported, Self::Int),
             "double" => body.parse().map_or(Self::Unsupported, Self::Double),
-            "bool" => match body {
-                "true" => Self::Bool(true),
-                "false" => Self::Bool(false),
-                _ => Self::Unsupported,
-            },
+            // `FcNameBool`, not a literal "true": `<bool>yes</bool>` and
+            // `<bool>on</bool>` are as valid as `<bool>true</bool>`.
+            //
+            // A spelling it does not know is *false*, not unsupported.
+            // Fontconfig warns and keeps the false its result started as, so
+            // `<bool>bogus</bool>` selects the non-scalable fonts rather than
+            // selecting nothing -- poisoning the selector here would leave
+            // more fonts in the list than fontconfig leaves.
+            "bool" => Self::Bool(name_bool(body).unwrap_or(false)),
             "const" => match constant(body) {
                 Some(value) => Self::Int(value),
                 None => Self::Unsupported,
@@ -626,6 +662,30 @@ fn constant(name: &str) -> Option<i32> {
     CONSTANTS.iter().find(|(constant, _)| *constant == name).map(|(_, value)| *value)
 }
 
+/// Read a boolean the way `FcNameBool` does.
+///
+/// The first letter decides, so `true`, `True`, `yes`, `on` and `1` all mean
+/// true, and `false`, `no`, `off` and `0` all mean false. `None` for anything
+/// it does not recognise, which fontconfig warns about and then treats as
+/// false.
+///
+/// Fontconfig also accepts `d`, `x`, `2` and `or` for the third state of its
+/// three-valued `FcBool`; this crate's booleans have two, so those read as
+/// unrecognised rather than being silently flattened to one side.
+fn name_bool(value: &str) -> Option<bool> {
+    let mut chars = value.chars().map(|c| c.to_ascii_lowercase());
+    match chars.next()? {
+        't' | 'y' | '1' => Some(true),
+        'f' | 'n' | '0' => Some(false),
+        'o' => match chars.next()? {
+            'n' => Some(true),
+            'f' => Some(false),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
 /// Parse an integer the way `FcParseInt` does, with `strtol` base 0.
 ///
 /// That means `0x4e00` is hex and `0755` is octal, both of which a plain
@@ -897,6 +957,15 @@ impl Config {
         }
     }
 
+    /// What this configuration asked for and did not get.
+    ///
+    /// Empty for a configuration that loaded cleanly. Fontconfig prints these
+    /// to stderr; this crate hands them back so a caller can decide, which is
+    /// the same bargain as [`Caches::skipped`].
+    pub fn warnings(&self) -> &[ConfigWarning] {
+        &self.warnings
+    }
+
     /// Whether any `<selectfont>` rule was configured.
     ///
     /// Most systems have none, in which case [`Config::accepts`] is always
@@ -1110,6 +1179,10 @@ impl Config {
                     body,
                     salt,
                     as_path,
+                    ignore_missing: frame
+                        .attr("ignore_missing")
+                        .and_then(name_bool)
+                        .unwrap_or(false),
                     from: path,
                     depth,
                     seen,
@@ -1195,9 +1268,10 @@ impl Config {
                     qual: Qual::parse(frame.attr("qual")),
                     object,
                     compare,
-                    // Anything but "true" leaves blanks significant, which
-                    // is what fontconfig does with a value it cannot read.
-                    ignore_blanks: frame.attr("ignore-blanks") == Some("true"),
+                    // `FcNameBool` again, and an unreadable value leaves
+                    // blanks significant -- fontconfig warns and keeps the
+                    // false it started with.
+                    ignore_blanks: frame.attr("ignore-blanks").and_then(name_bool).unwrap_or(false),
                     expr: frame.expr(),
                 };
                 if let Some(parent) = stack.last_mut() {
@@ -1321,13 +1395,20 @@ impl Config {
     }
 
     fn apply(&mut self, a: Applied<'_>) -> Result<(), ConfigError> {
-        let Applied { element, prefix, body, salt, as_path, from, depth, seen } = a;
+        let Applied { element, prefix, body, salt, as_path, ignore_missing, from, depth, seen } = a;
         if body.is_empty() {
             return Ok(());
         }
         if element == "include" {
-            for path in include_paths(body, prefix, from) {
-                self.read_include(&path, depth, seen)?;
+            let candidates = include_paths(body, prefix, from);
+            let mut found = false;
+            for path in &candidates {
+                found |= self.read_include(path, depth, seen)?;
+            }
+            // A relative include is looked for in several places, so it is
+            // missing only when none of them had it.
+            if !found && !ignore_missing {
+                self.warnings.push(ConfigWarning::MissingInclude(body.to_string()));
             }
             return Ok(());
         }
@@ -1372,12 +1453,19 @@ impl Config {
     }
 
     /// An include names either a file or a directory of `.conf` files.
+    /// Read one `<include>` candidate, reporting whether it was there.
+    ///
+    /// A missing file is not an error and never fails the load: fontconfig
+    /// prints "Cannot load config file" and carries on with everything else,
+    /// which is why the answer comes back as a bool rather than an error. The
+    /// caller turns "none of the candidates existed" into a warning, unless
+    /// the include said `ignore_missing`.
     fn read_include(
         &mut self,
         path: &Path,
         depth: usize,
         seen: &mut HashSet<PathBuf>,
-    ) -> Result<(), ConfigError> {
+    ) -> Result<bool, ConfigError> {
         let on_disk = self.host_path(path);
         if on_disk.is_dir() {
             // Order matters: the numeric prefixes on conf.d files are there to
@@ -1399,15 +1487,14 @@ impl Config {
             for entry in entries {
                 self.read_file(&entry, depth + 1, seen)?;
             }
-            return Ok(());
+            // The directory was there; an empty one is not a missing include.
+            return Ok(true);
         }
         if on_disk.is_file() {
             self.read_file(path, depth + 1, seen)?;
+            return Ok(true);
         }
-        // A missing include is not an error. Fontconfig marks most of them
-        // `ignore_missing="yes"` and warns rather than failing on the rest,
-        // and a config that names an absent optional file is entirely normal.
-        Ok(())
+        Ok(false)
     }
 }
 
