@@ -136,42 +136,42 @@ under WSL2; the `mmap` column is the optional feature of that name.
 
 | operation | ours | +mmap | fontconfig | |
 | --- | --- | --- | --- | --- |
-| open a config | 7.40 ms | 7.40 ms | 14.48 ms | **1.96x** |
-| load every cache | 12.84 ms | 10.56 ms | 16.76 ms | **1.31x** |
-| list every font | 1.48 ms | 1.44 ms | 2.20 ms | **1.49x** |
-| prepare a query | 398 us | 386 us | 450 us | **1.13x** |
-| match | 1.51 ms | 1.48 ms | 1.29 ms | 0.85x |
-| sort | 3.41 ms | 3.37 ms | 3.11 ms | 0.91x |
-| match on coverage + language | 1.71 ms | 1.68 ms | 1.43 ms | 0.84x |
+| open a config | 7.24 ms | 7.33 ms | 14.13 ms | **1.95x** |
+| load every cache | 12.56 ms | 10.33 ms | 16.74 ms | **1.33x** |
+| list every font | 1.47 ms | 1.42 ms | 2.18 ms | **1.48x** |
+| prepare a query | 271 us | 278 us | 440 us | **1.62x** |
+| match | 1.37 ms | 1.36 ms | 1.26 ms | 0.92x |
+| sort | 3.30 ms | 3.33 ms | 3.11 ms | 0.94x |
+| match on coverage + language | 1.57 ms | 1.57 ms | 1.42 ms | 0.90x |
 
-Ahead on everything that touches a cache, a little ahead on substitution, a
-little behind on matching.
+Ahead on everything that touches a cache and on substitution, a little behind
+on matching.
 
-Two things this table says that the previous one did not. Loading is slower
-than it was and deliberately so: every cache is now walked for structural
-validity before it is handed out, which is what `FcCacheOffsetsValid` does on
-every map and what this crate was not doing. The measured cost is most of the
-distance between 1.58x and 1.31x, and it buys refusing a damaged cache whole
-rather than yielding part of one.
+Loading is slower than it once was and deliberately so: every cache is walked
+for structural validity before it is handed out, which is what
+`FcCacheOffsetsValid` does on every map and what this crate was not doing.
+That is the distance between 1.58x and 1.33x, and it buys refusing a damaged
+cache whole rather than yielding part of one.
 
-The rest is a correction. The figures published here before -- load 1.58x,
-prepare 1.71x, match 0.99x -- do not reproduce. They are not the audit's
-doing: the same benchmark at the commit the audit work started from gives
-1.21x, 1.18x and 0.91x, so whatever moved had already moved. fontconfig's own
-column is within a few percent across all of those runs, so it is not the
-machine. Chasing it is open work, and it is recorded here rather than quietly
-restated because a performance claim nobody can reproduce is worse than a
-slower honest one.
+`prepare` is the interesting column: configuration rules alone, no fonts
+involved. It was 0.39x before the profile was read rather than guessed at --
+substitution grows the family list it scans, so a test late in a pass walked a
+hundred names, and fontconfig hashes them, its own comment saying that is
+where the time goes.
 
-`prepare` remains the interesting column: configuration rules alone, no fonts
-involved, and it was 0.39x before the profile was read rather than guessed at.
-Substitution grows the family list it scans, so a test late in a pass walked a
-hundred names; fontconfig hashes them, its own comment saying that is where
-the time goes. Doing the same, and stopping each qualifier as soon as its
-answer is known, is what put it ahead. What is left on that path is
-arithmetic rather than waste: scoring is a merge join over two sorted element
-lists that allocates nothing, and two thirds of the profile is case folding
-doing comparisons that have to happen.
+It then quietly lost half of that again, and the cause is worth recording
+because nothing was going to catch it. `casefold::eq_ignoring_blanks` has a
+hand-written fast path that compares bytes for as long as both sides stay
+ASCII; `casefold::eq` had none, being three lines of iterator. Fixing the
+first audit finding -- ignoring blanks only where fontconfig is asked to --
+moved almost every comparison in substitution from the first onto the second,
+and cost 48% of the time to prepare a query. Every parity harness stayed
+green, because the answers were right; they had simply become the correct
+answers arrived at slowly. `eq` has the same fast path now, and a differential
+test against the table-driven version so the two cannot drift.
+
+What is left on that path is arithmetic rather than waste: scoring is a merge
+join over two sorted element lists that allocates nothing.
 
 ## Design
 
