@@ -30,8 +30,8 @@ fn a_config_without_selectfont_has_no_selectors() {
     // exactly what this is asserting the absence of. It passes on a machine
     // with no `/etc/fonts` and fails on one with it.
     let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/config");
-    let plain = Config::load_from_with_path(&dir.join("fonts.conf"), std::slice::from_ref(&dir))
-        .unwrap();
+    let plain =
+        Config::load_from_with_path(&dir.join("fonts.conf"), std::slice::from_ref(&dir)).unwrap();
     assert!(!plain.has_selectors());
     // With no rules, everything is accepted.
     assert!(plain.accepts_filename("/anything/at/all.ttf"));
