@@ -22,10 +22,16 @@ fn with_first_font(cache: &Cache, f: impl FnOnce(PatternRef<'_>)) {
 
 #[test]
 fn a_config_without_selectfont_has_no_selectors() {
-    let plain = Config::load_from(
-        &Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/config/fonts.conf"),
-    )
-    .unwrap();
+    // Named search path, not the environment's. That fixture has a bare
+    // `<include>conf.d</include>`, and a relative include resolves against
+    // the search path -- `FONTCONFIG_PATH` and then the built-in
+    // configuration directory -- so loading it with the default path pulls in
+    // the *host's* `/etc/fonts/conf.d`, whose `<selectfont>` rules are
+    // exactly what this is asserting the absence of. It passes on a machine
+    // with no `/etc/fonts` and fails on one with it.
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/config");
+    let plain = Config::load_from_with_path(&dir.join("fonts.conf"), std::slice::from_ref(&dir))
+        .unwrap();
     assert!(!plain.has_selectors());
     // With no rules, everything is accepted.
     assert!(plain.accepts_filename("/anything/at/all.ttf"));
